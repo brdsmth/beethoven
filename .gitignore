@@ -1,0 +1,12 @@
+# Added: dependencies
+node_modules
+
+# Added: build outputs
+dist
+build
+
+# Added: environment files
+.env
+
+# Added: macOS junk
+.DS_Store
