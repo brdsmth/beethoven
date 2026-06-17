@@ -45,6 +45,25 @@ fn current_project_path(home: &Path) -> PathBuf {
     home.join("current-project")
 }
 
+/// Where `beethoven start` records its PID while running, so `beethoven
+/// stop`/`runtime status` (separate process invocations) can find it.
+pub fn pid_path(home: &Path) -> PathBuf {
+    home.join("daemon.pid")
+}
+
+pub fn read_pid(pid_file: &Path) -> Option<u32> {
+    std::fs::read_to_string(pid_file).ok()?.trim().parse().ok()
+}
+
+pub fn is_pid_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 pub fn read_current_project(home: &Path) -> Option<String> {
     let contents = std::fs::read_to_string(current_project_path(home)).ok()?;
     let trimmed = contents.trim();
