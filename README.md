@@ -4,18 +4,21 @@ A personal agentic software organization. See [`docs/architecture.md`](docs/arch
 for the full design, [`docs/phase-1.5-real-execution-plan.md`](docs/phase-1.5-real-execution-plan.md)
 for the real-execution plan,
 [`docs/phase-1.6-project-manager-runtime.md`](docs/phase-1.6-project-manager-runtime.md)
-for the project-management domain model, and
+for the project-management domain model,
 [`docs/phase-1.7-real-model-runtime.md`](docs/phase-1.7-real-model-runtime.md)
-for the real-model-runtime plan. On top of Phase 1.6's Project → Initiative →
+for the real-model-runtime plan, and
+[`docs/phase-1.8-continuous-runtime.md`](docs/phase-1.8-continuous-runtime.md)
+for the continuous-runtime plan. On top of Phase 1.6's Project → Initiative →
 Requirement → Plan → Epic hierarchy and Project → Goal → Task hierarchy
-(both terminating in the same `Task`/execution/review pipeline), this is
-**Phase 1.7a**: Worker task execution now invokes a real model — Claude Code
-— through a `ModelRuntime` provider abstraction (`beethoven-agents`), with
-every invocation's prompt, raw response, status, and cost recorded as
-events (`PromptGenerated`/`ModelRunStarted`/`ModelRunCompleted`/`ModelRunFailed`)
-and queryable `ModelRun`/`ModelArtifact` state. PM planning and review are
-still deterministic heuristics — replacing those with model-driven behavior
-is Phase 1.7b (see [Stub behavior](#stub-behavior)).
+(both terminating in the same `Task`/execution/review pipeline) and Phase
+1.7a's real model invocation, this is **Phase 1.8**: a continuously-running
+daemon (`beethoven start`) that recovers from crashes and executes tasks
+across every active project concurrently, instead of a human invoking `run`
+by hand on a loop. PM planning and review are still deterministic
+heuristics — replacing those with model-driven behavior is Phase 1.7b (see
+[Stub behavior](#stub-behavior)). A few pieces of the spec were deliberately
+simplified or skipped — see [Continuous runtime](#continuous-runtime) for
+what and why.
 
 ## Build
 
@@ -83,7 +86,8 @@ cargo run -- goal plan <goal-id>
 ```
 
 Run an orchestration tick for a project (assigns ready tasks to that
-project's idle agent instances, then executes each assigned task):
+project's idle agent instances, then executes each assigned task — up to
+`--max-concurrent` of them at once, default 4):
 
 ```bash
 cargo run -- run --project sample
@@ -115,6 +119,75 @@ For each assigned task this drives the real execution pipeline:
 
 The printed report includes `needs_changes` and `escalated` counts alongside
 `completed`/`assigned`/`subtasks_spawned`.
+
+### Continuous runtime
+
+Instead of invoking `run` by hand on a loop, `start` runs the same tick
+continuously, across every project, until interrupted:
+
+```bash
+cargo run -- start --interval 10 --max-concurrent 4 --max-attempts 3
+```
+
+On startup it first recovers from any crash: any task left assigned to an
+agent without ever reaching a terminal status (the process died sometime
+between `TaskStarted` and the next event, most commonly mid-model-call) is
+reset to `Ready` with a bumped attempt, its agent freed, and any worktree/tmux
+session the crashed attempt left behind torn down — reconstructed
+deterministically from the project/task/agent kind, since none of that needs
+to have been persisted separately. This is recorded as a `TaskRecovered`
+event per task, *unless* the task had already hit `--max-attempts`, in which
+case it's escalated to the inbox instead of recovered again.
+
+The daemon then loops: tick every active project, sleep for `--interval`
+seconds, repeat, until interrupted via Ctrl-C or `beethoven stop` from
+another shell (SIGTERM) — either stops the loop after its current tick
+finishes (no in-flight tick is interrupted) and records
+`RuntimeStarted`/`RuntimeStopped` events around the session. `start` refuses
+to run if a daemon is already running (tracked via a pidfile,
+`<home>/daemon.pid`); `stop` reads that pidfile and waits for the process to
+actually exit.
+
+**Real concurrency, no locks.** Within a tick, every project's ready tasks
+are assigned and started first (fast, sequential), then *every* prepared
+task's real model execution — across every active project, not just one —
+runs concurrently via `tokio::task::spawn_blocking`, bounded to
+`--max-concurrent` in flight at once. `Runtime` never needs `Arc<Mutex<...>>`
+for this: it only ever holds `&mut self` during the fast assign/start/finish
+steps, never while a real model call is in flight, since each prepared
+task's data is fully owned and moved into its own blocking task. A
+workspace/git/tmux/IO failure while starting one task escalates just that
+task (`TaskBlocked` + `QuestionRaised`, same as a model failure) instead of
+aborting every other task's progress in the same tick.
+
+**Retry cap.** An *automatic* retry (a Needs-Changes review outcome, or
+crash recovery) that would push a task's attempt count past `--max-attempts`
+escalates to the inbox instead of retrying again — a task can no longer loop
+through Needs-Changes forever. This does not cap a human resolving a
+question/decision, which always unblocks the task.
+
+```bash
+cargo run -- runtime status   # daemon liveness, last start/stop, per-project/agent activity
+cargo run -- logs --project sample --limit 50
+cargo run -- stop
+```
+
+What Phase 1.8 still simplifies relative to the spec, deliberately: the
+Scheduler/PM/Worker/Review/Inbox loops (different suggested intervals) stay
+collapsed into the one tick above rather than becoming 4 independently-timed
+Tokio loops — splitting them apart would add coordination complexity for no
+behavioral gain here, and would force `Runtime` into shared-mutable-state
+mode for *every* command, not just the daemon. There's no formal
+`Starting`/`Running`/`Stopping`/`Recovering`/`Degraded`/`Failed` lifecycle
+state machine either — `runtime status` answers the same questions
+pragmatically (pidfile liveness, last `RuntimeStarted`/`RuntimeStopped`,
+per-agent last heartbeat) without it, and `Degraded`/`Failed` would need
+failure-detection heuristics nothing here asks for yet. `logs` is the event
+log tailed/filtered, not a separate logging subsystem. The spec's
+`SchedulerStarted`/`SchedulerStopped`/`TaskQueued`/`TaskDispatched`/
+`ExecutionQueued`/`ReviewQueued`/`TaskResumed` events were skipped — each
+existed to mark entry into one of the 4 separate loops/queues above, so
+there's no distinct transition left for them to mark.
 
 Check a project's state:
 
