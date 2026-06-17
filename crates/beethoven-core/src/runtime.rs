@@ -2,8 +2,9 @@ use crate::error::CoreError;
 use crate::models::*;
 use crate::state::RuntimeState;
 use beethoven_agents::{
-    AgentKind, ClaudeCodeRuntime, ExecutionOutcome, ExecutionService, ModelRuntime, ModelTaskRequest, PlanningService,
-    PromptContext, ReviewOutcome, ReviewService, TaskExecutionContext, render_prompt,
+    AgentKind, ClaudeCodeRuntime, ExecutionOutcome, ExecutionService, InitiativePlanningService, ModelRuntime,
+    ModelTaskRequest, PlanningService, PromptContext, RequirementInput, ReviewOutcome, ReviewService,
+    TaskExecutionContext, render_prompt,
 };
 use beethoven_events::{Event, EventStore, EventType};
 use beethoven_workspaces::{WorkspaceManager, WorkspaceRequest};
@@ -18,6 +19,17 @@ pub struct TickReport {
     pub needs_changes: u32,
     pub escalated: u32,
     pub subtasks_spawned: u32,
+}
+
+/// Result of running the deterministic PM planner against an initiative:
+/// the generated plan plus everything it produced (epics, their tasks, and
+/// any decisions auto-escalated to the inbox).
+#[derive(Debug, Clone)]
+pub struct PlanOutcome {
+    pub plan: Plan,
+    pub epics: Vec<Epic>,
+    pub tasks: Vec<Task>,
+    pub decisions: Vec<Decision>,
 }
 
 fn slugify(input: &str) -> String {
@@ -220,6 +232,7 @@ impl Runtime {
                 json!({
                     "id": id,
                     "goal_id": goal_id,
+                    "epic_id": None::<String>,
                     "parent_task_id": None::<String>,
                     "title": draft.title,
                     "description": draft.description,
@@ -456,6 +469,13 @@ impl Runtime {
                                         )
                                         .await?;
                                         report.completed += 1;
+
+                                        if let Some(epic_id) = task.epic_id.clone() {
+                                            let initiative_id = self.state.epics.get(&epic_id).map(|e| e.initiative_id.clone());
+                                            if let Some(initiative_id) = initiative_id {
+                                                self.maybe_complete_initiative(project_id, &initiative_id).await?;
+                                            }
+                                        }
                                     }
                                     ReviewOutcome::NeedsChanges(reason) => {
                                         self.emit_project(
@@ -556,6 +576,7 @@ impl Runtime {
                             json!({
                                 "id": sub_id,
                                 "goal_id": task.goal_id,
+                                "epic_id": task.epic_id,
                                 "parent_task_id": task_id,
                                 "title": draft.title,
                                 "description": draft.description,
@@ -618,6 +639,211 @@ impl Runtime {
         )
         .await?;
 
+        if item.kind == InboxKind::Decision {
+            if let Some(decision_id) = item.decision_id.clone() {
+                let initiative_id = self.state.decisions.get(&decision_id).map(|d| d.initiative_id.clone());
+                if let Some(initiative_id) = initiative_id {
+                    self.maybe_complete_initiative(&item.project_id, &initiative_id).await?;
+                }
+            }
+        }
+
         Ok(self.state.inbox.get(inbox_id).expect("just updated").clone())
+    }
+
+    pub async fn create_initiative(
+        &mut self,
+        project_id: &str,
+        title: &str,
+        description: &str,
+    ) -> Result<Initiative, CoreError> {
+        self.require_project(project_id)?;
+        let id = Uuid::new_v4().to_string();
+        self.emit_project(
+            project_id,
+            EventType::InitiativeCreated,
+            "human",
+            json!({"id": id, "title": title, "description": description}),
+        )
+        .await?;
+        Ok(self.state.initiatives.get(&id).expect("just inserted").clone())
+    }
+
+    pub async fn create_requirement(&mut self, initiative_id: &str, description: &str) -> Result<Requirement, CoreError> {
+        let initiative = self
+            .state
+            .initiatives
+            .get(initiative_id)
+            .cloned()
+            .ok_or_else(|| CoreError::InitiativeNotFound(initiative_id.to_string()))?;
+        let id = Uuid::new_v4().to_string();
+        self.emit_project(
+            &initiative.project_id,
+            EventType::RequirementCreated,
+            "human",
+            json!({"id": id, "initiative_id": initiative_id, "description": description}),
+        )
+        .await?;
+        Ok(self.state.requirements.get(&id).expect("just inserted").clone())
+    }
+
+    pub async fn plan_initiative(&mut self, initiative_id: &str) -> Result<PlanOutcome, CoreError> {
+        let initiative = self
+            .state
+            .initiatives
+            .get(initiative_id)
+            .cloned()
+            .ok_or_else(|| CoreError::InitiativeNotFound(initiative_id.to_string()))?;
+        let project_id = initiative.project_id.clone();
+        let pm_id = self.pm_instance_id(&project_id).unwrap_or_else(|| "system".to_string());
+
+        self.emit_project(&project_id, EventType::PMPlanningStarted, &pm_id, json!({"initiative_id": initiative_id}))
+            .await?;
+
+        let requirement_inputs: Vec<RequirementInput> = self
+            .state
+            .requirements
+            .values()
+            .filter(|r| r.initiative_id == initiative_id)
+            .map(|r| RequirementInput {
+                id: r.id.clone(),
+                description: r.description.clone(),
+            })
+            .collect();
+
+        let plan = InitiativePlanningService::plan(&initiative.title, &requirement_inputs);
+
+        let summary = format!(
+            "{} epic(s), {} decision(s) for {}",
+            plan.epics.len(),
+            plan.decisions.len(),
+            initiative.title
+        );
+        let plan_id = Uuid::new_v4().to_string();
+        self.emit_project(
+            &project_id,
+            EventType::PlanCreated,
+            &pm_id,
+            json!({"id": plan_id, "initiative_id": initiative_id, "summary": summary}),
+        )
+        .await?;
+
+        let mut epics = Vec::with_capacity(plan.epics.len());
+        let mut tasks = Vec::with_capacity(plan.epics.len());
+        for epic_draft in plan.epics {
+            let epic_id = Uuid::new_v4().to_string();
+            self.emit_project(
+                &project_id,
+                EventType::EpicCreated,
+                &pm_id,
+                json!({"id": epic_id, "initiative_id": initiative_id, "title": epic_draft.title}),
+            )
+            .await?;
+            epics.push(self.state.epics.get(&epic_id).expect("just inserted").clone());
+
+            let task_id = Uuid::new_v4().to_string();
+            self.emit_project(
+                &project_id,
+                EventType::TaskCreated,
+                &pm_id,
+                json!({
+                    "id": task_id,
+                    "goal_id": None::<String>,
+                    "epic_id": epic_id,
+                    "parent_task_id": None::<String>,
+                    "title": format!("Implement: {}", epic_draft.title),
+                    "description": "",
+                }),
+            )
+            .await?;
+            tasks.push(self.state.tasks.get(&task_id).expect("just inserted").clone());
+        }
+
+        let mut decisions = Vec::with_capacity(plan.decisions.len());
+        for decision_draft in plan.decisions {
+            let decision_id = Uuid::new_v4().to_string();
+            self.emit_project(
+                &project_id,
+                EventType::DecisionCreated,
+                &pm_id,
+                json!({
+                    "id": decision_id,
+                    "initiative_id": initiative_id,
+                    "title": decision_draft.title,
+                    "context": decision_draft.context,
+                }),
+            )
+            .await?;
+            decisions.push(self.state.decisions.get(&decision_id).expect("just inserted").clone());
+
+            let inbox_id = Uuid::new_v4().to_string();
+            self.emit_project(
+                &project_id,
+                EventType::DecisionEscalated,
+                &pm_id,
+                json!({"decision_id": decision_id, "inbox_id": inbox_id, "prompt": decision_draft.context}),
+            )
+            .await?;
+        }
+
+        self.emit_project(&project_id, EventType::InitiativePlanned, &pm_id, json!({"id": initiative_id}))
+            .await?;
+        self.emit_project(&project_id, EventType::PMPlanningCompleted, &pm_id, json!({"initiative_id": initiative_id}))
+            .await?;
+
+        Ok(PlanOutcome {
+            plan: self.state.plans.get(&plan_id).expect("just inserted").clone(),
+            epics,
+            tasks,
+            decisions,
+        })
+    }
+
+    pub async fn resolve_decision(&mut self, decision_id: &str, response: &str) -> Result<Decision, CoreError> {
+        self.state
+            .decisions
+            .get(decision_id)
+            .ok_or_else(|| CoreError::DecisionNotFound(decision_id.to_string()))?;
+
+        let inbox_id = self
+            .state
+            .inbox
+            .values()
+            .find(|i| i.decision_id.as_deref() == Some(decision_id) && i.status == InboxStatus::Open)
+            .map(|i| i.id.clone())
+            .ok_or_else(|| CoreError::DecisionNotFound(decision_id.to_string()))?;
+
+        self.answer_inbox(&inbox_id, response).await?;
+
+        Ok(self.state.decisions.get(decision_id).expect("just updated").clone())
+    }
+
+    async fn maybe_complete_initiative(&mut self, project_id: &str, initiative_id: &str) -> Result<(), CoreError> {
+        let pm_id = self.pm_instance_id(project_id).unwrap_or_else(|| "system".to_string());
+
+        self.emit_project(project_id, EventType::PMReviewStarted, &pm_id, json!({"initiative_id": initiative_id}))
+            .await?;
+
+        let already_completed = self
+            .state
+            .initiatives
+            .get(initiative_id)
+            .map(|i| i.status == InitiativeStatus::Completed)
+            .unwrap_or(true);
+
+        if !already_completed && self.state.initiative_is_complete(initiative_id) {
+            self.emit_project(
+                project_id,
+                EventType::InitiativeCompleted,
+                &pm_id,
+                json!({"id": initiative_id}),
+            )
+            .await?;
+        }
+
+        self.emit_project(project_id, EventType::PMReviewCompleted, &pm_id, json!({"initiative_id": initiative_id}))
+            .await?;
+
+        Ok(())
     }
 }
