@@ -1,3 +1,11 @@
+mod model;
+mod prompt;
+mod review;
+
+pub use model::{AgentsError, ClaudeCodeRuntime, ModelOutcome, ModelRuntime, ModelTaskRequest};
+pub use prompt::{render_prompt, PromptContext};
+pub use review::{ReviewOutcome, ReviewService};
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -128,7 +128,10 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 name = "beethoven-agents"
 version = "0.1.0"
 dependencies = [
+ "beethoven-workspaces",
  "serde",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -201,6 +204,8 @@ name = "beethoven-git"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -214,11 +219,13 @@ dependencies = [
 name = "beethoven-workspaces"
 version = "0.1.0"
 dependencies = [
+ "beethoven-git",
  "chrono",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
+ "uuid",
 ]
 
 [[package]]
