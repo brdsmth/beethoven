@@ -33,6 +33,25 @@ pub enum EventType {
     WorkspaceCreated,
     WorkspaceDestroyed,
 
+    WorktreeCreated,
+    BranchCreated,
+
+    TmuxSessionCreated,
+    TmuxSessionDestroyed,
+
+    PromptGenerated,
+
+    ExecutionStarted,
+    ExecutionCompleted,
+    ExecutionFailed,
+
+    FilesModified,
+    DiffCaptured,
+
+    ReviewStarted,
+    ReviewApproved,
+    ReviewRejected,
+
     PRCreated,
     PRMerged,
 }
@@ -64,6 +83,19 @@ impl std::str::FromStr for EventType {
             "DecisionResolved" => EventType::DecisionResolved,
             "WorkspaceCreated" => EventType::WorkspaceCreated,
             "WorkspaceDestroyed" => EventType::WorkspaceDestroyed,
+            "WorktreeCreated" => EventType::WorktreeCreated,
+            "BranchCreated" => EventType::BranchCreated,
+            "TmuxSessionCreated" => EventType::TmuxSessionCreated,
+            "TmuxSessionDestroyed" => EventType::TmuxSessionDestroyed,
+            "PromptGenerated" => EventType::PromptGenerated,
+            "ExecutionStarted" => EventType::ExecutionStarted,
+            "ExecutionCompleted" => EventType::ExecutionCompleted,
+            "ExecutionFailed" => EventType::ExecutionFailed,
+            "FilesModified" => EventType::FilesModified,
+            "DiffCaptured" => EventType::DiffCaptured,
+            "ReviewStarted" => EventType::ReviewStarted,
+            "ReviewApproved" => EventType::ReviewApproved,
+            "ReviewRejected" => EventType::ReviewRejected,
             "PRCreated" => EventType::PRCreated,
             "PRMerged" => EventType::PRMerged,
             other => return Err(UnknownEventType(other.to_string())),
@@ -92,6 +124,19 @@ impl EventType {
             EventType::DecisionResolved => "DecisionResolved",
             EventType::WorkspaceCreated => "WorkspaceCreated",
             EventType::WorkspaceDestroyed => "WorkspaceDestroyed",
+            EventType::WorktreeCreated => "WorktreeCreated",
+            EventType::BranchCreated => "BranchCreated",
+            EventType::TmuxSessionCreated => "TmuxSessionCreated",
+            EventType::TmuxSessionDestroyed => "TmuxSessionDestroyed",
+            EventType::PromptGenerated => "PromptGenerated",
+            EventType::ExecutionStarted => "ExecutionStarted",
+            EventType::ExecutionCompleted => "ExecutionCompleted",
+            EventType::ExecutionFailed => "ExecutionFailed",
+            EventType::FilesModified => "FilesModified",
+            EventType::DiffCaptured => "DiffCaptured",
+            EventType::ReviewStarted => "ReviewStarted",
+            EventType::ReviewApproved => "ReviewApproved",
+            EventType::ReviewRejected => "ReviewRejected",
             EventType::PRCreated => "PRCreated",
             EventType::PRMerged => "PRMerged",
         }
@@ -178,7 +223,7 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
-    const ALL_EVENT_TYPES: [EventType; 20] = [
+    const ALL_EVENT_TYPES: [EventType; 33] = [
         EventType::ProjectCreated,
         EventType::AgentTemplateCreated,
         EventType::GoalCreated,
@@ -197,6 +242,19 @@ mod tests {
         EventType::DecisionResolved,
         EventType::WorkspaceCreated,
         EventType::WorkspaceDestroyed,
+        EventType::WorktreeCreated,
+        EventType::BranchCreated,
+        EventType::TmuxSessionCreated,
+        EventType::TmuxSessionDestroyed,
+        EventType::PromptGenerated,
+        EventType::ExecutionStarted,
+        EventType::ExecutionCompleted,
+        EventType::ExecutionFailed,
+        EventType::FilesModified,
+        EventType::DiffCaptured,
+        EventType::ReviewStarted,
+        EventType::ReviewApproved,
+        EventType::ReviewRejected,
         EventType::PRCreated,
         EventType::PRMerged,
     ];
