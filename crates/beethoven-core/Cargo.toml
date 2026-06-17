@@ -1,0 +1,16 @@
+[package]
+name = "beethoven-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+beethoven-events.workspace = true
+beethoven-agents.workspace = true
+beethoven-workspaces.workspace = true
+beethoven-git.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+thiserror.workspace = true

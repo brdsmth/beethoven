@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/beethoven-events",
+    "crates/beethoven-core",
+    "crates/beethoven-db",
+    "crates/beethoven-agents",
+    "crates/beethoven-workspaces",
+    "crates/beethoven-git",
+    "crates/beethoven-api",
+    "crates/beethoven-cli",
+    "crates/beethoven-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+beethoven-events = { path = "crates/beethoven-events" }
+beethoven-core = { path = "crates/beethoven-core" }
+beethoven-db = { path = "crates/beethoven-db" }
+beethoven-agents = { path = "crates/beethoven-agents" }
+beethoven-workspaces = { path = "crates/beethoven-workspaces" }
+beethoven-git = { path = "crates/beethoven-git" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio", "tls-rustls", "chrono", "uuid"] }

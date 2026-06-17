@@ -1,0 +1,19 @@
+[package]
+name = "beethoven-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "beethoven"
+path = "src/main.rs"
+
+[dependencies]
+beethoven-core.workspace = true
+beethoven-db.workspace = true
+beethoven-events.workspace = true
+clap.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+serde_json.workspace = true

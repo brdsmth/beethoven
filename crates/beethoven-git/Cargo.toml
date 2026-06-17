@@ -1,0 +1,8 @@
+[package]
+name = "beethoven-git"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true

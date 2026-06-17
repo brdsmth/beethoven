@@ -1,0 +1,8 @@
+[package]
+name = "beethoven-tauri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+beethoven-core.workspace = true
