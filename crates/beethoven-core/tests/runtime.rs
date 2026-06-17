@@ -1,15 +1,15 @@
 use async_trait::async_trait;
 use beethoven_agents::{AgentsError, ExecutionRequest, ExecutionResult, ExecutionStatus, ModelRuntime};
 use beethoven_core::{
-    ArtifactKind, DecisionStatus, GoalStatus, InboxKind, InboxStatus, InitiativeStatus, ModelRunStatus, ReviewStatus,
-    Runtime, TaskStatus,
+    AgentKind, AgentStatus, ArtifactKind, DecisionStatus, GoalStatus, InboxKind, InboxStatus, InitiativeStatus,
+    ModelRunStatus, ReviewStatus, Runtime, TaskStatus,
 };
-use beethoven_events::{Event, EventStore, EventStoreError};
-use beethoven_workspaces::TmuxSession;
+use beethoven_events::{Event, EventStore, EventStoreError, EventType};
+use beethoven_workspaces::{TmuxSession, WorkspaceManager, WorkspaceRequest};
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn run_git(dir: &Path, args: &[&str]) {
     let status = Command::new("git").arg("-C").arg(dir).args(args).status().unwrap();
@@ -63,6 +63,56 @@ impl ModelRuntime for StubModelRuntime {
             status: ExecutionStatus::Completed,
             summary: "stub: appended the generated prompt to NOTES.md via tmux".to_string(),
             raw_response: output,
+            structured_output: None,
+            cost_usd: None,
+        })
+    }
+}
+
+/// Like `StubModelRuntime`, but records the wall-clock window of every
+/// `execute()` call and sleeps inside it, so a test can assert two calls'
+/// windows actually overlapped (i.e. ran concurrently, not one-after-another).
+struct SlowModelRuntime {
+    windows: Arc<Mutex<Vec<(Instant, Instant)>>>,
+}
+
+impl ModelRuntime for SlowModelRuntime {
+    fn provider(&self) -> &'static str {
+        "slow-stub"
+    }
+
+    fn execute(&self, request: &ExecutionRequest) -> Result<ExecutionResult, AgentsError> {
+        let start = Instant::now();
+        std::thread::sleep(Duration::from_millis(300));
+        let session = TmuxSession { name: request.workspace.tmux_session.clone() };
+        let command = format!("cat '{}' >> NOTES.md", request.prompt_path.display());
+        let output = session.run_and_wait(&command, Duration::from_secs(10))?;
+        self.windows.lock().unwrap().push((start, Instant::now()));
+        Ok(ExecutionResult {
+            status: ExecutionStatus::Completed,
+            summary: "slow stub: appended the generated prompt to NOTES.md via tmux".to_string(),
+            raw_response: output,
+            structured_output: None,
+            cost_usd: None,
+        })
+    }
+}
+
+/// Completes every task without ever touching the worktree, so the captured
+/// diff is always empty -- `ReviewService::review` always returns
+/// `NeedsChanges` for it, deterministically driving the retry-cap path.
+struct NoOpModelRuntime;
+
+impl ModelRuntime for NoOpModelRuntime {
+    fn provider(&self) -> &'static str {
+        "noop-stub"
+    }
+
+    fn execute(&self, _request: &ExecutionRequest) -> Result<ExecutionResult, AgentsError> {
+        Ok(ExecutionResult {
+            status: ExecutionStatus::Completed,
+            summary: "noop stub: made no changes".to_string(),
+            raw_response: "ok".to_string(),
             structured_output: None,
             cost_usd: None,
         })
@@ -413,4 +463,292 @@ async fn an_initiative_with_no_requirements_plans_a_single_fallback_epic() {
     assert_eq!(outcome.decisions.len(), 0);
     assert_eq!(outcome.tasks.len(), 1);
     assert_eq!(outcome.tasks[0].epic_id, Some(outcome.epics[0].id.clone()));
+}
+
+/// Simulates a crash in the exact window `run_tick` leaves open: `TaskStarted`
+/// (and the real workspace/branch/tmux session it sets up) was recorded, but
+/// the process died before the next event (normally `PromptGenerated` /
+/// `ModelRunStarted`) ever got appended. A fresh `Runtime::load` (replaying
+/// the same log, as any restart would) must come up with the task stuck in
+/// `InProgress` and its agent stuck in `Executing` -- `recover()` is what
+/// resets that to a workable state and tears down the orphaned workspace.
+#[tokio::test]
+async fn recover_resets_a_task_crashed_mid_execution_and_cleans_up_its_workspace() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+    let projects_root = dir.path().join("projects");
+    let repo = dir.path().join("repo");
+    init_repo(&repo);
+
+    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
+    let project = runtime.create_project("Sample", repo.clone(), "main").await.unwrap();
+    // A plain title (no "implement"/"?") so re-running it post-recovery
+    // completes directly instead of spawning a subtask or raising a question.
+    let goal = runtime.create_goal(&project.id, "Docs", "- Write the changelog").await.unwrap();
+    let tasks = runtime.plan_goal(&goal.id).await.unwrap();
+    let task = tasks[0].clone();
+
+    let agent = runtime
+        .state
+        .agent_instances
+        .values()
+        .find(|a| a.project_id == project.id && a.kind != AgentKind::ProjectManager)
+        .unwrap()
+        .clone();
+
+    // Hand-roll exactly the event sequence `run_tick` would have produced up
+    // to (and including) standing up a real workspace, then stop -- as if the
+    // process died right before generating the prompt / invoking the model.
+    store
+        .append(Event::for_project(
+            &project.id,
+            EventType::TaskAssigned,
+            &agent.id,
+            serde_json::json!({"task_id": task.id, "agent_id": agent.id}),
+        ))
+        .await
+        .unwrap();
+    store
+        .append(Event::for_project(
+            &project.id,
+            EventType::TaskStarted,
+            &agent.id,
+            serde_json::json!({"task_id": task.id}),
+        ))
+        .await
+        .unwrap();
+
+    let branch = beethoven_git::branch_name(&task.title);
+    let workspaces = WorkspaceManager::new(projects_root.join(&project.slug).join("workspaces"));
+    let ws_state = workspaces
+        .create(&WorkspaceRequest {
+            project_slug: &project.slug,
+            agent_label: agent.kind.as_str(),
+            task_id: &task.id,
+            repository_path: &repo.to_string_lossy(),
+            default_branch: "main",
+            branch: &branch,
+        })
+        .unwrap();
+    store
+        .append(Event::for_project(
+            &project.id,
+            EventType::BranchCreated,
+            &agent.id,
+            serde_json::json!({"task_id": task.id, "branch": ws_state.branch}),
+        ))
+        .await
+        .unwrap();
+    assert!(TmuxSession::list_active().unwrap().contains(&ws_state.tmux_session));
+
+    // Simulate a process restart: a fresh `Runtime::load` replays the log
+    // above into a task stuck `InProgress` with its agent stuck `Executing`.
+    drop(runtime);
+    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root, Box::new(StubModelRuntime))
+        .await
+        .unwrap();
+    assert_eq!(runtime.state.tasks[&task.id].status, TaskStatus::InProgress);
+    assert_eq!(runtime.state.agent_instances[&agent.id].status, AgentStatus::Executing);
+
+    let recovery = runtime.recover(3).await.unwrap();
+    assert_eq!(recovery.recovered, vec![task.id.clone()]);
+    assert!(recovery.escalated.is_empty());
+
+    let recovered_task = &runtime.state.tasks[&task.id];
+    assert_eq!(recovered_task.status, TaskStatus::Ready);
+    assert_eq!(recovered_task.assigned_agent_id, None);
+    assert_eq!(recovered_task.attempt, 2);
+    let recovered_agent = &runtime.state.agent_instances[&agent.id];
+    assert_eq!(recovered_agent.status, AgentStatus::Idle);
+    assert_eq!(recovered_agent.current_task_id, None);
+
+    // The orphaned worktree/tmux session from the crashed attempt are torn down.
+    assert!(!Path::new(&ws_state.git_worktree).exists());
+    assert!(!TmuxSession::list_active().unwrap().contains(&ws_state.tmux_session));
+
+    let events = runtime.list_events().await.unwrap();
+    assert!(events.iter().any(|e| e.event_type == EventType::TaskRecovered));
+
+    // No task loss: the recovered task is picked back up and completes normally.
+    let report = runtime.run_tick(&project.id).await.unwrap();
+    assert_eq!(report.completed, 1);
+    assert_eq!(runtime.state.tasks[&task.id].status, TaskStatus::Done);
+}
+
+#[tokio::test]
+async fn two_tasks_in_the_same_tick_execute_concurrently_when_max_concurrent_allows_it() {
+    let windows = Arc::new(Mutex::new(Vec::new()));
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(
+        Box::new(store),
+        dir.path().join("projects"),
+        Box::new(SlowModelRuntime { windows: windows.clone() }),
+    )
+    .await
+    .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let goal = runtime
+        .create_goal(&project.id, "Docs", "- Write the changelog\n- Write the readme")
+        .await
+        .unwrap();
+    runtime.plan_goal(&goal.id).await.unwrap();
+
+    let mut reports = runtime.tick_projects(std::slice::from_ref(&project.id), 2, 3).await.unwrap();
+    let report = reports.remove(&project.id).unwrap();
+    assert_eq!(report.completed, 2);
+
+    let recorded = windows.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 2);
+    let (start_a, end_a) = recorded[0];
+    let (start_b, end_b) = recorded[1];
+    assert!(start_a < end_b && start_b < end_a, "expected the two executions' windows to overlap: {recorded:?}");
+}
+
+#[tokio::test]
+async fn a_workspace_creation_failure_escalates_just_that_project_not_the_whole_tick() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
+
+    // A repository path that was never `git init`-ed: `git worktree add`
+    // will fail for every task in this project.
+    let broken = runtime
+        .create_project("Broken", dir.path().join("does-not-exist"), "main")
+        .await
+        .unwrap();
+    let broken_goal = runtime.create_goal(&broken.id, "Docs", "- Write the changelog").await.unwrap();
+    runtime.plan_goal(&broken_goal.id).await.unwrap();
+
+    init_repo(&dir.path().join("good-repo"));
+    let healthy = runtime.create_project("Healthy", dir.path().join("good-repo"), "main").await.unwrap();
+    let healthy_goal = runtime.create_goal(&healthy.id, "Docs", "- Write the changelog").await.unwrap();
+    runtime.plan_goal(&healthy_goal.id).await.unwrap();
+
+    let mut reports = runtime.tick_projects(&[broken.id.clone(), healthy.id.clone()], 4, 3).await.unwrap();
+
+    let broken_report = reports.remove(&broken.id).unwrap();
+    assert_eq!(broken_report.escalated, 1);
+    assert_eq!(broken_report.completed, 0);
+    let broken_task = runtime.state.tasks.values().find(|t| t.project_id == broken.id).unwrap();
+    assert_eq!(broken_task.status, TaskStatus::Blocked);
+    let inbox_item = runtime.state.inbox.values().find(|i| i.project_id == broken.id).unwrap();
+    assert_eq!(inbox_item.kind, InboxKind::Question);
+
+    // The sibling project's task completes normally in the same tick.
+    let healthy_report = reports.remove(&healthy.id).unwrap();
+    assert_eq!(healthy_report.completed, 1);
+    assert_eq!(healthy_report.escalated, 0);
+}
+
+#[tokio::test]
+async fn a_task_stuck_needing_changes_escalates_instead_of_retrying_forever() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(NoOpModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    // NoOpModelRuntime never touches the worktree, so the diff is always
+    // empty and ReviewService::review always returns NeedsChanges -- this
+    // would retry forever within tick_projects' own drain loop without the
+    // attempt cap.
+    let goal = runtime.create_goal(&project.id, "Docs", "- Write the changelog").await.unwrap();
+    runtime.plan_goal(&goal.id).await.unwrap();
+
+    let mut reports = runtime.tick_projects(std::slice::from_ref(&project.id), 4, 2).await.unwrap();
+    let report = reports.remove(&project.id).unwrap();
+
+    // One ordinary rejection (attempt 1 -> 2), then the next rejection at
+    // attempt 2 hits the cap and escalates instead of looping forever.
+    assert_eq!(report.needs_changes, 1);
+    assert_eq!(report.escalated, 1);
+    assert_eq!(report.completed, 0);
+
+    let task = runtime.state.tasks.values().next().unwrap();
+    assert_eq!(task.status, TaskStatus::Blocked);
+    assert_eq!(task.attempt, 2);
+    let inbox_item = runtime.state.inbox.values().find(|i| i.task_id.as_deref() == Some(task.id.as_str())).unwrap();
+    assert!(inbox_item.prompt.contains("giving up after"));
+}
+
+#[tokio::test]
+async fn recover_escalates_instead_of_recovering_a_task_that_already_hit_max_attempts() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+    let projects_root = dir.path().join("projects");
+    let repo = dir.path().join("repo");
+    init_repo(&repo);
+
+    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
+    let project = runtime.create_project("Sample", repo.clone(), "main").await.unwrap();
+    let goal = runtime.create_goal(&project.id, "Docs", "- Write the changelog").await.unwrap();
+    let tasks = runtime.plan_goal(&goal.id).await.unwrap();
+    let task = tasks[0].clone();
+
+    let agent = runtime
+        .state
+        .agent_instances
+        .values()
+        .find(|a| a.project_id == project.id && a.kind != AgentKind::ProjectManager)
+        .unwrap()
+        .clone();
+
+    // Simulate a task already on its second attempt (e.g. one prior crash
+    // already recovered it once) that crashes again mid-execution.
+    store
+        .append(Event::for_project(
+            &project.id,
+            EventType::TaskRecovered,
+            "system",
+            serde_json::json!({"task_id": task.id, "agent_id": agent.id}),
+        ))
+        .await
+        .unwrap();
+    store
+        .append(Event::for_project(
+            &project.id,
+            EventType::TaskAssigned,
+            &agent.id,
+            serde_json::json!({"task_id": task.id, "agent_id": agent.id}),
+        ))
+        .await
+        .unwrap();
+    store
+        .append(Event::for_project(
+            &project.id,
+            EventType::TaskStarted,
+            &agent.id,
+            serde_json::json!({"task_id": task.id}),
+        ))
+        .await
+        .unwrap();
+
+    drop(runtime);
+    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root, Box::new(StubModelRuntime))
+        .await
+        .unwrap();
+    assert_eq!(runtime.state.tasks[&task.id].attempt, 2);
+
+    let recovery = runtime.recover(2).await.unwrap();
+    assert!(recovery.recovered.is_empty());
+    assert_eq!(recovery.escalated, vec![task.id.clone()]);
+
+    let escalated_task = &runtime.state.tasks[&task.id];
+    assert_eq!(escalated_task.status, TaskStatus::Blocked);
+    let inbox_item = runtime.state.inbox.values().find(|i| i.task_id.as_deref() == Some(task.id.as_str())).unwrap();
+    assert!(inbox_item.prompt.contains("gave up after crashing"));
 }
