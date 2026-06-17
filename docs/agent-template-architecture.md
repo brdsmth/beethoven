@@ -53,7 +53,7 @@ Beethoven
 │
 └── Projects
     │
-    ├── Punch
+    ├── Sample
     │
     ├── Sailboat
     │
@@ -112,9 +112,9 @@ Instances exist inside a project.
 Examples:
 
 ```text
-Punch Backend
+Sample Backend
 
-Punch Frontend
+Sample Frontend
 
 Sailboat Backend
 
@@ -176,13 +176,13 @@ pub struct AgentInstance {
 When a project is created:
 
 ```bash
-beethoven project create punch
+beethoven project create sample
 ```
 
 Beethoven automatically creates:
 
 ```text
-Punch
+Sample
 
 ├── PM
 ├── Backend
@@ -200,7 +200,7 @@ These are Agent Instances.
 Example:
 
 ```text
-Punch
+Sample
 
 PM
 ├── Backend
@@ -222,7 +222,7 @@ This is the primary benefit.
 Example:
 
 ```text
-Punch Backend
+Sample Backend
 ```
 
 remembers:
@@ -260,7 +260,7 @@ Every Agent Instance owns its own workspace.
 Example:
 
 ```text
-Punch
+Sample
 
 Backend
   Workspace A
@@ -346,21 +346,21 @@ Execution occurs against Agent Instances.
 Example:
 
 ```bash
-beethoven run punch
+beethoven run sample
 ```
 
 Runtime loads:
 
 ```text
-Punch PM
+Sample PM
 
-Punch Backend
+Sample Backend
 
-Punch Frontend
+Sample Frontend
 
-Punch QA
+Sample QA
 
-Punch Research
+Sample Research
 ```
 
 The runtime never executes templates.
@@ -377,7 +377,7 @@ Future UI:
 Beethoven
 
 Projects
-├── Punch
+├── Sample
 ├── Sailboat
 └── Beethoven
 

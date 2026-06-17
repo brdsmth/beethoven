@@ -89,8 +89,8 @@ Each Project maps to exactly one repository.
 Examples:
 
 ```text
-Punch
-  -> ~/workspace/punch
+Sample
+  -> ~/workspace/sample
 
 Sailboat Marketplace
   -> ~/workspace/sailboat
@@ -204,7 +204,7 @@ New:
 ```text
 ~/.beethoven/projects/
 
-├── punch/
+├── sample/
 │   ├── workspaces/
 │   ├── memory/
 │   └── artifacts/
@@ -228,13 +228,13 @@ Worktrees must be created beneath the owning project.
 Example:
 
 ```text
-Punch
+Sample
 
 Repository:
-~/workspace/punch
+~/workspace/sample
 
 Worktrees:
-~/.beethoven/projects/punch/workspaces/
+~/.beethoven/projects/sample/workspaces/
 ```
 
 Example branch:
@@ -271,8 +271,8 @@ This functions similarly to git's current branch.
 
 ```bash
 beethoven project create \
-  punch \
-  --repo ~/workspace/punch \
+  sample \
+  --repo ~/workspace/sample \
   --default-branch main
 ```
 
@@ -287,7 +287,7 @@ beethoven project list
 Example:
 
 ```text
-* punch
+* sample
   sailboat
   beethoven
 ```
@@ -297,7 +297,7 @@ Example:
 ## Show Project
 
 ```bash
-beethoven project show punch
+beethoven project show sample
 ```
 
 ---
@@ -305,7 +305,7 @@ beethoven project show punch
 ## Switch Active Project
 
 ```bash
-beethoven project use punch
+beethoven project use sample
 ```
 
 ---
@@ -319,7 +319,7 @@ beethoven project current
 Output:
 
 ```text
-punch
+sample
 ```
 
 ---
@@ -337,10 +337,10 @@ beethoven status
 Equivalent to:
 
 ```bash
-beethoven status --project punch
+beethoven status --project sample
 ```
 
-if punch is active.
+if sample is active.
 
 ---
 
@@ -353,7 +353,7 @@ Example:
 ```bash
 beethoven status --project sailboat
 
-beethoven inbox --project punch
+beethoven inbox --project sample
 
 beethoven run --project beethoven
 ```
@@ -365,7 +365,7 @@ beethoven run --project beethoven
 Example:
 
 ```text
-Project: Punch
+Project: Sample
 
 Goals: 4
 Tasks: 17
@@ -398,7 +398,7 @@ Agents operate inside a Project context.
 Example:
 
 ```bash
-beethoven run punch
+beethoven run sample
 ```
 
 Runtime execution receives:
@@ -447,7 +447,7 @@ Phase 3:
 A single Beethoven installation can manage:
 
 ```text
-Punch
+Sample
 Sailboat Marketplace
 Beethoven
 Personal Website

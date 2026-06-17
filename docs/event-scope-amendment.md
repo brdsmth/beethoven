@@ -117,8 +117,8 @@ Payload:
 
 ```json
 {
-  "project_id": "punch",
-  "name": "Punch"
+  "project_id": "sample",
+  "name": "Sample"
 }
 ```
 
@@ -147,7 +147,7 @@ Projects own work.
 Example:
 
 ```bash
-beethoven run punch
+beethoven run sample
 ```
 
 Runtime receives:
