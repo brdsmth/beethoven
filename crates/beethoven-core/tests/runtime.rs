@@ -1,7 +1,28 @@
 use async_trait::async_trait;
-use beethoven_core::{GoalStatus, InboxStatus, Runtime, TaskStatus};
+use beethoven_core::{
+    ArtifactKind, ExecutionRunStatus, GoalStatus, InboxKind, InboxStatus, ReviewStatus, Runtime, TaskStatus,
+};
 use beethoven_events::{Event, EventStore, EventStoreError};
+use std::path::Path;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
+
+fn run_git(dir: &Path, args: &[&str]) {
+    let status = Command::new("git").arg("-C").arg(dir).args(args).status().unwrap();
+    assert!(status.success(), "git {args:?} failed");
+}
+
+/// `run_tick` now drives real `git worktree`/tmux machinery, so every
+/// project's repository must be a real, committed git repo on disk.
+fn init_repo(path: &Path) {
+    std::fs::create_dir_all(path).unwrap();
+    run_git(path, &["init", "-q", "-b", "main"]);
+    run_git(path, &["config", "user.email", "test@example.com"]);
+    run_git(path, &["config", "user.name", "Test"]);
+    std::fs::write(path.join("README.md"), "scratch repo\n").unwrap();
+    run_git(path, &["add", "-A"]);
+    run_git(path, &["commit", "-q", "-m", "init"]);
+}
 
 #[derive(Clone, Default)]
 struct InMemoryStore {
@@ -30,11 +51,12 @@ async fn goal_plan_run_and_answer_flow_survives_a_simulated_restart() {
         .await
         .unwrap();
 
+    init_repo(&dir.path().join("repo"));
     let project = runtime
-        .create_project("Punch", dir.path().join("repo"), "main")
+        .create_project("Sample", dir.path().join("repo"), "main")
         .await
         .unwrap();
-    assert_eq!(project.slug, "punch");
+    assert_eq!(project.slug, "sample");
 
     let goal = runtime
         .create_goal(
@@ -102,6 +124,7 @@ async fn answering_an_already_resolved_inbox_item_errors() {
         .await
         .unwrap();
 
+    init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Solo", dir.path().join("repo"), "main").await.unwrap();
     let goal = runtime
         .create_goal(&project.id, "Goal", "- What should we do?")
@@ -124,8 +147,10 @@ async fn two_projects_run_independently_with_no_shared_agents_or_mixed_tasks() {
 
     let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects")).await.unwrap();
 
-    let punch = runtime
-        .create_project("Punch", dir.path().join("punch-repo"), "main")
+    init_repo(&dir.path().join("sample-repo"));
+    init_repo(&dir.path().join("sailboat-repo"));
+    let sample = runtime
+        .create_project("Sample", dir.path().join("sample-repo"), "main")
         .await
         .unwrap();
     let sailboat = runtime
@@ -135,11 +160,11 @@ async fn two_projects_run_independently_with_no_shared_agents_or_mixed_tasks() {
 
     // Each project bootstraps its own 6 agent instances from the shared templates.
     assert_eq!(runtime.state.agent_templates.len(), 6);
-    let punch_instances: Vec<_> = runtime
+    let sample_instances: Vec<_> = runtime
         .state
         .agent_instances
         .values()
-        .filter(|a| a.project_id == punch.id)
+        .filter(|a| a.project_id == sample.id)
         .collect();
     let sailboat_instances: Vec<_> = runtime
         .state
@@ -147,12 +172,12 @@ async fn two_projects_run_independently_with_no_shared_agents_or_mixed_tasks() {
         .values()
         .filter(|a| a.project_id == sailboat.id)
         .collect();
-    assert_eq!(punch_instances.len(), 6);
+    assert_eq!(sample_instances.len(), 6);
     assert_eq!(sailboat_instances.len(), 6);
     assert_eq!(runtime.state.agent_instances.len(), 12);
 
-    let punch_goal = runtime
-        .create_goal(&punch.id, "Punch goal", "- Punch task")
+    let sample_goal = runtime
+        .create_goal(&sample.id, "Sample goal", "- Sample task")
         .await
         .unwrap();
     let sailboat_goal = runtime
@@ -160,12 +185,12 @@ async fn two_projects_run_independently_with_no_shared_agents_or_mixed_tasks() {
         .await
         .unwrap();
 
-    runtime.plan_goal(&punch_goal.id).await.unwrap();
+    runtime.plan_goal(&sample_goal.id).await.unwrap();
     runtime.plan_goal(&sailboat_goal.id).await.unwrap();
 
-    // Running only Punch's tick must not touch Sailboat's task at all.
-    let punch_report = runtime.run_tick(&punch.id).await.unwrap();
-    assert_eq!(punch_report.completed, 1);
+    // Running only Sample's tick must not touch Sailboat's task at all.
+    let sample_report = runtime.run_tick(&sample.id).await.unwrap();
+    assert_eq!(sample_report.completed, 1);
 
     let sailboat_task = runtime
         .state
@@ -180,10 +205,97 @@ async fn two_projects_run_independently_with_no_shared_agents_or_mixed_tasks() {
     let sailboat_report = runtime.run_tick(&sailboat.id).await.unwrap();
     assert_eq!(sailboat_report.completed, 1);
 
-    let punch_tasks: Vec<_> = runtime.state.tasks.values().filter(|t| t.project_id == punch.id).collect();
+    let sample_tasks: Vec<_> = runtime.state.tasks.values().filter(|t| t.project_id == sample.id).collect();
     let sailboat_tasks: Vec<_> = runtime.state.tasks.values().filter(|t| t.project_id == sailboat.id).collect();
-    assert_eq!(punch_tasks.len(), 1);
+    assert_eq!(sample_tasks.len(), 1);
     assert_eq!(sailboat_tasks.len(), 1);
-    assert!(punch_tasks.iter().all(|t| t.status == TaskStatus::Done));
+    assert!(sample_tasks.iter().all(|t| t.status == TaskStatus::Done));
     assert!(sailboat_tasks.iter().all(|t| t.status == TaskStatus::Done));
+}
+
+#[tokio::test]
+async fn a_completed_task_records_a_real_execution_run_diff_artifact_and_approved_review() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects")).await.unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let goal = runtime
+        .create_goal(&project.id, "Docs", "- Write the changelog")
+        .await
+        .unwrap();
+    runtime.plan_goal(&goal.id).await.unwrap();
+
+    let report = runtime.run_tick(&project.id).await.unwrap();
+    assert_eq!(report.completed, 1);
+    assert_eq!(report.needs_changes, 0);
+    assert_eq!(report.escalated, 0);
+
+    let task = runtime.state.tasks.values().next().unwrap().clone();
+    assert_eq!(task.status, TaskStatus::Done);
+    assert_eq!(task.branch.as_deref(), Some("task/write-the-changelog"));
+    assert!(task.pr_url.is_some());
+
+    // The real tmux/model stub appended the rendered prompt to NOTES.md inside
+    // the worktree, so the captured diff (and the run summary) reflect genuine
+    // on-disk work rather than a deterministic stand-in.
+    let run = runtime.state.execution_runs.values().find(|r| r.task_id == task.id).unwrap();
+    assert_eq!(run.status, ExecutionRunStatus::Completed);
+    assert!(run.summary.as_deref().unwrap().contains("stub"));
+
+    let diff_artifact = runtime
+        .state
+        .artifacts
+        .values()
+        .find(|a| a.task_id == task.id && a.kind == ArtifactKind::Diff)
+        .unwrap();
+    assert!(diff_artifact.content.contains("Write the changelog"));
+
+    let review = runtime.state.reviews.values().find(|r| r.task_id == task.id).unwrap();
+    assert_eq!(review.status, ReviewStatus::Approved);
+}
+
+#[tokio::test]
+async fn review_blocks_a_risky_task_and_escalates_through_the_existing_inbox_flow() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects")).await.unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let goal = runtime
+        .create_goal(&project.id, "Ops", "- Run a risky database migration")
+        .await
+        .unwrap();
+    runtime.plan_goal(&goal.id).await.unwrap();
+
+    let report = runtime.run_tick(&project.id).await.unwrap();
+    assert_eq!(report.completed, 0);
+    assert_eq!(report.escalated, 1);
+
+    let task = runtime.state.tasks.values().next().unwrap().clone();
+    assert_eq!(task.status, TaskStatus::Blocked);
+    assert_eq!(task.assigned_agent_id, None);
+
+    // The review path reuses the existing Worker->Review->PM->Inbox->Human
+    // flow rather than inventing new escalation machinery: a Blocked review
+    // outcome still surfaces as a plain Question in the inbox.
+    let inbox_item = runtime
+        .state
+        .inbox
+        .values()
+        .find(|i| i.task_id.as_deref() == Some(task.id.as_str()))
+        .unwrap();
+    assert_eq!(inbox_item.kind, InboxKind::Question);
+    assert_eq!(inbox_item.status, InboxStatus::Open);
+    assert!(inbox_item.prompt.contains("risky"));
+
+    // The review itself never reaches a terminal status -- only Approved and
+    // NeedsChanges resolve a review, so a Blocked outcome leaves it Pending
+    // while the human-in-the-loop inbox flow takes over.
+    let review = runtime.state.reviews.values().find(|r| r.task_id == task.id).unwrap();
+    assert_eq!(review.status, ReviewStatus::Pending);
 }
