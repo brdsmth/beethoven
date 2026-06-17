@@ -77,6 +77,12 @@ pub struct TaskBlockedPayload {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct TaskRecoveredPayload {
+    pub task_id: String,
+    pub agent_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TaskCompletedPayload {
     pub task_id: String,
 }

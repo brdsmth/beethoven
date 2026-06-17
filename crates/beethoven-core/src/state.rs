@@ -567,6 +567,20 @@ impl RuntimeState {
                     }
                 }
             }
+            EventType::TaskRecovered => {
+                let p: TaskRecoveredPayload = decode(event);
+                if let Some(t) = self.tasks.get_mut(&p.task_id) {
+                    t.status = TaskStatus::Ready;
+                    t.assigned_agent_id = None;
+                    t.attempt += 1;
+                    t.updated_at = ts;
+                }
+                if let Some(a) = self.agent_instances.get_mut(&p.agent_id) {
+                    a.status = AgentStatus::Idle;
+                    a.current_task_id = None;
+                    a.updated_at = ts;
+                }
+            }
             EventType::WorkspaceCreated
             | EventType::WorkspaceDestroyed
             | EventType::PRMerged
@@ -577,7 +591,10 @@ impl RuntimeState {
             | EventType::PMPlanningStarted
             | EventType::PMPlanningCompleted
             | EventType::PMReviewStarted
-            | EventType::PMReviewCompleted => {
+            | EventType::PMReviewCompleted
+            | EventType::RuntimeStarted
+            | EventType::RuntimeStopped
+            | EventType::AgentHeartbeat => {
                 // Recorded in the event log for audit/timeline purposes only;
                 // no derived-state fields track these yet.
             }
