@@ -1,13 +1,23 @@
 # Beethoven
 
 A personal agentic software organization. See [`docs/architecture.md`](docs/architecture.md)
-for the full design and [`docs/phase-1.5-real-execution-plan.md`](docs/phase-1.5-real-execution-plan.md)
-for the real-execution plan. This is Phase 1.5: a real, event-sourced
-Project → Goal → Task → Agent → Inbox model with a working CLI, real `git
-worktree` + `tmux` execution mechanics, real `git status`/`git diff` artifact
-capture, and a review workflow (Approve / Needs Changes / Blocked / Question)
-— with only the model invocation itself and the planning/review *decisions*
-still stubbed out (see [Stub behavior](#stub-behavior)).
+for the full design, [`docs/phase-1.5-real-execution-plan.md`](docs/phase-1.5-real-execution-plan.md)
+for the real-execution plan, and
+[`docs/phase-1.6-project-manager-runtime.md`](docs/phase-1.6-project-manager-runtime.md)
+for the project-management domain model. This is Phase 1.6: on top of
+Phase 1.5's real, event-sourced Project → Goal → Task → Agent → Inbox model
+(working CLI, real `git worktree` + `tmux` execution mechanics, real `git
+status`/`git diff` artifact capture, and a review workflow — Approve / Needs
+Changes / Blocked / Question), there's now a second top-level hierarchy,
+Project → Initiative → Requirement → Plan → Epic, that terminates in the
+same `Task`/execution/review pipeline. A deterministic PM planner turns an
+initiative's requirements into epics (one task each) and decisions
+(auto-escalated to the inbox); the initiative completes once every epic's
+task is done and every decision is resolved. Only the model invocation
+itself and the planning/review *decisions* are stubbed out (see
+[Stub behavior](#stub-behavior)) — Phase 1.6 deliberately does not add real
+LLM planning, only the domain objects a future model-driven PM will operate
+on.
 
 ## Build
 
@@ -111,6 +121,43 @@ of truth):
 cargo run -- timeline
 ```
 
+### Initiatives, requirements, plans, and decisions
+
+A second top-level hierarchy alongside Goals: an Initiative starts in
+discovery, gathers Requirements, and is planned into Epics (each becomes one
+`Task`, flowing through the same `run` pipeline as goal-derived tasks) and
+Decisions (escalated to the inbox for a human to resolve).
+
+```bash
+cargo run -- initiative create "Build Gmail Agent" --project sample \
+  --description "Routes inbound email to the right team"
+cargo run -- requirement create <initiative-id> "Support PDF attachments"
+cargo run -- requirement create <initiative-id> "What auth provider should we use?"
+cargo run -- initiative plan <initiative-id>
+```
+
+Planning runs the deterministic PM planner (`InitiativePlanningService`): a
+requirement containing `?` becomes a Decision, every other requirement
+becomes an Epic with one `Implement: <epic title>` task. Run the normal
+orchestration tick to execute the epics' tasks, then resolve any escalated
+decisions:
+
+```bash
+cargo run -- run --project sample
+cargo run -- decision --project sample             # list open decisions
+cargo run -- decision resolve <decision-id> "Use OAuth via Google + GitHub"
+```
+
+The initiative automatically transitions Discovery → Planned → Completed:
+it's marked Completed once every epic-derived task has reached `Done` and
+every decision has been resolved — checked after each task review approval
+and after each decision resolution, never polled.
+
+```bash
+cargo run -- initiative show <initiative-id>   # requirements/epics/decisions + status
+cargo run -- initiative list --project sample
+```
+
 ## Stub behavior
 
 What's real:
@@ -132,6 +179,12 @@ calls, per `beethoven-agents`):
 
 - **Planning** (`PlanningService`) splits `- ` bullet lines in a goal's
   description into tasks, falling back to one task named after the goal.
+- **Initiative planning** (`InitiativePlanningService`) turns each
+  requirement containing `?` into a Decision and every other requirement
+  into an Epic, falling back to one epic named after the initiative when
+  there are no requirements yet — a deterministic stand-in for a real PM
+  model, by design (see
+  [`docs/phase-1.6-project-manager-runtime.md`](docs/phase-1.6-project-manager-runtime.md)).
 - **The execution decision** (`ExecutionService`) — whether a task completes,
   raises a question, or spawns a subtask — is a deterministic heuristic on
   the task title and attempt number, not a model judgment call.
