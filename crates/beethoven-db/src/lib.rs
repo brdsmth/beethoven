@@ -14,33 +14,39 @@ pub enum DbError {
     Sqlx(#[from] sqlx::Error),
 }
 
-pub fn beethoven_home() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".beethoven")
+/// Resolves Beethoven's state directory: an explicit override (e.g. a CLI
+/// flag) takes precedence over the `BEETHOVEN_HOME` environment variable,
+/// which takes precedence over the default of `$HOME/.beethoven`.
+pub fn resolve_home(explicit: Option<PathBuf>) -> PathBuf {
+    explicit
+        .or_else(|| std::env::var("BEETHOVEN_HOME").ok().map(PathBuf::from))
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(home).join(".beethoven")
+        })
 }
 
-pub fn ensure_beethoven_home() -> Result<PathBuf, DbError> {
-    let home = beethoven_home();
+pub fn ensure_beethoven_home(home: &Path) -> Result<(), DbError> {
     for sub in ["events", "projects", "artifacts", "logs"] {
         std::fs::create_dir_all(home.join(sub))?;
     }
-    Ok(home)
+    Ok(())
 }
 
-pub fn default_db_path() -> PathBuf {
-    beethoven_home().join("beethoven.db")
+pub fn default_db_path(home: &Path) -> PathBuf {
+    home.join("beethoven.db")
 }
 
-pub fn projects_root() -> PathBuf {
-    beethoven_home().join("projects")
+pub fn projects_root(home: &Path) -> PathBuf {
+    home.join("projects")
 }
 
-fn current_project_path() -> PathBuf {
-    beethoven_home().join("current-project")
+fn current_project_path(home: &Path) -> PathBuf {
+    home.join("current-project")
 }
 
-pub fn read_current_project() -> Option<String> {
-    let contents = std::fs::read_to_string(current_project_path()).ok()?;
+pub fn read_current_project(home: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(current_project_path(home)).ok()?;
     let trimmed = contents.trim();
     if trimmed.is_empty() {
         None
@@ -49,9 +55,41 @@ pub fn read_current_project() -> Option<String> {
     }
 }
 
-pub fn write_current_project(project_id: &str) -> Result<(), DbError> {
-    std::fs::write(current_project_path(), project_id)?;
+pub fn write_current_project(home: &Path, project_id: &str) -> Result<(), DbError> {
+    std::fs::write(current_project_path(home), project_id)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_home_prefers_explicit_over_env_var_over_default() {
+        let original_env = std::env::var("BEETHOVEN_HOME").ok();
+        let original_home = std::env::var("HOME").ok();
+
+        std::env::set_var("HOME", "/tmp/fake-home-for-test");
+        std::env::remove_var("BEETHOVEN_HOME");
+        assert_eq!(resolve_home(None), PathBuf::from("/tmp/fake-home-for-test/.beethoven"));
+
+        std::env::set_var("BEETHOVEN_HOME", "/tmp/env-override");
+        assert_eq!(resolve_home(None), PathBuf::from("/tmp/env-override"));
+
+        assert_eq!(
+            resolve_home(Some(PathBuf::from("/tmp/explicit-override"))),
+            PathBuf::from("/tmp/explicit-override")
+        );
+
+        match original_env {
+            Some(v) => std::env::set_var("BEETHOVEN_HOME", v),
+            None => std::env::remove_var("BEETHOVEN_HOME"),
+        }
+        match original_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
 }
 
 #[derive(Clone)]

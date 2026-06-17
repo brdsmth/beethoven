@@ -2,11 +2,15 @@ use anyhow::{anyhow, bail, Result};
 use beethoven_core::{AgentStatus, Decision, DecisionStatus, InboxItem, InboxStatus, Runtime, Task, TaskStatus};
 use beethoven_events::EventScope;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "beethoven", about = "Personal agentic software organization")]
 struct Cli {
+    /// Override Beethoven's state directory (default: $BEETHOVEN_HOME or ~/.beethoven).
+    #[arg(long, global = true)]
+    home: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -140,14 +144,15 @@ enum DecisionAction {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let home = beethoven_db::resolve_home(cli.home);
 
-    beethoven_db::ensure_beethoven_home()?;
-    let store = beethoven_db::SqliteEventStore::connect(&beethoven_db::default_db_path()).await?;
-    let mut runtime = Runtime::load(Box::new(store), beethoven_db::projects_root()).await?;
+    beethoven_db::ensure_beethoven_home(&home)?;
+    let store = beethoven_db::SqliteEventStore::connect(&beethoven_db::default_db_path(&home)).await?;
+    let mut runtime = Runtime::load(Box::new(store), beethoven_db::projects_root(&home)).await?;
 
     match cli.command {
         Command::Run { project } => {
-            let project_id = resolve_project(project.as_deref(), &runtime)?;
+            let project_id = resolve_project(project.as_deref(), &runtime, &home)?;
             let report = runtime.run_tick(&project_id).await?;
             println!(
                 "assigned={} completed={} needs_changes={} escalated={} subtasks_spawned={}",
@@ -155,7 +160,7 @@ async fn main() -> Result<()> {
             );
         }
         Command::Status { project } => {
-            let project_id = resolve_project(project.as_deref(), &runtime)?;
+            let project_id = resolve_project(project.as_deref(), &runtime, &home)?;
             print_status(&runtime, &project_id);
         }
         Command::Timeline => print_timeline(&runtime).await?,
@@ -165,7 +170,7 @@ async fn main() -> Result<()> {
                 description,
                 project,
             } => {
-                let project_id = resolve_project(project.as_deref(), &runtime)?;
+                let project_id = resolve_project(project.as_deref(), &runtime, &home)?;
                 let goal = runtime.create_goal(&project_id, &title, &description).await?;
                 println!("Created goal {} \"{}\"", goal.id, goal.title);
             }
@@ -179,7 +184,7 @@ async fn main() -> Result<()> {
         },
         Command::Inbox { project, action } => match action {
             None => {
-                let project_id = resolve_project(project.as_deref(), &runtime)?;
+                let project_id = resolve_project(project.as_deref(), &runtime, &home)?;
                 print_inbox(&runtime, &project_id);
             }
             Some(InboxAction::Answer { inbox_id, response }) => {
@@ -194,13 +199,13 @@ async fn main() -> Result<()> {
                 default_branch,
             } => {
                 let project = runtime.create_project(&name, repo, &default_branch).await?;
-                if beethoven_db::read_current_project().is_none() {
-                    beethoven_db::write_current_project(&project.id)?;
+                if beethoven_db::read_current_project(&home).is_none() {
+                    beethoven_db::write_current_project(&home, &project.id)?;
                 }
                 println!("Created project {} ({})", project.slug, project.id);
             }
             ProjectAction::List => {
-                let active = beethoven_db::read_current_project();
+                let active = beethoven_db::read_current_project(&home);
                 let mut projects: Vec<_> = runtime.state.projects.values().collect();
                 projects.sort_by_key(|p| p.created_at);
                 for p in projects {
@@ -233,10 +238,10 @@ async fn main() -> Result<()> {
                 let project = runtime
                     .find_project(&name)
                     .ok_or_else(|| anyhow!("no such project: {name}"))?;
-                beethoven_db::write_current_project(&project.id)?;
+                beethoven_db::write_current_project(&home, &project.id)?;
                 println!("Switched to project {}", project.slug);
             }
-            ProjectAction::Current => match beethoven_db::read_current_project()
+            ProjectAction::Current => match beethoven_db::read_current_project(&home)
                 .and_then(|id| runtime.find_project(&id).map(|p| p.slug.clone()))
             {
                 Some(slug) => println!("{slug}"),
@@ -249,12 +254,12 @@ async fn main() -> Result<()> {
                 description,
                 project,
             } => {
-                let project_id = resolve_project(project.as_deref(), &runtime)?;
+                let project_id = resolve_project(project.as_deref(), &runtime, &home)?;
                 let initiative = runtime.create_initiative(&project_id, &title, &description).await?;
                 println!("Created initiative {} \"{}\"", initiative.id, initiative.title);
             }
             InitiativeAction::List { project } => {
-                let project_id = resolve_project(project.as_deref(), &runtime)?;
+                let project_id = resolve_project(project.as_deref(), &runtime, &home)?;
                 let mut initiatives: Vec<_> = runtime
                     .state
                     .initiatives
@@ -304,7 +309,7 @@ async fn main() -> Result<()> {
         },
         Command::Decision { project, action } => match action {
             None => {
-                let project_id = resolve_project(project.as_deref(), &runtime)?;
+                let project_id = resolve_project(project.as_deref(), &runtime, &home)?;
                 print_decisions(&runtime, &project_id);
             }
             Some(DecisionAction::Resolve { decision_id, response }) => {
@@ -317,7 +322,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn resolve_project(explicit: Option<&str>, runtime: &Runtime) -> Result<String> {
+fn resolve_project(explicit: Option<&str>, runtime: &Runtime, home: &Path) -> Result<String> {
     if let Some(slug_or_id) = explicit {
         return runtime
             .find_project(slug_or_id)
@@ -325,7 +330,7 @@ fn resolve_project(explicit: Option<&str>, runtime: &Runtime) -> Result<String> 
             .ok_or_else(|| anyhow!("no such project: {slug_or_id}"));
     }
 
-    let active = beethoven_db::read_current_project().ok_or_else(|| {
+    let active = beethoven_db::read_current_project(home).ok_or_else(|| {
         anyhow!("no project specified and no active project set; use --project or `beethoven project use <name>`")
     })?;
     if runtime.find_project(&active).is_none() {

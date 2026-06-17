@@ -31,6 +31,15 @@ an active-project pointer file). Every CLI invocation is a fresh process that
 rebuilds in-memory state by replaying the event log, so state survives
 restarts by construction.
 
+Override the state directory with `--home <path>` or the `BEETHOVEN_HOME`
+environment variable (flag wins if both are set) — useful for tests, scratch
+runs, or multiple isolated instances:
+
+```bash
+beethoven --home /tmp/scratch project create demo --repo ~/workspace/demo
+BEETHOVEN_HOME=/tmp/scratch beethoven project list
+```
+
 ## Usage
 
 ### Projects
