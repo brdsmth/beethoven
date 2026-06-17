@@ -11,6 +11,9 @@ pub struct RuntimeState {
     pub tasks: HashMap<String, Task>,
     pub agent_instances: HashMap<String, AgentInstance>,
     pub inbox: HashMap<String, InboxItem>,
+    pub execution_runs: HashMap<String, ExecutionRun>,
+    pub artifacts: HashMap<String, Artifact>,
+    pub reviews: HashMap<String, Review>,
 }
 
 fn decode<T: serde::de::DeserializeOwned>(event: &Event) -> T {
@@ -303,7 +306,126 @@ impl RuntimeState {
                     t.updated_at = ts;
                 }
             }
-            EventType::WorkspaceCreated | EventType::WorkspaceDestroyed | EventType::PRMerged => {
+            EventType::BranchCreated => {
+                let p: BranchCreatedPayload = decode(event);
+                if let Some(t) = self.tasks.get_mut(&p.task_id) {
+                    t.branch = Some(p.branch);
+                    t.updated_at = ts;
+                }
+            }
+            EventType::ExecutionStarted => {
+                let p: ExecutionStartedPayload = decode(event);
+                self.execution_runs.insert(
+                    p.run_id.clone(),
+                    ExecutionRun {
+                        id: p.run_id,
+                        task_id: p.task_id,
+                        agent_id: p.agent_id,
+                        status: ExecutionRunStatus::Running,
+                        summary: None,
+                        started_at: ts,
+                        completed_at: None,
+                    },
+                );
+            }
+            EventType::ExecutionCompleted => {
+                let p: ExecutionCompletedPayload = decode(event);
+                if let Some(r) = self.execution_runs.get_mut(&p.run_id) {
+                    r.status = ExecutionRunStatus::Completed;
+                    r.summary = Some(p.summary);
+                    r.completed_at = Some(ts);
+                }
+            }
+            EventType::ExecutionFailed => {
+                let p: ExecutionFailedPayload = decode(event);
+                if let Some(r) = self.execution_runs.get_mut(&p.run_id) {
+                    r.status = ExecutionRunStatus::Failed;
+                    r.summary = Some(p.error);
+                    r.completed_at = Some(ts);
+                }
+            }
+            EventType::FilesModified => {
+                let p: FilesModifiedPayload = decode(event);
+                self.artifacts.insert(
+                    event.id.clone(),
+                    Artifact {
+                        id: event.id.clone(),
+                        task_id: p.task_id,
+                        kind: ArtifactKind::FilesModified,
+                        content: format!("modified: {:?}\nadded: {:?}\ndeleted: {:?}", p.modified, p.added, p.deleted),
+                        created_at: ts,
+                    },
+                );
+            }
+            EventType::DiffCaptured => {
+                let p: DiffCapturedPayload = decode(event);
+                self.artifacts.insert(
+                    event.id.clone(),
+                    Artifact {
+                        id: event.id.clone(),
+                        task_id: p.task_id,
+                        kind: ArtifactKind::Diff,
+                        content: p.diff,
+                        created_at: ts,
+                    },
+                );
+            }
+            EventType::ReviewStarted => {
+                let p: ReviewStartedPayload = decode(event);
+                self.reviews.insert(
+                    p.review_id.clone(),
+                    Review {
+                        id: p.review_id,
+                        task_id: p.task_id.clone(),
+                        reviewer_agent_id: p.reviewer_agent_id,
+                        status: ReviewStatus::Pending,
+                        notes: String::new(),
+                        created_at: ts,
+                    },
+                );
+                if let Some(t) = self.tasks.get_mut(&p.task_id) {
+                    t.status = TaskStatus::Review;
+                    t.updated_at = ts;
+                }
+            }
+            EventType::ReviewApproved => {
+                let p: ReviewApprovedPayload = decode(event);
+                if let Some(r) = self.reviews.get_mut(&p.review_id) {
+                    r.status = ReviewStatus::Approved;
+                }
+                if let Some(t) = self.tasks.get_mut(&p.task_id) {
+                    t.status = TaskStatus::Approved;
+                    t.updated_at = ts;
+                }
+            }
+            EventType::ReviewRejected => {
+                let p: ReviewRejectedPayload = decode(event);
+                if let Some(r) = self.reviews.get_mut(&p.review_id) {
+                    r.status = ReviewStatus::NeedsChanges;
+                    r.notes = p.reason;
+                }
+                let agent_id = self.tasks.get(&p.task_id).and_then(|t| t.assigned_agent_id.clone());
+                if let Some(t) = self.tasks.get_mut(&p.task_id) {
+                    t.status = TaskStatus::Ready;
+                    t.assigned_agent_id = None;
+                    t.attempt += 1;
+                    t.updated_at = ts;
+                }
+                if let Some(aid) = agent_id {
+                    if let Some(a) = self.agent_instances.get_mut(&aid) {
+                        a.status = AgentStatus::Idle;
+                        a.current_task_id = None;
+                        a.updated_at = ts;
+                    }
+                }
+            }
+            EventType::WorkspaceCreated
+            | EventType::WorkspaceDestroyed
+            | EventType::PRMerged
+            | EventType::WorktreeCreated
+            | EventType::TmuxSessionCreated
+            | EventType::TmuxSessionDestroyed
+            | EventType::PromptGenerated => {
                 // Recorded in the event log for audit/timeline purposes only;
                 // no derived-state fields track these yet.
             }

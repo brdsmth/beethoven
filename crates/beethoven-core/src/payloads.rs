@@ -112,3 +112,64 @@ pub struct PrCreatedPayload {
     pub branch: String,
     pub url: String,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BranchCreatedPayload {
+    pub task_id: String,
+    pub branch: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExecutionStartedPayload {
+    pub run_id: String,
+    pub task_id: String,
+    pub agent_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExecutionCompletedPayload {
+    pub run_id: String,
+    pub task_id: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExecutionFailedPayload {
+    pub run_id: String,
+    pub task_id: String,
+    pub error: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FilesModifiedPayload {
+    pub task_id: String,
+    pub modified: Vec<String>,
+    pub added: Vec<String>,
+    pub deleted: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DiffCapturedPayload {
+    pub task_id: String,
+    pub diff: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReviewStartedPayload {
+    pub review_id: String,
+    pub task_id: String,
+    pub reviewer_agent_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReviewApprovedPayload {
+    pub review_id: String,
+    pub task_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReviewRejectedPayload {
+    pub review_id: String,
+    pub task_id: String,
+    pub reason: String,
+}

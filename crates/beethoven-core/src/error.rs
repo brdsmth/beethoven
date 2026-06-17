@@ -7,6 +7,10 @@ pub enum CoreError {
     EventStore(#[from] EventStoreError),
     #[error("workspace error: {0}")]
     Workspace(#[from] WorkspacesError),
+    #[error("git error: {0}")]
+    Git(#[from] beethoven_git::GitError),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
     #[error("project not found: {0}")]
     ProjectNotFound(String),
     #[error("goal not found: {0}")]

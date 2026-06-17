@@ -143,3 +143,60 @@ pub struct InboxItem {
     pub created_at: DateTime<Utc>,
     pub resolved_at: Option<DateTime<Utc>>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionRunStatus {
+    Running,
+    Completed,
+    Failed,
+}
+
+/// One invocation of a `ModelRuntime` against a task's workspace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionRun {
+    pub id: String,
+    pub task_id: String,
+    pub agent_id: String,
+    pub status: ExecutionRunStatus,
+    pub summary: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactKind {
+    Diff,
+    FilesModified,
+}
+
+/// Output captured from a task's workspace -- a git diff or a files-changed
+/// summary -- recorded for the timeline since the workspace itself is
+/// destroyed at the end of every attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Artifact {
+    pub id: String,
+    pub task_id: String,
+    pub kind: ArtifactKind,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStatus {
+    Pending,
+    Approved,
+    NeedsChanges,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Review {
+    pub id: String,
+    pub task_id: String,
+    pub reviewer_agent_id: String,
+    pub status: ReviewStatus,
+    pub notes: String,
+    pub created_at: DateTime<Utc>,
+}
