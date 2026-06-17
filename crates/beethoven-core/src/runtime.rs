@@ -2,9 +2,9 @@ use crate::error::CoreError;
 use crate::models::*;
 use crate::state::RuntimeState;
 use beethoven_agents::{
-    AgentKind, ClaudeCodeRuntime, ExecutionOutcome, ExecutionService, InitiativePlanningService, ModelRuntime,
-    ModelTaskRequest, PlanningService, PromptContext, RequirementInput, ReviewOutcome, ReviewService,
-    TaskExecutionContext, render_prompt,
+    AgentKind, ExecutionOutcome, ExecutionRequest, ExecutionService, ExecutionStatus, InitiativePlanningService,
+    ModelRuntime, PlanningService, PromptBuilder, RequirementInput, ReviewOutcome, ReviewService,
+    TaskExecutionContext, WorkerPromptContext,
 };
 use beethoven_events::{Event, EventStore, EventType};
 use beethoven_workspaces::{WorkspaceManager, WorkspaceRequest};
@@ -56,16 +56,22 @@ fn slugify(input: &str) -> String {
 pub struct Runtime {
     store: Box<dyn EventStore>,
     projects_root: PathBuf,
+    model_runtime: Box<dyn ModelRuntime + Send + Sync>,
     pub state: RuntimeState,
 }
 
 impl Runtime {
-    pub async fn load(store: Box<dyn EventStore>, projects_root: PathBuf) -> Result<Self, CoreError> {
+    pub async fn load(
+        store: Box<dyn EventStore>,
+        projects_root: PathBuf,
+        model_runtime: Box<dyn ModelRuntime + Send + Sync>,
+    ) -> Result<Self, CoreError> {
         let events = store.list_all().await?;
         let state = RuntimeState::replay(&events);
         Ok(Self {
             store,
             projects_root,
+            model_runtime,
             state,
         })
     }
@@ -363,7 +369,9 @@ impl Runtime {
 
                 match outcome {
                     ExecutionOutcome::Completed => {
-                        let prompt = render_prompt(&PromptContext {
+                        let run_id = Uuid::new_v4().to_string();
+
+                        let prompt = PromptBuilder::worker(&WorkerPromptContext {
                             project_name: &project.name,
                             task_title: &task.title,
                             task_description: &task.description,
@@ -376,123 +384,167 @@ impl Runtime {
                             project_id,
                             EventType::PromptGenerated,
                             &agent_id,
-                            json!({"task_id": task_id, "prompt": prompt}),
+                            json!({"model_run_id": run_id, "task_id": task_id, "prompt": prompt}),
                         )
                         .await?;
 
-                        let run_id = Uuid::new_v4().to_string();
                         self.emit_project(
                             project_id,
-                            EventType::ExecutionStarted,
+                            EventType::ModelRunStarted,
                             &agent_id,
-                            json!({"run_id": run_id, "task_id": task_id, "agent_id": agent_id}),
+                            json!({
+                                "id": run_id,
+                                "agent_id": agent_id,
+                                "project_id": project_id,
+                                "task_id": task_id,
+                                "provider": self.model_runtime.provider(),
+                            }),
                         )
                         .await?;
 
-                        let execution = ClaudeCodeRuntime.execute_task(&ModelTaskRequest {
-                            workspace: &ws_state,
+                        let artifacts_dir = workspaces.path_for(&task_id).join("artifacts");
+                        let execution = self.model_runtime.execute(&ExecutionRequest {
+                            project_id,
+                            agent_id: &agent_id,
+                            task_id: Some(&task_id),
                             prompt_path: &prompt_path,
+                            artifacts_dir: &artifacts_dir,
+                            workspace: &ws_state,
+                            json_schema: None,
                         });
 
                         match execution {
-                            Ok(model_outcome) => {
+                            Ok(result) => {
                                 self.emit_project(
                                     project_id,
-                                    EventType::ExecutionCompleted,
-                                    &agent_id,
-                                    json!({"run_id": run_id, "task_id": task_id, "summary": model_outcome.summary}),
-                                )
-                                .await?;
-
-                                let git_status = beethoven_git::status(Path::new(&ws_state.git_worktree))?;
-                                self.emit_project(
-                                    project_id,
-                                    EventType::FilesModified,
+                                    EventType::ModelRunCompleted,
                                     &agent_id,
                                     json!({
-                                        "task_id": task_id,
-                                        "modified": git_status.modified,
-                                        "added": git_status.added,
-                                        "deleted": git_status.deleted,
+                                        "id": run_id,
+                                        "summary": result.summary,
+                                        "response": result.raw_response,
+                                        "cost_usd": result.cost_usd,
                                     }),
                                 )
                                 .await?;
 
-                                let diff_text = beethoven_git::diff(Path::new(&ws_state.git_worktree))?;
-                                self.emit_project(
-                                    project_id,
-                                    EventType::DiffCaptured,
-                                    &agent_id,
-                                    json!({"task_id": task_id, "diff": diff_text}),
-                                )
-                                .await?;
-
-                                let review_id = Uuid::new_v4().to_string();
-                                self.emit_project(
-                                    project_id,
-                                    EventType::ReviewStarted,
-                                    &pm_id,
-                                    json!({"review_id": review_id, "task_id": task_id, "reviewer_agent_id": pm_id}),
-                                )
-                                .await?;
-
-                                match ReviewService::review(&task.title, &diff_text) {
-                                    ReviewOutcome::Approved => {
+                                match result.status {
+                                    ExecutionStatus::Completed => {
+                                        let git_status = beethoven_git::status(Path::new(&ws_state.git_worktree))?;
                                         self.emit_project(
                                             project_id,
-                                            EventType::ReviewApproved,
-                                            &pm_id,
-                                            json!({"review_id": review_id, "task_id": task_id}),
-                                        )
-                                        .await?;
-
-                                        let pr = beethoven_git::open_pr(&task_id, &ws_state.branch, &task.title);
-                                        self.emit_project(
-                                            project_id,
-                                            EventType::PRCreated,
+                                            EventType::FilesModified,
                                             &agent_id,
-                                            json!({"task_id": task_id, "branch": ws_state.branch, "url": pr.url}),
+                                            json!({
+                                                "task_id": task_id,
+                                                "modified": git_status.modified,
+                                                "added": git_status.added,
+                                                "deleted": git_status.deleted,
+                                            }),
                                         )
                                         .await?;
-                                        self.emit_project(
-                                            project_id,
-                                            EventType::TaskCompleted,
-                                            &agent_id,
-                                            json!({"task_id": task_id}),
-                                        )
-                                        .await?;
-                                        self.emit_project(
-                                            project_id,
-                                            EventType::PRMerged,
-                                            &pm_id,
-                                            json!({"task_id": task_id, "url": pr.url}),
-                                        )
-                                        .await?;
-                                        report.completed += 1;
 
-                                        if let Some(epic_id) = task.epic_id.clone() {
-                                            let initiative_id = self.state.epics.get(&epic_id).map(|e| e.initiative_id.clone());
-                                            if let Some(initiative_id) = initiative_id {
-                                                self.maybe_complete_initiative(project_id, &initiative_id).await?;
+                                        let diff_text = beethoven_git::diff(Path::new(&ws_state.git_worktree))?;
+                                        self.emit_project(
+                                            project_id,
+                                            EventType::DiffCaptured,
+                                            &agent_id,
+                                            json!({"task_id": task_id, "diff": diff_text}),
+                                        )
+                                        .await?;
+
+                                        let review_id = Uuid::new_v4().to_string();
+                                        self.emit_project(
+                                            project_id,
+                                            EventType::ReviewStarted,
+                                            &pm_id,
+                                            json!({"review_id": review_id, "task_id": task_id, "reviewer_agent_id": pm_id}),
+                                        )
+                                        .await?;
+
+                                        match ReviewService::review(&task.title, &diff_text) {
+                                            ReviewOutcome::Approved => {
+                                                self.emit_project(
+                                                    project_id,
+                                                    EventType::ReviewApproved,
+                                                    &pm_id,
+                                                    json!({"review_id": review_id, "task_id": task_id}),
+                                                )
+                                                .await?;
+
+                                                let pr = beethoven_git::open_pr(&task_id, &ws_state.branch, &task.title);
+                                                self.emit_project(
+                                                    project_id,
+                                                    EventType::PRCreated,
+                                                    &agent_id,
+                                                    json!({"task_id": task_id, "branch": ws_state.branch, "url": pr.url}),
+                                                )
+                                                .await?;
+                                                self.emit_project(
+                                                    project_id,
+                                                    EventType::TaskCompleted,
+                                                    &agent_id,
+                                                    json!({"task_id": task_id}),
+                                                )
+                                                .await?;
+                                                self.emit_project(
+                                                    project_id,
+                                                    EventType::PRMerged,
+                                                    &pm_id,
+                                                    json!({"task_id": task_id, "url": pr.url}),
+                                                )
+                                                .await?;
+                                                report.completed += 1;
+
+                                                if let Some(epic_id) = task.epic_id.clone() {
+                                                    let initiative_id =
+                                                        self.state.epics.get(&epic_id).map(|e| e.initiative_id.clone());
+                                                    if let Some(initiative_id) = initiative_id {
+                                                        self.maybe_complete_initiative(project_id, &initiative_id).await?;
+                                                    }
+                                                }
+                                            }
+                                            ReviewOutcome::NeedsChanges(reason) => {
+                                                self.emit_project(
+                                                    project_id,
+                                                    EventType::ReviewRejected,
+                                                    &pm_id,
+                                                    json!({"review_id": review_id, "task_id": task_id, "reason": reason}),
+                                                )
+                                                .await?;
+                                                report.needs_changes += 1;
+                                            }
+                                            ReviewOutcome::Blocked(reason) | ReviewOutcome::RaisedQuestion(reason) => {
+                                                self.emit_project(
+                                                    project_id,
+                                                    EventType::TaskBlocked,
+                                                    &agent_id,
+                                                    json!({"task_id": task_id, "reason": reason.clone()}),
+                                                )
+                                                .await?;
+                                                let inbox_id = Uuid::new_v4().to_string();
+                                                self.emit_project(
+                                                    project_id,
+                                                    EventType::QuestionRaised,
+                                                    &agent_id,
+                                                    json!({
+                                                        "inbox_id": inbox_id,
+                                                        "task_id": task_id,
+                                                        "agent_id": agent_id,
+                                                        "prompt": reason,
+                                                    }),
+                                                )
+                                                .await?;
+                                                report.escalated += 1;
                                             }
                                         }
                                     }
-                                    ReviewOutcome::NeedsChanges(reason) => {
-                                        self.emit_project(
-                                            project_id,
-                                            EventType::ReviewRejected,
-                                            &pm_id,
-                                            json!({"review_id": review_id, "task_id": task_id, "reason": reason}),
-                                        )
-                                        .await?;
-                                        report.needs_changes += 1;
-                                    }
-                                    ReviewOutcome::Blocked(reason) | ReviewOutcome::RaisedQuestion(reason) => {
+                                    ExecutionStatus::Failed => {
                                         self.emit_project(
                                             project_id,
                                             EventType::TaskBlocked,
                                             &agent_id,
-                                            json!({"task_id": task_id, "reason": reason.clone()}),
+                                            json!({"task_id": task_id, "reason": result.summary.clone()}),
                                         )
                                         .await?;
                                         let inbox_id = Uuid::new_v4().to_string();
@@ -504,7 +556,7 @@ impl Runtime {
                                                 "inbox_id": inbox_id,
                                                 "task_id": task_id,
                                                 "agent_id": agent_id,
-                                                "prompt": reason,
+                                                "prompt": result.summary,
                                             }),
                                         )
                                         .await?;
@@ -515,9 +567,9 @@ impl Runtime {
                             Err(e) => {
                                 self.emit_project(
                                     project_id,
-                                    EventType::ExecutionFailed,
+                                    EventType::ModelRunFailed,
                                     &agent_id,
-                                    json!({"run_id": run_id, "task_id": task_id, "error": e.to_string()}),
+                                    json!({"id": run_id, "error": e.to_string()}),
                                 )
                                 .await?;
                                 self.emit_project(

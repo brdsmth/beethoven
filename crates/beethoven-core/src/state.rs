@@ -11,7 +11,8 @@ pub struct RuntimeState {
     pub tasks: HashMap<String, Task>,
     pub agent_instances: HashMap<String, AgentInstance>,
     pub inbox: HashMap<String, InboxItem>,
-    pub execution_runs: HashMap<String, ExecutionRun>,
+    pub model_runs: HashMap<String, ModelRun>,
+    pub model_artifacts: HashMap<String, ModelArtifact>,
     pub artifacts: HashMap<String, Artifact>,
     pub reviews: HashMap<String, Review>,
     pub initiatives: HashMap<String, Initiative>,
@@ -435,33 +436,58 @@ impl RuntimeState {
                     t.updated_at = ts;
                 }
             }
-            EventType::ExecutionStarted => {
-                let p: ExecutionStartedPayload = decode(event);
-                self.execution_runs.insert(
-                    p.run_id.clone(),
-                    ExecutionRun {
-                        id: p.run_id,
-                        task_id: p.task_id,
+            EventType::PromptGenerated => {
+                let p: PromptGeneratedPayload = decode(event);
+                self.model_artifacts.insert(
+                    event.id.clone(),
+                    ModelArtifact {
+                        id: event.id.clone(),
+                        model_run_id: p.model_run_id,
+                        kind: ModelArtifactKind::Prompt,
+                        content: p.prompt,
+                        created_at: ts,
+                    },
+                );
+            }
+            EventType::ModelRunStarted => {
+                let p: ModelRunStartedPayload = decode(event);
+                self.model_runs.insert(
+                    p.id.clone(),
+                    ModelRun {
+                        id: p.id,
+                        project_id: p.project_id,
                         agent_id: p.agent_id,
-                        status: ExecutionRunStatus::Running,
+                        task_id: p.task_id,
+                        provider: p.provider,
+                        status: ModelRunStatus::Running,
                         summary: None,
                         started_at: ts,
                         completed_at: None,
                     },
                 );
             }
-            EventType::ExecutionCompleted => {
-                let p: ExecutionCompletedPayload = decode(event);
-                if let Some(r) = self.execution_runs.get_mut(&p.run_id) {
-                    r.status = ExecutionRunStatus::Completed;
+            EventType::ModelRunCompleted => {
+                let p: ModelRunCompletedPayload = decode(event);
+                if let Some(r) = self.model_runs.get_mut(&p.id) {
+                    r.status = ModelRunStatus::Completed;
                     r.summary = Some(p.summary);
                     r.completed_at = Some(ts);
                 }
+                self.model_artifacts.insert(
+                    event.id.clone(),
+                    ModelArtifact {
+                        id: event.id.clone(),
+                        model_run_id: p.id,
+                        kind: ModelArtifactKind::Response,
+                        content: p.response,
+                        created_at: ts,
+                    },
+                );
             }
-            EventType::ExecutionFailed => {
-                let p: ExecutionFailedPayload = decode(event);
-                if let Some(r) = self.execution_runs.get_mut(&p.run_id) {
-                    r.status = ExecutionRunStatus::Failed;
+            EventType::ModelRunFailed => {
+                let p: ModelRunFailedPayload = decode(event);
+                if let Some(r) = self.model_runs.get_mut(&p.id) {
+                    r.status = ModelRunStatus::Failed;
                     r.summary = Some(p.error);
                     r.completed_at = Some(ts);
                 }
@@ -547,7 +573,6 @@ impl RuntimeState {
             | EventType::WorktreeCreated
             | EventType::TmuxSessionCreated
             | EventType::TmuxSessionDestroyed
-            | EventType::PromptGenerated
             | EventType::RequirementUpdated
             | EventType::PMPlanningStarted
             | EventType::PMPlanningCompleted

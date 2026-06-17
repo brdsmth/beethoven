@@ -1,12 +1,15 @@
 use async_trait::async_trait;
+use beethoven_agents::{AgentsError, ExecutionRequest, ExecutionResult, ExecutionStatus, ModelRuntime};
 use beethoven_core::{
-    ArtifactKind, DecisionStatus, ExecutionRunStatus, GoalStatus, InboxKind, InboxStatus, InitiativeStatus,
-    ReviewStatus, Runtime, TaskStatus,
+    ArtifactKind, DecisionStatus, GoalStatus, InboxKind, InboxStatus, InitiativeStatus, ModelRunStatus, ReviewStatus,
+    Runtime, TaskStatus,
 };
 use beethoven_events::{Event, EventStore, EventStoreError};
+use beethoven_workspaces::TmuxSession;
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 fn run_git(dir: &Path, args: &[&str]) {
     let status = Command::new("git").arg("-C").arg(dir).args(args).status().unwrap();
@@ -42,13 +45,37 @@ impl EventStore for InMemoryStore {
     }
 }
 
+/// Replaces a real model call with a real tmux round trip: appends the
+/// rendered prompt to NOTES.md inside the worktree, so tests still exercise
+/// genuine on-disk work without invoking `claude`.
+struct StubModelRuntime;
+
+impl ModelRuntime for StubModelRuntime {
+    fn provider(&self) -> &'static str {
+        "stub"
+    }
+
+    fn execute(&self, request: &ExecutionRequest) -> Result<ExecutionResult, AgentsError> {
+        let session = TmuxSession { name: request.workspace.tmux_session.clone() };
+        let command = format!("cat '{}' >> NOTES.md", request.prompt_path.display());
+        let output = session.run_and_wait(&command, Duration::from_secs(10))?;
+        Ok(ExecutionResult {
+            status: ExecutionStatus::Completed,
+            summary: "stub: appended the generated prompt to NOTES.md via tmux".to_string(),
+            raw_response: output,
+            structured_output: None,
+            cost_usd: None,
+        })
+    }
+}
+
 #[tokio::test]
 async fn goal_plan_run_and_answer_flow_survives_a_simulated_restart() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
     let projects_root = dir.path().join("projects");
 
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone())
+    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), Box::new(StubModelRuntime))
         .await
         .unwrap();
 
@@ -81,7 +108,7 @@ async fn goal_plan_run_and_answer_flow_survives_a_simulated_restart() {
     // Simulate a process restart: drop this runtime and build a fresh one from
     // the same persisted event log. State must reconstruct identically.
     drop(runtime);
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root)
+    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root, Box::new(StubModelRuntime))
         .await
         .unwrap();
 
@@ -121,7 +148,7 @@ async fn answering_an_already_resolved_inbox_item_errors() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
         .await
         .unwrap();
 
@@ -146,7 +173,9 @@ async fn two_projects_run_independently_with_no_shared_agents_or_mixed_tasks() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects")).await.unwrap();
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
 
     init_repo(&dir.path().join("sample-repo"));
     init_repo(&dir.path().join("sailboat-repo"));
@@ -219,7 +248,9 @@ async fn a_completed_task_records_a_real_execution_run_diff_artifact_and_approve
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects")).await.unwrap();
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
@@ -242,8 +273,8 @@ async fn a_completed_task_records_a_real_execution_run_diff_artifact_and_approve
     // The real tmux/model stub appended the rendered prompt to NOTES.md inside
     // the worktree, so the captured diff (and the run summary) reflect genuine
     // on-disk work rather than a deterministic stand-in.
-    let run = runtime.state.execution_runs.values().find(|r| r.task_id == task.id).unwrap();
-    assert_eq!(run.status, ExecutionRunStatus::Completed);
+    let run = runtime.state.model_runs.values().find(|r| r.task_id.as_deref() == Some(task.id.as_str())).unwrap();
+    assert_eq!(run.status, ModelRunStatus::Completed);
     assert!(run.summary.as_deref().unwrap().contains("stub"));
 
     let diff_artifact = runtime
@@ -263,7 +294,9 @@ async fn review_blocks_a_risky_task_and_escalates_through_the_existing_inbox_flo
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects")).await.unwrap();
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
@@ -306,7 +339,9 @@ async fn initiative_completes_only_once_its_epic_task_is_done_and_its_decision_i
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects")).await.unwrap();
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
@@ -361,7 +396,9 @@ async fn an_initiative_with_no_requirements_plans_a_single_fallback_epic() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects")).await.unwrap();
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();

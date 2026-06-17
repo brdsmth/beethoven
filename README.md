@@ -2,22 +2,20 @@
 
 A personal agentic software organization. See [`docs/architecture.md`](docs/architecture.md)
 for the full design, [`docs/phase-1.5-real-execution-plan.md`](docs/phase-1.5-real-execution-plan.md)
-for the real-execution plan, and
+for the real-execution plan,
 [`docs/phase-1.6-project-manager-runtime.md`](docs/phase-1.6-project-manager-runtime.md)
-for the project-management domain model. This is Phase 1.6: on top of
-Phase 1.5's real, event-sourced Project → Goal → Task → Agent → Inbox model
-(working CLI, real `git worktree` + `tmux` execution mechanics, real `git
-status`/`git diff` artifact capture, and a review workflow — Approve / Needs
-Changes / Blocked / Question), there's now a second top-level hierarchy,
-Project → Initiative → Requirement → Plan → Epic, that terminates in the
-same `Task`/execution/review pipeline. A deterministic PM planner turns an
-initiative's requirements into epics (one task each) and decisions
-(auto-escalated to the inbox); the initiative completes once every epic's
-task is done and every decision is resolved. Only the model invocation
-itself and the planning/review *decisions* are stubbed out (see
-[Stub behavior](#stub-behavior)) — Phase 1.6 deliberately does not add real
-LLM planning, only the domain objects a future model-driven PM will operate
-on.
+for the project-management domain model, and
+[`docs/phase-1.7-real-model-runtime.md`](docs/phase-1.7-real-model-runtime.md)
+for the real-model-runtime plan. On top of Phase 1.6's Project → Initiative →
+Requirement → Plan → Epic hierarchy and Project → Goal → Task hierarchy
+(both terminating in the same `Task`/execution/review pipeline), this is
+**Phase 1.7a**: Worker task execution now invokes a real model — Claude Code
+— through a `ModelRuntime` provider abstraction (`beethoven-agents`), with
+every invocation's prompt, raw response, status, and cost recorded as
+events (`PromptGenerated`/`ModelRunStarted`/`ModelRunCompleted`/`ModelRunFailed`)
+and queryable `ModelRun`/`ModelArtifact` state. PM planning and review are
+still deterministic heuristics — replacing those with model-driven behavior
+is Phase 1.7b (see [Stub behavior](#stub-behavior)).
 
 ## Build
 
@@ -39,6 +37,11 @@ runs, or multiple isolated instances:
 beethoven --home /tmp/scratch project create demo --repo ~/workspace/demo
 BEETHOVEN_HOME=/tmp/scratch beethoven project list
 ```
+
+`run` invokes the real `claude` CLI for every task it executes, so a logged-in
+Claude Code install is required and each run incurs real API cost. Use
+`--home`/`BEETHOVEN_HOME` to point at a scratch directory and a throwaway git
+repo when experimenting, to avoid polluting real project state.
 
 ## Usage
 
@@ -90,10 +93,15 @@ For each assigned task this drives the real execution pipeline:
 
 1. Create a real `git worktree` on a fresh `task/<slug>` branch and a real
    `tmux` session rooted at it.
-2. Render the structured task prompt and write it to
-   `<workspace>/prompts/prompt.md`.
-3. Invoke the model runtime (currently `ClaudeCodeRuntime`, a stub — see
-   below) inside that tmux session.
+2. Render the structured task prompt via `PromptBuilder::worker`, write it to
+   `<workspace>/prompts/prompt.md`, and emit it as a `PromptGenerated` event.
+3. Invoke the model runtime (`ClaudeCodeRuntime`, the default `ModelRuntime`
+   — see below) inside that tmux session, piping the prompt over stdin to
+   `claude --dangerously-skip-permissions --output-format json -p` and
+   capturing its response/stderr/exit code to files under the workspace's
+   `artifacts/` directory. The run is bracketed by `ModelRunStarted` and
+   `ModelRunCompleted`/`ModelRunFailed` events; the response is stored as a
+   `ModelArtifact`.
 4. Capture real `git status`/`git diff` output from the worktree as
    artifacts.
 5. Run the task through review, branching on the outcome: **Approve** (open
@@ -176,15 +184,25 @@ What's real:
   `send-keys`, `capture-pane`, `kill-session`), and real
   `git status --porcelain` / `git diff --cached` capture.
 - The prompt contract: every task gets a structured prompt
-  (project/task/repository/branch/requirements) rendered to disk before
-  execution.
+  (project/task/repository/branch/requirements) built by `PromptBuilder` and
+  rendered to disk before execution.
+- **The model invocation** (`ClaudeCodeRuntime`, implementing the
+  `ModelRuntime` trait in `beethoven-agents`): a real
+  `claude --dangerously-skip-permissions --output-format json -p` call,
+  prompted over stdin and run inside the task's real tmux session. Its JSON
+  envelope (`is_error`, `result`, `total_cost_usd`, and an optional
+  `structured_output` field when a JSON schema is supplied) is parsed
+  directly — never prose — into an `ExecutionResult`. `ModelRuntime` is
+  injected into `Runtime::load`, so tests substitute a stub implementation
+  without touching orchestration code. See
+  [`docs/phase-1.7-real-model-runtime.md`](docs/phase-1.7-real-model-runtime.md).
 - The review workflow's control flow: Approve/Needs Changes/Blocked/Question
   each drive genuinely different event sequences and task-state transitions
   (`TaskStatus::Review` → `Approved`/`Done`, or back to `Ready` with a bumped
   attempt, or `Blocked` with an inbox escalation).
 
 What's still stubbed (deterministic heuristics standing in for real model
-calls, per `beethoven-agents`):
+judgment calls, per `beethoven-agents`) — replacing these is Phase 1.7b:
 
 - **Planning** (`PlanningService`) splits `- ` bullet lines in a goal's
   description into tasks, falling back to one task named after the goal.
@@ -194,20 +212,21 @@ calls, per `beethoven-agents`):
   there are no requirements yet — a deterministic stand-in for a real PM
   model, by design (see
   [`docs/phase-1.6-project-manager-runtime.md`](docs/phase-1.6-project-manager-runtime.md)).
+  `PromptBuilder::pm_planning` and the `PM_PLANNING_JSON_SCHEMA`/
+  `PmPlanResponse` structured-output types already exist for when this
+  becomes model-driven.
 - **The execution decision** (`ExecutionService`) — whether a task completes,
   raises a question, or spawns a subtask — is a deterministic heuristic on
-  the task title and attempt number, not a model judgment call.
-- **The model invocation itself** (`ClaudeCodeRuntime`) does not call a real
-  model. It runs one deterministic command inside the task's real tmux
-  session (`cat prompt.md >> NOTES.md`) so the rest of the pipeline has
-  genuine on-disk changes to diff and review. Swapping in a real
-  `claude --dangerously-skip-permissions` invocation is a one-line change to
-  that command.
+  the task title and attempt number, not a model judgment call. Phase 1.7a
+  deliberately leaves this gate unchanged: only the model invocation *behind*
+  a `Completed` outcome is now real.
 - **The review decision** (`ReviewService`) is a keyword heuristic on the
   task title and whether the diff is empty (e.g. "risky"/"migration" titles
   are always Blocked, "clarify" titles always raise a question, an empty
   diff always Needs Changes, everything else Approved) — not a real review
-  agent reading the diff.
+  agent reading the diff. `PromptBuilder::review` and the
+  `REVIEW_JSON_SCHEMA`/`ReviewResponse` structured-output types already
+  exist for when this becomes model-driven.
 - **PR creation** (`beethoven_git::open_pr`) records a fake `stub://pr/...`
   URL as an event; there's no real GitHub integration yet.
 

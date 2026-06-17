@@ -130,6 +130,7 @@ version = "0.1.0"
 dependencies = [
  "beethoven-workspaces",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]
@@ -146,6 +147,7 @@ name = "beethoven-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "beethoven-agents",
  "beethoven-core",
  "beethoven-db",
  "beethoven-events",

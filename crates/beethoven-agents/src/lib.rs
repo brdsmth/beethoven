@@ -1,10 +1,15 @@
 mod model;
 mod prompt;
 mod review;
+mod schema;
 
-pub use model::{AgentsError, ClaudeCodeRuntime, ModelOutcome, ModelRuntime, ModelTaskRequest};
-pub use prompt::{render_prompt, PromptContext};
+pub use model::{AgentsError, ClaudeCodeRuntime, ExecutionRequest, ExecutionResult, ExecutionStatus, ModelRuntime};
+pub use prompt::{PmPlanningPromptContext, PromptBuilder, ReviewPromptContext, WorkerPromptContext};
 pub use review::{ReviewOutcome, ReviewService};
+pub use schema::{
+    parse_structured_output, PmPlanResponse, ReviewDecision, ReviewResponse, PM_PLANNING_JSON_SCHEMA,
+    REVIEW_JSON_SCHEMA,
+};
 
 use serde::{Deserialize, Serialize};
 

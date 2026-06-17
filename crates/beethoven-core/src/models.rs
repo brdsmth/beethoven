@@ -148,22 +148,44 @@ pub struct InboxItem {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ExecutionRunStatus {
+pub enum ModelRunStatus {
     Running,
     Completed,
     Failed,
 }
 
-/// One invocation of a `ModelRuntime` against a task's workspace.
+/// One invocation of a `ModelRuntime`. Worker runs always have a `task_id`;
+/// PM planning and review runs (Phase 1.7b) do not.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExecutionRun {
+pub struct ModelRun {
     pub id: String,
-    pub task_id: String,
+    pub project_id: String,
     pub agent_id: String,
-    pub status: ExecutionRunStatus,
+    pub task_id: Option<String>,
+    pub provider: String,
+    pub status: ModelRunStatus,
     pub summary: Option<String>,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelArtifactKind {
+    Prompt,
+    Response,
+}
+
+/// The prompt sent to, and raw response received from, one `ModelRun` --
+/// kept distinct from `Artifact` (git diff/files-changed output), which is
+/// keyed by task rather than by model run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelArtifact {
+    pub id: String,
+    pub model_run_id: String,
+    pub kind: ModelArtifactKind,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

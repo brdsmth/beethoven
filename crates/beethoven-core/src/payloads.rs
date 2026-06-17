@@ -123,23 +123,32 @@ pub struct BranchCreatedPayload {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ExecutionStartedPayload {
-    pub run_id: String,
+pub struct PromptGeneratedPayload {
+    pub model_run_id: String,
     pub task_id: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ModelRunStartedPayload {
+    pub id: String,
     pub agent_id: String,
+    pub project_id: String,
+    pub task_id: Option<String>,
+    pub provider: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ExecutionCompletedPayload {
-    pub run_id: String,
-    pub task_id: String,
+pub struct ModelRunCompletedPayload {
+    pub id: String,
     pub summary: String,
+    pub response: String,
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ExecutionFailedPayload {
-    pub run_id: String,
-    pub task_id: String,
+pub struct ModelRunFailedPayload {
+    pub id: String,
     pub error: String,
 }
 

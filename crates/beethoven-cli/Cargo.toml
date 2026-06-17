@@ -9,6 +9,7 @@ name = "beethoven"
 path = "src/main.rs"
 
 [dependencies]
+beethoven-agents.workspace = true
 beethoven-core.workspace = true
 beethoven-db.workspace = true
 beethoven-events.workspace = true

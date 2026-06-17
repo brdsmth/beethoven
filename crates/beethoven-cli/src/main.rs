@@ -148,7 +148,12 @@ async fn main() -> Result<()> {
 
     beethoven_db::ensure_beethoven_home(&home)?;
     let store = beethoven_db::SqliteEventStore::connect(&beethoven_db::default_db_path(&home)).await?;
-    let mut runtime = Runtime::load(Box::new(store), beethoven_db::projects_root(&home)).await?;
+    let mut runtime = Runtime::load(
+        Box::new(store),
+        beethoven_db::projects_root(&home),
+        Box::new(beethoven_agents::ClaudeCodeRuntime::default()),
+    )
+    .await?;
 
     match cli.command {
         Command::Run { project } => {
