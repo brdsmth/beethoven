@@ -54,6 +54,24 @@ pub enum EventType {
 
     PRCreated,
     PRMerged,
+
+    InitiativeCreated,
+    InitiativePlanned,
+    InitiativeCompleted,
+
+    RequirementCreated,
+    RequirementUpdated,
+
+    PlanCreated,
+    EpicCreated,
+
+    DecisionCreated,
+    DecisionEscalated,
+
+    PMPlanningStarted,
+    PMPlanningCompleted,
+    PMReviewStarted,
+    PMReviewCompleted,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -98,6 +116,19 @@ impl std::str::FromStr for EventType {
             "ReviewRejected" => EventType::ReviewRejected,
             "PRCreated" => EventType::PRCreated,
             "PRMerged" => EventType::PRMerged,
+            "InitiativeCreated" => EventType::InitiativeCreated,
+            "InitiativePlanned" => EventType::InitiativePlanned,
+            "InitiativeCompleted" => EventType::InitiativeCompleted,
+            "RequirementCreated" => EventType::RequirementCreated,
+            "RequirementUpdated" => EventType::RequirementUpdated,
+            "PlanCreated" => EventType::PlanCreated,
+            "EpicCreated" => EventType::EpicCreated,
+            "DecisionCreated" => EventType::DecisionCreated,
+            "DecisionEscalated" => EventType::DecisionEscalated,
+            "PMPlanningStarted" => EventType::PMPlanningStarted,
+            "PMPlanningCompleted" => EventType::PMPlanningCompleted,
+            "PMReviewStarted" => EventType::PMReviewStarted,
+            "PMReviewCompleted" => EventType::PMReviewCompleted,
             other => return Err(UnknownEventType(other.to_string())),
         })
     }
@@ -139,6 +170,19 @@ impl EventType {
             EventType::ReviewRejected => "ReviewRejected",
             EventType::PRCreated => "PRCreated",
             EventType::PRMerged => "PRMerged",
+            EventType::InitiativeCreated => "InitiativeCreated",
+            EventType::InitiativePlanned => "InitiativePlanned",
+            EventType::InitiativeCompleted => "InitiativeCompleted",
+            EventType::RequirementCreated => "RequirementCreated",
+            EventType::RequirementUpdated => "RequirementUpdated",
+            EventType::PlanCreated => "PlanCreated",
+            EventType::EpicCreated => "EpicCreated",
+            EventType::DecisionCreated => "DecisionCreated",
+            EventType::DecisionEscalated => "DecisionEscalated",
+            EventType::PMPlanningStarted => "PMPlanningStarted",
+            EventType::PMPlanningCompleted => "PMPlanningCompleted",
+            EventType::PMReviewStarted => "PMReviewStarted",
+            EventType::PMReviewCompleted => "PMReviewCompleted",
         }
     }
 }
@@ -223,7 +267,7 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
-    const ALL_EVENT_TYPES: [EventType; 33] = [
+    const ALL_EVENT_TYPES: [EventType; 46] = [
         EventType::ProjectCreated,
         EventType::AgentTemplateCreated,
         EventType::GoalCreated,
@@ -257,6 +301,19 @@ mod tests {
         EventType::ReviewRejected,
         EventType::PRCreated,
         EventType::PRMerged,
+        EventType::InitiativeCreated,
+        EventType::InitiativePlanned,
+        EventType::InitiativeCompleted,
+        EventType::RequirementCreated,
+        EventType::RequirementUpdated,
+        EventType::PlanCreated,
+        EventType::EpicCreated,
+        EventType::DecisionCreated,
+        EventType::DecisionEscalated,
+        EventType::PMPlanningStarted,
+        EventType::PMPlanningCompleted,
+        EventType::PMReviewStarted,
+        EventType::PMReviewCompleted,
     ];
 
     #[test]
