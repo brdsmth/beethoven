@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Result};
-use beethoven_core::{AgentStatus, InboxItem, InboxStatus, Runtime, Task, TaskStatus};
+use beethoven_core::{AgentStatus, Decision, DecisionStatus, InboxItem, InboxStatus, Runtime, Task, TaskStatus};
 use beethoven_events::EventScope;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -42,6 +42,23 @@ enum Command {
         #[command(subcommand)]
         action: ProjectAction,
     },
+    /// Initiative management (PM domain: discovery -> plan -> epics/decisions).
+    Initiative {
+        #[command(subcommand)]
+        action: InitiativeAction,
+    },
+    /// Requirement management (gathered during an initiative's discovery phase).
+    Requirement {
+        #[command(subcommand)]
+        action: RequirementAction,
+    },
+    /// List or resolve decisions escalated by the PM planner.
+    Decision {
+        #[arg(long)]
+        project: Option<String>,
+        #[command(subcommand)]
+        action: Option<DecisionAction>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -82,6 +99,42 @@ enum ProjectAction {
     Use { name: String },
     /// Print the active project's slug.
     Current,
+}
+
+#[derive(Subcommand)]
+enum InitiativeAction {
+    /// Create a new initiative, starting in the discovery phase.
+    Create {
+        title: String,
+        #[arg(short, long, default_value = "")]
+        description: String,
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// List initiatives for a project.
+    List {
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Show an initiative's requirements, epics, and decisions.
+    Show { initiative_id: String },
+    /// Run the deterministic PM planner against an initiative's requirements,
+    /// generating epics (-> tasks) and decisions (-> inbox escalations).
+    Plan { initiative_id: String },
+}
+
+#[derive(Subcommand)]
+enum RequirementAction {
+    /// Add a requirement to an initiative's discovery phase.
+    Create { initiative_id: String, description: String },
+    /// List requirements gathered for an initiative.
+    List { initiative_id: String },
+}
+
+#[derive(Subcommand)]
+enum DecisionAction {
+    /// Resolve an open decision, unblocking dependent initiative completion.
+    Resolve { decision_id: String, response: String },
 }
 
 #[tokio::main]
@@ -190,6 +243,75 @@ async fn main() -> Result<()> {
                 None => println!("No active project. Use `beethoven project use <name>`."),
             },
         },
+        Command::Initiative { action } => match action {
+            InitiativeAction::Create {
+                title,
+                description,
+                project,
+            } => {
+                let project_id = resolve_project(project.as_deref(), &runtime)?;
+                let initiative = runtime.create_initiative(&project_id, &title, &description).await?;
+                println!("Created initiative {} \"{}\"", initiative.id, initiative.title);
+            }
+            InitiativeAction::List { project } => {
+                let project_id = resolve_project(project.as_deref(), &runtime)?;
+                let mut initiatives: Vec<_> = runtime
+                    .state
+                    .initiatives
+                    .values()
+                    .filter(|i| i.project_id == project_id)
+                    .collect();
+                initiatives.sort_by_key(|i| i.created_at);
+                for i in initiatives {
+                    println!("{} [{:?}] {}", i.id, i.status, i.title);
+                }
+            }
+            InitiativeAction::Show { initiative_id } => print_initiative(&runtime, &initiative_id)?,
+            InitiativeAction::Plan { initiative_id } => {
+                let outcome = runtime.plan_initiative(&initiative_id).await?;
+                println!("{}", outcome.plan.summary);
+                for e in &outcome.epics {
+                    println!("  epic     {} {}", e.id, e.title);
+                }
+                for t in &outcome.tasks {
+                    println!("  task     {} {}", t.id, t.title);
+                }
+                for d in &outcome.decisions {
+                    println!("  decision {} {} (escalated to inbox)", d.id, d.title);
+                }
+            }
+        },
+        Command::Requirement { action } => match action {
+            RequirementAction::Create {
+                initiative_id,
+                description,
+            } => {
+                let requirement = runtime.create_requirement(&initiative_id, &description).await?;
+                println!("Created requirement {} \"{}\"", requirement.id, requirement.description);
+            }
+            RequirementAction::List { initiative_id } => {
+                let mut requirements: Vec<_> = runtime
+                    .state
+                    .requirements
+                    .values()
+                    .filter(|r| r.initiative_id == initiative_id)
+                    .collect();
+                requirements.sort_by_key(|r| r.created_at);
+                for r in requirements {
+                    println!("{} {}", r.id, r.description);
+                }
+            }
+        },
+        Command::Decision { project, action } => match action {
+            None => {
+                let project_id = resolve_project(project.as_deref(), &runtime)?;
+                print_decisions(&runtime, &project_id);
+            }
+            Some(DecisionAction::Resolve { decision_id, response }) => {
+                let decision = runtime.resolve_decision(&decision_id, &response).await?;
+                println!("Resolved decision {} ({:?})", decision.id, decision.status);
+            }
+        },
     }
 
     Ok(())
@@ -255,6 +377,68 @@ fn print_inbox(runtime: &Runtime, project_id: &str) {
     }
     for i in items {
         println!("[{:?}] {} {}", i.kind, i.id, i.prompt);
+    }
+}
+
+fn print_initiative(runtime: &Runtime, initiative_id: &str) -> Result<()> {
+    let initiative = runtime
+        .state
+        .initiatives
+        .get(initiative_id)
+        .ok_or_else(|| anyhow!("no such initiative: {initiative_id}"))?;
+    println!("Title: {}", initiative.title);
+    println!("Description: {}", initiative.description);
+    println!("Status: {:?}", initiative.status);
+
+    println!("\nRequirements:");
+    let mut requirements: Vec<_> = runtime
+        .state
+        .requirements
+        .values()
+        .filter(|r| r.initiative_id == initiative_id)
+        .collect();
+    requirements.sort_by_key(|r| r.created_at);
+    for r in requirements {
+        println!("  {} {}", r.id, r.description);
+    }
+
+    println!("\nEpics:");
+    let mut epics: Vec<_> = runtime.state.epics.values().filter(|e| e.initiative_id == initiative_id).collect();
+    epics.sort_by_key(|e| e.created_at);
+    for e in epics {
+        println!("  {} {}", e.id, e.title);
+    }
+
+    println!("\nDecisions:");
+    let mut decisions: Vec<_> = runtime
+        .state
+        .decisions
+        .values()
+        .filter(|d| d.initiative_id == initiative_id)
+        .collect();
+    decisions.sort_by_key(|d| d.created_at);
+    for d in decisions {
+        println!("  {} [{:?}] {}", d.id, d.status, d.title);
+    }
+
+    Ok(())
+}
+
+fn print_decisions(runtime: &Runtime, project_id: &str) {
+    let mut items: Vec<&Decision> = runtime
+        .state
+        .decisions
+        .values()
+        .filter(|d| d.project_id == project_id && d.status == DecisionStatus::Open)
+        .collect();
+    items.sort_by_key(|d| d.created_at);
+
+    if items.is_empty() {
+        println!("No open decisions.");
+        return;
+    }
+    for d in items {
+        println!("{} {}", d.id, d.title);
     }
 }
 
