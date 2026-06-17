@@ -1,4 +1,6 @@
-use beethoven_core::{AgentStatus, GoalStatus, InboxStatus, RuntimeState, TaskStatus};
+use beethoven_core::{
+    AgentStatus, DecisionStatus, GoalStatus, InboxKind, InboxStatus, InitiativeStatus, RuntimeState, TaskStatus,
+};
 use beethoven_events::{Event, EventType};
 use serde_json::json;
 
@@ -230,4 +232,98 @@ fn two_projects_do_not_mix_tasks_goals_or_inbox() {
     let p2_inbox: Vec<_> = state.inbox.values().filter(|i| i.project_id == "p2").collect();
     assert_eq!(p1_inbox.len(), 0);
     assert_eq!(p2_inbox.len(), 1);
+}
+
+#[test]
+fn initiative_planning_creates_epics_and_links_their_tasks_back_to_the_epic_not_a_goal() {
+    let mut events = setup_events();
+    events.push(Event::for_project(
+        "p1",
+        EventType::InitiativeCreated,
+        "human",
+        json!({"id": "init1", "title": "Build Gmail Agent", "description": "Routes inbound email"}),
+    ));
+    events.push(Event::for_project(
+        "p1",
+        EventType::RequirementCreated,
+        "human",
+        json!({"id": "r1", "initiative_id": "init1", "description": "Support PDF attachments"}),
+    ));
+    events.push(Event::for_project(
+        "p1",
+        EventType::PlanCreated,
+        "pm",
+        json!({"id": "plan1", "initiative_id": "init1", "summary": "1 epic(s), 0 decision(s) for Build Gmail Agent"}),
+    ));
+    events.push(Event::for_project(
+        "p1",
+        EventType::EpicCreated,
+        "pm",
+        json!({"id": "epic1", "initiative_id": "init1", "title": "Support PDF attachments"}),
+    ));
+    events.push(Event::for_project(
+        "p1",
+        EventType::TaskCreated,
+        "pm",
+        json!({
+            "id": "t-epic",
+            "goal_id": None::<String>,
+            "epic_id": "epic1",
+            "parent_task_id": None::<String>,
+            "title": "Implement: Support PDF attachments",
+            "description": "",
+        }),
+    ));
+    events.push(Event::for_project("p1", EventType::InitiativePlanned, "pm", json!({"id": "init1"})));
+
+    let state = RuntimeState::replay(&events);
+
+    assert_eq!(state.initiatives["init1"].status, InitiativeStatus::Planned);
+    assert_eq!(state.requirements["r1"].initiative_id, "init1");
+    assert_eq!(state.plans["plan1"].initiative_id, "init1");
+    assert_eq!(state.epics["epic1"].initiative_id, "init1");
+    assert_eq!(state.tasks["t-epic"].epic_id, Some("epic1".to_string()));
+    assert_eq!(state.tasks["t-epic"].goal_id, None);
+}
+
+#[test]
+fn decision_escalation_links_the_inbox_item_and_resolving_it_marks_the_decision_resolved() {
+    let mut events = setup_events();
+    events.push(Event::for_project(
+        "p1",
+        EventType::InitiativeCreated,
+        "human",
+        json!({"id": "init1", "title": "Build Gmail Agent", "description": ""}),
+    ));
+    events.push(Event::for_project(
+        "p1",
+        EventType::DecisionCreated,
+        "pm",
+        json!({"id": "dec1", "initiative_id": "init1", "title": "What auth provider?", "context": "What auth provider?"}),
+    ));
+    events.push(Event::for_project(
+        "p1",
+        EventType::DecisionEscalated,
+        "pm",
+        json!({"decision_id": "dec1", "inbox_id": "i-dec", "prompt": "What auth provider?"}),
+    ));
+
+    let state = RuntimeState::replay(&events);
+    assert_eq!(state.decisions["dec1"].status, DecisionStatus::Open);
+    assert_eq!(state.inbox["i-dec"].kind, InboxKind::Decision);
+    assert_eq!(state.inbox["i-dec"].decision_id, Some("dec1".to_string()));
+    assert_eq!(state.inbox["i-dec"].task_id, None);
+
+    let mut events = events;
+    events.push(Event::for_project(
+        "p1",
+        EventType::DecisionResolved,
+        "pm",
+        json!({"inbox_id": "i-dec", "response": "Use OAuth"}),
+    ));
+    let state = RuntimeState::replay(&events);
+
+    assert_eq!(state.decisions["dec1"].status, DecisionStatus::Resolved);
+    assert_eq!(state.inbox["i-dec"].status, InboxStatus::Resolved);
+    assert_eq!(state.inbox["i-dec"].response, Some("Use OAuth".to_string()));
 }

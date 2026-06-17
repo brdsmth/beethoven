@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use beethoven_core::{
-    ArtifactKind, ExecutionRunStatus, GoalStatus, InboxKind, InboxStatus, ReviewStatus, Runtime, TaskStatus,
+    ArtifactKind, DecisionStatus, ExecutionRunStatus, GoalStatus, InboxKind, InboxStatus, InitiativeStatus,
+    ReviewStatus, Runtime, TaskStatus,
 };
 use beethoven_events::{Event, EventStore, EventStoreError};
 use std::path::Path;
@@ -298,4 +299,81 @@ async fn review_blocks_a_risky_task_and_escalates_through_the_existing_inbox_flo
     // while the human-in-the-loop inbox flow takes over.
     let review = runtime.state.reviews.values().find(|r| r.task_id == task.id).unwrap();
     assert_eq!(review.status, ReviewStatus::Pending);
+}
+
+#[tokio::test]
+async fn initiative_completes_only_once_its_epic_task_is_done_and_its_decision_is_resolved() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects")).await.unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+
+    let initiative = runtime
+        .create_initiative(&project.id, "Build Gmail Agent", "Routes inbound email to the right team")
+        .await
+        .unwrap();
+    assert_eq!(initiative.status, InitiativeStatus::Discovery);
+
+    runtime.create_requirement(&initiative.id, "Support PDF attachments").await.unwrap();
+    runtime
+        .create_requirement(&initiative.id, "What auth provider should we use?")
+        .await
+        .unwrap();
+
+    let outcome = runtime.plan_initiative(&initiative.id).await.unwrap();
+    assert_eq!(outcome.epics.len(), 1);
+    assert_eq!(outcome.tasks.len(), 1);
+    assert_eq!(outcome.decisions.len(), 1);
+    assert_eq!(runtime.state.initiatives[&initiative.id].status, InitiativeStatus::Planned);
+
+    let open_decision_inbox: Vec<_> = runtime
+        .state
+        .inbox
+        .values()
+        .filter(|i| i.kind == InboxKind::Decision && i.status == InboxStatus::Open)
+        .collect();
+    assert_eq!(open_decision_inbox.len(), 1);
+    assert_eq!(open_decision_inbox[0].decision_id, Some(outcome.decisions[0].id.clone()));
+
+    // "Implement: ..." spawns and finishes a subtask before the epic's task itself completes.
+    let report = runtime.run_tick(&project.id).await.unwrap();
+    assert_eq!(report.completed, 2);
+    assert_eq!(report.subtasks_spawned, 1);
+    assert_eq!(report.escalated, 0);
+
+    // The epic's task is done, but the decision is still open, so the initiative cannot complete yet.
+    assert_eq!(runtime.state.initiatives[&initiative.id].status, InitiativeStatus::Planned);
+
+    let decision = runtime
+        .resolve_decision(&outcome.decisions[0].id, "Use OAuth via Google + GitHub")
+        .await
+        .unwrap();
+    assert_eq!(decision.status, DecisionStatus::Resolved);
+
+    assert_eq!(runtime.state.initiatives[&initiative.id].status, InitiativeStatus::Completed);
+}
+
+#[tokio::test]
+async fn an_initiative_with_no_requirements_plans_a_single_fallback_epic() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects")).await.unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let initiative = runtime
+        .create_initiative(&project.id, "Build Gmail Agent", "")
+        .await
+        .unwrap();
+
+    let outcome = runtime.plan_initiative(&initiative.id).await.unwrap();
+    assert_eq!(outcome.epics.len(), 1);
+    assert_eq!(outcome.epics[0].title, "Build Gmail Agent");
+    assert_eq!(outcome.decisions.len(), 0);
+    assert_eq!(outcome.tasks.len(), 1);
+    assert_eq!(outcome.tasks[0].epic_id, Some(outcome.epics[0].id.clone()));
 }
