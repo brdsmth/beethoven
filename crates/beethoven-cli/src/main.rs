@@ -97,8 +97,8 @@ async fn main() -> Result<()> {
             let project_id = resolve_project(project.as_deref(), &runtime)?;
             let report = runtime.run_tick(&project_id).await?;
             println!(
-                "assigned={} completed={} escalated={} subtasks_spawned={}",
-                report.assigned, report.completed, report.escalated, report.subtasks_spawned
+                "assigned={} completed={} needs_changes={} escalated={} subtasks_spawned={}",
+                report.assigned, report.completed, report.needs_changes, report.escalated, report.subtasks_spawned
             );
         }
         Command::Status { project } => {
