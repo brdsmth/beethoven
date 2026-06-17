@@ -72,6 +72,11 @@ pub enum EventType {
     PMPlanningCompleted,
     PMReviewStarted,
     PMReviewCompleted,
+
+    RuntimeStarted,
+    RuntimeStopped,
+    TaskRecovered,
+    AgentHeartbeat,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -129,6 +134,10 @@ impl std::str::FromStr for EventType {
             "PMPlanningCompleted" => EventType::PMPlanningCompleted,
             "PMReviewStarted" => EventType::PMReviewStarted,
             "PMReviewCompleted" => EventType::PMReviewCompleted,
+            "RuntimeStarted" => EventType::RuntimeStarted,
+            "RuntimeStopped" => EventType::RuntimeStopped,
+            "TaskRecovered" => EventType::TaskRecovered,
+            "AgentHeartbeat" => EventType::AgentHeartbeat,
             other => return Err(UnknownEventType(other.to_string())),
         })
     }
@@ -183,6 +192,10 @@ impl EventType {
             EventType::PMPlanningCompleted => "PMPlanningCompleted",
             EventType::PMReviewStarted => "PMReviewStarted",
             EventType::PMReviewCompleted => "PMReviewCompleted",
+            EventType::RuntimeStarted => "RuntimeStarted",
+            EventType::RuntimeStopped => "RuntimeStopped",
+            EventType::TaskRecovered => "TaskRecovered",
+            EventType::AgentHeartbeat => "AgentHeartbeat",
         }
     }
 }
@@ -267,7 +280,7 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
-    const ALL_EVENT_TYPES: [EventType; 46] = [
+    const ALL_EVENT_TYPES: [EventType; 50] = [
         EventType::ProjectCreated,
         EventType::AgentTemplateCreated,
         EventType::GoalCreated,
@@ -314,6 +327,10 @@ mod tests {
         EventType::PMPlanningCompleted,
         EventType::PMReviewStarted,
         EventType::PMReviewCompleted,
+        EventType::RuntimeStarted,
+        EventType::RuntimeStopped,
+        EventType::TaskRecovered,
+        EventType::AgentHeartbeat,
     ];
 
     #[test]
