@@ -50,7 +50,10 @@ pub struct AgentStartedPayload {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TaskCreatedPayload {
     pub id: String,
-    pub goal_id: String,
+    #[serde(default)]
+    pub goal_id: Option<String>,
+    #[serde(default)]
+    pub epic_id: Option<String>,
     pub parent_task_id: Option<String>,
     pub title: String,
     pub description: String,
@@ -172,4 +175,57 @@ pub struct ReviewRejectedPayload {
     pub review_id: String,
     pub task_id: String,
     pub reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InitiativeCreatedPayload {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InitiativePlannedPayload {
+    pub id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InitiativeCompletedPayload {
+    pub id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RequirementCreatedPayload {
+    pub id: String,
+    pub initiative_id: String,
+    pub description: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlanCreatedPayload {
+    pub id: String,
+    pub initiative_id: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EpicCreatedPayload {
+    pub id: String,
+    pub initiative_id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DecisionCreatedPayload {
+    pub id: String,
+    pub initiative_id: String,
+    pub title: String,
+    pub context: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DecisionEscalatedPayload {
+    pub decision_id: String,
+    pub inbox_id: String,
+    pub prompt: String,
 }

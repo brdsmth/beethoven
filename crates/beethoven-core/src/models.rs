@@ -71,7 +71,8 @@ pub enum TaskStatus {
 pub struct Task {
     pub id: String,
     pub project_id: String,
-    pub goal_id: String,
+    pub goal_id: Option<String>,
+    pub epic_id: Option<String>,
     pub parent_task_id: Option<String>,
     pub title: String,
     pub description: String,
@@ -137,6 +138,7 @@ pub struct InboxItem {
     pub kind: InboxKind,
     pub task_id: Option<String>,
     pub agent_id: Option<String>,
+    pub decision_id: Option<String>,
     pub prompt: String,
     pub status: InboxStatus,
     pub response: Option<String>,
@@ -198,5 +200,79 @@ pub struct Review {
     pub reviewer_agent_id: String,
     pub status: ReviewStatus,
     pub notes: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InitiativeStatus {
+    Discovery,
+    Planned,
+    Completed,
+}
+
+/// Top-level objective within a project -- the PM's unit of project
+/// management, one layer above the deterministic Goal/Task model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Initiative {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub description: String,
+    pub status: InitiativeStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A business or technical requirement gathered during an initiative's
+/// discovery phase, before planning turns it into epics/tasks or a decision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Requirement {
+    pub id: String,
+    pub project_id: String,
+    pub initiative_id: String,
+    pub description: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// The generated execution strategy produced by planning an initiative.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Plan {
+    pub id: String,
+    pub project_id: String,
+    pub initiative_id: String,
+    pub summary: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// A large work stream under an initiative's plan; each epic deterministically
+/// produces one task today (see `beethoven_agents::InitiativePlanningService`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Epic {
+    pub id: String,
+    pub project_id: String,
+    pub initiative_id: String,
+    pub title: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionStatus {
+    Open,
+    Resolved,
+}
+
+/// Tracks an architectural or product decision raised during planning. The
+/// PM owns escalation: every open decision is mirrored as an `InboxItem` so a
+/// human resolves it, per the Worker -> PM -> Decision -> Inbox -> Human flow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Decision {
+    pub id: String,
+    pub project_id: String,
+    pub initiative_id: String,
+    pub title: String,
+    pub context: String,
+    pub status: DecisionStatus,
     pub created_at: DateTime<Utc>,
 }

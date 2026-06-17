@@ -21,4 +21,8 @@ pub enum CoreError {
     InboxItemNotFound(String),
     #[error("inbox item already resolved: {0}")]
     InboxItemAlreadyResolved(String),
+    #[error("initiative not found: {0}")]
+    InitiativeNotFound(String),
+    #[error("decision not found or already resolved: {0}")]
+    DecisionNotFound(String),
 }
