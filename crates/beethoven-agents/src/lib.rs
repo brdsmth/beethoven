@@ -116,6 +116,62 @@ impl PlanningService {
 }
 
 #[derive(Debug, Clone)]
+pub struct RequirementInput {
+    pub id: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct EpicDraft {
+    pub title: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DecisionDraft {
+    pub title: String,
+    pub context: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InitiativePlan {
+    pub epics: Vec<EpicDraft>,
+    pub decisions: Vec<DecisionDraft>,
+}
+
+pub struct InitiativePlanningService;
+
+impl InitiativePlanningService {
+    /// Stub PM planner: a requirement that poses an open question ("?") needs
+    /// a human decision rather than a work breakdown, so it becomes a
+    /// `Decision` (auto-escalated to the inbox); every other requirement
+    /// becomes one epic. Falls back to a single epic named after the
+    /// initiative when there are no requirements yet.
+    pub fn plan(initiative_title: &str, requirements: &[RequirementInput]) -> InitiativePlan {
+        let mut plan = InitiativePlan::default();
+        for requirement in requirements {
+            if requirement.description.contains('?') {
+                plan.decisions.push(DecisionDraft {
+                    title: requirement.description.clone(),
+                    context: requirement.description.clone(),
+                });
+            } else {
+                plan.epics.push(EpicDraft {
+                    title: requirement.description.clone(),
+                });
+            }
+        }
+
+        if plan.epics.is_empty() && plan.decisions.is_empty() {
+            plan.epics.push(EpicDraft {
+                title: initiative_title.to_string(),
+            });
+        }
+
+        plan
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct TaskExecutionContext {
     pub task_id: String,
     pub title: String,
@@ -221,5 +277,39 @@ mod tests {
             ExecutionService::execute(&ctx("Write docs", 1)),
             ExecutionOutcome::Completed
         ));
+    }
+
+    fn requirement(description: &str) -> RequirementInput {
+        RequirementInput {
+            id: "r1".to_string(),
+            description: description.to_string(),
+        }
+    }
+
+    #[test]
+    fn initiative_plan_turns_each_plain_requirement_into_one_epic() {
+        let reqs = vec![requirement("Support PDF attachments"), requirement("Route emails by company")];
+        let plan = InitiativePlanningService::plan("Build Gmail Agent", &reqs);
+        let titles: Vec<&str> = plan.epics.iter().map(|e| e.title.as_str()).collect();
+        assert_eq!(titles, vec!["Support PDF attachments", "Route emails by company"]);
+        assert!(plan.decisions.is_empty());
+    }
+
+    #[test]
+    fn initiative_plan_turns_a_question_requirement_into_a_decision_not_an_epic() {
+        let reqs = vec![requirement("Support PDF attachments"), requirement("What auth provider should we use?")];
+        let plan = InitiativePlanningService::plan("Build Gmail Agent", &reqs);
+        assert_eq!(plan.epics.len(), 1);
+        assert_eq!(plan.epics[0].title, "Support PDF attachments");
+        assert_eq!(plan.decisions.len(), 1);
+        assert_eq!(plan.decisions[0].title, "What auth provider should we use?");
+    }
+
+    #[test]
+    fn initiative_plan_falls_back_to_a_single_epic_without_requirements() {
+        let plan = InitiativePlanningService::plan("Build Gmail Agent", &[]);
+        assert_eq!(plan.epics.len(), 1);
+        assert_eq!(plan.epics[0].title, "Build Gmail Agent");
+        assert!(plan.decisions.is_empty());
     }
 }
