@@ -14,6 +14,11 @@ pub struct RuntimeState {
     pub execution_runs: HashMap<String, ExecutionRun>,
     pub artifacts: HashMap<String, Artifact>,
     pub reviews: HashMap<String, Review>,
+    pub initiatives: HashMap<String, Initiative>,
+    pub requirements: HashMap<String, Requirement>,
+    pub plans: HashMap<String, Plan>,
+    pub epics: HashMap<String, Epic>,
+    pub decisions: HashMap<String, Decision>,
 }
 
 fn decode<T: serde::de::DeserializeOwned>(event: &Event) -> T {
@@ -136,6 +141,7 @@ impl RuntimeState {
                         id: p.id,
                         project_id,
                         goal_id: p.goal_id,
+                        epic_id: p.epic_id,
                         parent_task_id: p.parent_task_id.clone(),
                         title: p.title,
                         description: p.description,
@@ -211,7 +217,7 @@ impl RuntimeState {
             EventType::TaskCompleted => {
                 let p: TaskCompletedPayload = decode(event);
                 let agent_id = self.tasks.get(&p.task_id).and_then(|t| t.assigned_agent_id.clone());
-                let goal_id = self.tasks.get(&p.task_id).map(|t| t.goal_id.clone());
+                let goal_id = self.tasks.get(&p.task_id).and_then(|t| t.goal_id.clone());
                 if let Some(t) = self.tasks.get_mut(&p.task_id) {
                     t.status = TaskStatus::Done;
                     t.assigned_agent_id = None;
@@ -239,6 +245,7 @@ impl RuntimeState {
                         kind: InboxKind::Question,
                         task_id: Some(p.task_id),
                         agent_id: Some(p.agent_id),
+                        decision_id: None,
                         prompt: p.prompt,
                         status: InboxStatus::Open,
                         response: None,
@@ -274,6 +281,27 @@ impl RuntimeState {
                         kind: InboxKind::Decision,
                         task_id: p.task_id,
                         agent_id: p.agent_id,
+                        decision_id: None,
+                        prompt: p.prompt,
+                        status: InboxStatus::Open,
+                        response: None,
+                        created_at: ts,
+                        resolved_at: None,
+                    },
+                );
+            }
+            EventType::DecisionEscalated => {
+                let project_id = project_id_of(event);
+                let p: DecisionEscalatedPayload = decode(event);
+                self.inbox.insert(
+                    p.inbox_id.clone(),
+                    InboxItem {
+                        id: p.inbox_id,
+                        project_id,
+                        kind: InboxKind::Decision,
+                        task_id: None,
+                        agent_id: None,
+                        decision_id: Some(p.decision_id),
                         prompt: p.prompt,
                         status: InboxStatus::Open,
                         response: None,
@@ -285,6 +313,7 @@ impl RuntimeState {
             EventType::DecisionResolved => {
                 let p: DecisionResolvedPayload = decode(event);
                 let task_id = self.inbox.get(&p.inbox_id).and_then(|i| i.task_id.clone());
+                let decision_id = self.inbox.get(&p.inbox_id).and_then(|i| i.decision_id.clone());
                 if let Some(item) = self.inbox.get_mut(&p.inbox_id) {
                     item.status = InboxStatus::Resolved;
                     item.response = Some(p.response);
@@ -297,6 +326,99 @@ impl RuntimeState {
                         t.updated_at = ts;
                     }
                 }
+                if let Some(did) = decision_id {
+                    if let Some(d) = self.decisions.get_mut(&did) {
+                        d.status = DecisionStatus::Resolved;
+                    }
+                }
+            }
+            EventType::InitiativeCreated => {
+                let project_id = project_id_of(event);
+                let p: InitiativeCreatedPayload = decode(event);
+                self.initiatives.insert(
+                    p.id.clone(),
+                    Initiative {
+                        id: p.id,
+                        project_id,
+                        title: p.title,
+                        description: p.description,
+                        status: InitiativeStatus::Discovery,
+                        created_at: ts,
+                        updated_at: ts,
+                    },
+                );
+            }
+            EventType::InitiativePlanned => {
+                let p: InitiativePlannedPayload = decode(event);
+                if let Some(i) = self.initiatives.get_mut(&p.id) {
+                    i.status = InitiativeStatus::Planned;
+                    i.updated_at = ts;
+                }
+            }
+            EventType::InitiativeCompleted => {
+                let p: InitiativeCompletedPayload = decode(event);
+                if let Some(i) = self.initiatives.get_mut(&p.id) {
+                    i.status = InitiativeStatus::Completed;
+                    i.updated_at = ts;
+                }
+            }
+            EventType::RequirementCreated => {
+                let project_id = project_id_of(event);
+                let p: RequirementCreatedPayload = decode(event);
+                self.requirements.insert(
+                    p.id.clone(),
+                    Requirement {
+                        id: p.id,
+                        project_id,
+                        initiative_id: p.initiative_id,
+                        description: p.description,
+                        created_at: ts,
+                    },
+                );
+            }
+            EventType::PlanCreated => {
+                let project_id = project_id_of(event);
+                let p: PlanCreatedPayload = decode(event);
+                self.plans.insert(
+                    p.id.clone(),
+                    Plan {
+                        id: p.id,
+                        project_id,
+                        initiative_id: p.initiative_id,
+                        summary: p.summary,
+                        created_at: ts,
+                    },
+                );
+            }
+            EventType::EpicCreated => {
+                let project_id = project_id_of(event);
+                let p: EpicCreatedPayload = decode(event);
+                self.epics.insert(
+                    p.id.clone(),
+                    Epic {
+                        id: p.id,
+                        project_id,
+                        initiative_id: p.initiative_id,
+                        title: p.title,
+                        created_at: ts,
+                    },
+                );
+            }
+            EventType::DecisionCreated => {
+                let project_id = project_id_of(event);
+                let p: DecisionCreatedPayload = decode(event);
+                self.decisions.insert(
+                    p.id.clone(),
+                    Decision {
+                        id: p.id,
+                        project_id,
+                        initiative_id: p.initiative_id,
+                        title: p.title,
+                        context: p.context,
+                        status: DecisionStatus::Open,
+                        created_at: ts,
+                    },
+                );
             }
             EventType::PRCreated => {
                 let p: PrCreatedPayload = decode(event);
@@ -425,7 +547,12 @@ impl RuntimeState {
             | EventType::WorktreeCreated
             | EventType::TmuxSessionCreated
             | EventType::TmuxSessionDestroyed
-            | EventType::PromptGenerated => {
+            | EventType::PromptGenerated
+            | EventType::RequirementUpdated
+            | EventType::PMPlanningStarted
+            | EventType::PMPlanningCompleted
+            | EventType::PMReviewStarted
+            | EventType::PMReviewCompleted => {
                 // Recorded in the event log for audit/timeline purposes only;
                 // no derived-state fields track these yet.
             }
@@ -435,7 +562,7 @@ impl RuntimeState {
     fn maybe_complete_goal(&mut self, goal_id: &str, ts: chrono::DateTime<chrono::Utc>) {
         let mut has_tasks = false;
         let mut all_done = true;
-        for t in self.tasks.values().filter(|t| t.goal_id == goal_id) {
+        for t in self.tasks.values().filter(|t| t.goal_id.as_deref() == Some(goal_id)) {
             has_tasks = true;
             if t.status != TaskStatus::Done {
                 all_done = false;
@@ -450,5 +577,40 @@ impl RuntimeState {
                 }
             }
         }
+    }
+
+    /// Whether every epic-derived task and every decision under an initiative
+    /// has reached a terminal state. `Runtime` calls this (never the reducer
+    /// itself) so `InitiativeCompleted` stays an explicitly emitted event
+    /// rather than a silent derived-state side effect.
+    pub fn initiative_is_complete(&self, initiative_id: &str) -> bool {
+        let epic_ids: std::collections::HashSet<&str> = self
+            .epics
+            .values()
+            .filter(|e| e.initiative_id == initiative_id)
+            .map(|e| e.id.as_str())
+            .collect();
+
+        let mut has_work = false;
+        for t in self
+            .tasks
+            .values()
+            .filter(|t| t.epic_id.as_deref().is_some_and(|eid| epic_ids.contains(eid)))
+        {
+            has_work = true;
+            if t.status != TaskStatus::Done {
+                return false;
+            }
+        }
+
+        let decisions: Vec<&Decision> = self.decisions.values().filter(|d| d.initiative_id == initiative_id).collect();
+        if !decisions.is_empty() {
+            has_work = true;
+            if decisions.iter().any(|d| d.status != DecisionStatus::Resolved) {
+                return false;
+            }
+        }
+
+        has_work
     }
 }
