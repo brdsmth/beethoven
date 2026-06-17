@@ -122,3 +122,50 @@ pub trait EventStore: Send + Sync {
     async fn append(&self, event: Event) -> Result<(), EventStoreError>;
     async fn list_all(&self) -> Result<Vec<Event>, EventStoreError>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    const ALL_EVENT_TYPES: [EventType; 18] = [
+        EventType::GoalCreated,
+        EventType::GoalUpdated,
+        EventType::AgentCreated,
+        EventType::AgentStarted,
+        EventType::AgentStopped,
+        EventType::TaskCreated,
+        EventType::TaskAssigned,
+        EventType::TaskStarted,
+        EventType::TaskBlocked,
+        EventType::TaskCompleted,
+        EventType::QuestionRaised,
+        EventType::QuestionAnswered,
+        EventType::DecisionRequested,
+        EventType::DecisionResolved,
+        EventType::WorkspaceCreated,
+        EventType::WorkspaceDestroyed,
+        EventType::PRCreated,
+        EventType::PRMerged,
+    ];
+
+    #[test]
+    fn event_type_round_trips_through_as_str_and_from_str() {
+        for event_type in ALL_EVENT_TYPES {
+            assert_eq!(EventType::from_str(event_type.as_str()).unwrap(), event_type);
+        }
+    }
+
+    #[test]
+    fn unknown_event_type_string_is_rejected() {
+        assert!(EventType::from_str("NotARealEvent").is_err());
+    }
+
+    #[test]
+    fn new_events_get_unique_ids() {
+        let a = Event::new(EventType::GoalCreated, "human", serde_json::json!({}));
+        let b = Event::new(EventType::GoalCreated, "human", serde_json::json!({}));
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.actor_id, "human");
+    }
+}

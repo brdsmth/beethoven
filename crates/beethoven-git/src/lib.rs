@@ -44,3 +44,33 @@ pub fn open_pr(task_id: &str, branch: &str, title: &str) -> PullRequest {
         url: format!("stub://pr/{task_id}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slugifies_a_basic_title() {
+        assert_eq!(branch_name("Implement Auth"), "task/implement-auth");
+    }
+
+    #[test]
+    fn collapses_punctuation_and_repeated_separators() {
+        assert_eq!(branch_name("Fix   tests!! (urgent)"), "task/fix-tests-urgent");
+    }
+
+    #[test]
+    fn falls_back_to_task_for_empty_or_symbol_only_titles() {
+        assert_eq!(branch_name(""), "task/task");
+        assert_eq!(branch_name("???"), "task/task");
+    }
+
+    #[test]
+    fn open_pr_records_task_branch_and_title() {
+        let pr = open_pr("abc123", "task/foo", "Foo");
+        assert_eq!(pr.task_id, "abc123");
+        assert_eq!(pr.branch, "task/foo");
+        assert_eq!(pr.title, "Foo");
+        assert_eq!(pr.url, "stub://pr/abc123");
+    }
+}

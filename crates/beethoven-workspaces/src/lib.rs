@@ -67,3 +67,43 @@ impl WorkspaceManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_builds_the_expected_layout_and_state_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = WorkspaceManager::new(dir.path());
+
+        let state = mgr.create("task-1").unwrap();
+
+        let root = mgr.path_for("task-1");
+        for sub in ["repo", "memory", "logs", "artifacts", "prompts"] {
+            assert!(root.join(sub).is_dir(), "missing {sub} dir");
+        }
+        assert!(root.join("state.json").is_file());
+        assert_eq!(state.task_id, "task-1");
+    }
+
+    #[test]
+    fn destroy_removes_the_workspace_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = WorkspaceManager::new(dir.path());
+
+        mgr.create("task-2").unwrap();
+        assert!(mgr.path_for("task-2").exists());
+
+        mgr.destroy("task-2").unwrap();
+        assert!(!mgr.path_for("task-2").exists());
+    }
+
+    #[test]
+    fn destroy_on_a_workspace_that_was_never_created_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = WorkspaceManager::new(dir.path());
+
+        assert!(mgr.destroy("never-created").is_ok());
+    }
+}

@@ -156,6 +156,7 @@ dependencies = [
 name = "beethoven-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "beethoven-agents",
  "beethoven-events",
  "beethoven-git",
@@ -163,7 +164,9 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
+ "tokio",
  "uuid",
 ]
 
@@ -176,7 +179,9 @@ dependencies = [
  "chrono",
  "serde_json",
  "sqlx",
+ "tempfile",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -212,6 +217,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
 ]
 

@@ -108,3 +108,74 @@ impl ExecutionService {
         ExecutionOutcome::Completed
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx(title: &str, attempt: u32) -> TaskExecutionContext {
+        TaskExecutionContext {
+            task_id: "t1".to_string(),
+            title: title.to_string(),
+            attempt,
+        }
+    }
+
+    #[test]
+    fn plan_extracts_bullet_list_lines_and_ignores_prose() {
+        let drafts = PlanningService::plan("Goal", "- one\n* two\nnot a bullet\n- three");
+        let titles: Vec<&str> = drafts.iter().map(|d| d.title.as_str()).collect();
+        assert_eq!(titles, vec!["one", "two", "three"]);
+    }
+
+    #[test]
+    fn plan_falls_back_to_a_single_task_without_bullets() {
+        let drafts = PlanningService::plan("Goal Title", "just prose, no bullets");
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].title, "Implement: Goal Title");
+    }
+
+    #[test]
+    fn execute_raises_a_question_only_on_the_first_attempt() {
+        assert!(matches!(
+            ExecutionService::execute(&ctx("What now?", 1)),
+            ExecutionOutcome::RaisedQuestion(_)
+        ));
+        // Regression: re-attempting an already-answered question must not re-escalate forever.
+        assert!(matches!(
+            ExecutionService::execute(&ctx("What now?", 2)),
+            ExecutionOutcome::Completed
+        ));
+    }
+
+    #[test]
+    fn execute_spawns_a_subtask_only_for_titles_starting_with_implement_on_first_attempt() {
+        assert!(matches!(
+            ExecutionService::execute(&ctx("Implement login", 1)),
+            ExecutionOutcome::SpawnedSubtask(_)
+        ));
+        // Retrying the same task after the subtask completes must finish, not spawn again.
+        assert!(matches!(
+            ExecutionService::execute(&ctx("Implement login", 2)),
+            ExecutionOutcome::Completed
+        ));
+    }
+
+    #[test]
+    fn generated_subtask_titles_do_not_recursively_spawn_more_subtasks() {
+        // Regression: subtask titles ("Write tests for Implement ...") used to still
+        // *contain* "implement", which kept triggering further subtask spawning forever.
+        assert!(matches!(
+            ExecutionService::execute(&ctx("Write tests for Implement login", 1)),
+            ExecutionOutcome::Completed
+        ));
+    }
+
+    #[test]
+    fn execute_completes_plain_titles_immediately() {
+        assert!(matches!(
+            ExecutionService::execute(&ctx("Write docs", 1)),
+            ExecutionOutcome::Completed
+        ));
+    }
+}
