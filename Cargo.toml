@@ -31,7 +31,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "1"
 anyhow = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio", "tls-rustls", "chrono", "uuid"] }
