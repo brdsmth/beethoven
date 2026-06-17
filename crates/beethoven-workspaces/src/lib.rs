@@ -14,6 +14,7 @@ pub enum WorkspacesError {
 pub struct WorkspaceState {
     pub task_id: String,
     pub created_at: DateTime<Utc>,
+    pub repository_path: String,
     /// Placeholders for the real runtime layers (tmux session, git worktree,
     /// model runtime) until those integrations land.
     pub tmux_session: String,
@@ -36,7 +37,7 @@ impl WorkspaceManager {
         self.base_dir.join(task_id)
     }
 
-    pub fn create(&self, task_id: &str) -> Result<WorkspaceState, WorkspacesError> {
+    pub fn create(&self, task_id: &str, repository_path: &str) -> Result<WorkspaceState, WorkspacesError> {
         let root = self.path_for(task_id);
         for sub in ["repo", "memory", "logs", "artifacts", "prompts"] {
             std::fs::create_dir_all(root.join(sub))?;
@@ -45,6 +46,7 @@ impl WorkspaceManager {
         let state = WorkspaceState {
             task_id: task_id.to_string(),
             created_at: Utc::now(),
+            repository_path: repository_path.to_string(),
             tmux_session: format!("beethoven-{task_id}"),
             git_worktree: root.join("repo").to_string_lossy().into_owned(),
             model_runtime: "stub".to_string(),
@@ -77,7 +79,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mgr = WorkspaceManager::new(dir.path());
 
-        let state = mgr.create("task-1").unwrap();
+        let state = mgr.create("task-1", "/repo/path").unwrap();
 
         let root = mgr.path_for("task-1");
         for sub in ["repo", "memory", "logs", "artifacts", "prompts"] {
@@ -92,7 +94,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mgr = WorkspaceManager::new(dir.path());
 
-        mgr.create("task-2").unwrap();
+        mgr.create("task-2", "/repo/path").unwrap();
         assert!(mgr.path_for("task-2").exists());
 
         mgr.destroy("task-2").unwrap();

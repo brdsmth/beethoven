@@ -7,6 +7,10 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum EventType {
+    ProjectCreated,
+
+    AgentTemplateCreated,
+
     GoalCreated,
     GoalUpdated,
 
@@ -42,6 +46,8 @@ impl std::str::FromStr for EventType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
+            "ProjectCreated" => EventType::ProjectCreated,
+            "AgentTemplateCreated" => EventType::AgentTemplateCreated,
             "GoalCreated" => EventType::GoalCreated,
             "GoalUpdated" => EventType::GoalUpdated,
             "AgentCreated" => EventType::AgentCreated,
@@ -68,6 +74,8 @@ impl std::str::FromStr for EventType {
 impl EventType {
     pub fn as_str(&self) -> &'static str {
         match self {
+            EventType::ProjectCreated => "ProjectCreated",
+            EventType::AgentTemplateCreated => "AgentTemplateCreated",
             EventType::GoalCreated => "GoalCreated",
             EventType::GoalUpdated => "GoalUpdated",
             EventType::AgentCreated => "AgentCreated",
@@ -90,24 +98,66 @@ impl EventType {
     }
 }
 
+/// Every event belongs to Beethoven itself (installation-level lifecycle,
+/// e.g. project/template creation) or to exactly one project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EventScope {
+    Global,
+    Project(String),
+}
+
+impl EventScope {
+    pub fn project_id(&self) -> Option<&str> {
+        match self {
+            EventScope::Global => None,
+            EventScope::Project(id) => Some(id),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: String,
+    pub scope: EventScope,
     pub event_type: EventType,
-    pub actor_id: String,
+    pub actor_id: Option<String>,
     pub payload: Value,
     pub timestamp: DateTime<Utc>,
 }
 
 impl Event {
-    pub fn new(event_type: EventType, actor_id: impl Into<String>, payload: Value) -> Self {
+    pub fn new(
+        scope: EventScope,
+        event_type: EventType,
+        actor_id: Option<impl Into<String>>,
+        payload: Value,
+    ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
+            scope,
             event_type,
-            actor_id: actor_id.into(),
+            actor_id: actor_id.map(Into::into),
             payload,
             timestamp: Utc::now(),
         }
+    }
+
+    pub fn global(event_type: EventType, actor_id: impl Into<String>, payload: Value) -> Self {
+        Self::new(EventScope::Global, event_type, Some(actor_id), payload)
+    }
+
+    pub fn for_project(
+        project_id: impl Into<String>,
+        event_type: EventType,
+        actor_id: impl Into<String>,
+        payload: Value,
+    ) -> Self {
+        Self::new(
+            EventScope::Project(project_id.into()),
+            event_type,
+            Some(actor_id),
+            payload,
+        )
     }
 }
 
@@ -128,7 +178,9 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
-    const ALL_EVENT_TYPES: [EventType; 18] = [
+    const ALL_EVENT_TYPES: [EventType; 20] = [
+        EventType::ProjectCreated,
+        EventType::AgentTemplateCreated,
         EventType::GoalCreated,
         EventType::GoalUpdated,
         EventType::AgentCreated,
@@ -163,9 +215,16 @@ mod tests {
 
     #[test]
     fn new_events_get_unique_ids() {
-        let a = Event::new(EventType::GoalCreated, "human", serde_json::json!({}));
-        let b = Event::new(EventType::GoalCreated, "human", serde_json::json!({}));
+        let a = Event::global(EventType::ProjectCreated, "human", serde_json::json!({}));
+        let b = Event::global(EventType::ProjectCreated, "human", serde_json::json!({}));
         assert_ne!(a.id, b.id);
-        assert_eq!(a.actor_id, "human");
+        assert_eq!(a.actor_id, Some("human".to_string()));
+        assert_eq!(a.scope, EventScope::Global);
+    }
+
+    #[test]
+    fn for_project_sets_project_scope() {
+        let e = Event::for_project("p1", EventType::GoalCreated, "human", serde_json::json!({}));
+        assert_eq!(e.scope.project_id(), Some("p1"));
     }
 }

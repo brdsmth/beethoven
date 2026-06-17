@@ -20,6 +20,16 @@ impl AgentKind {
         AgentKind::DevOps,
     ];
 
+    /// The full set of default agent templates Beethoven seeds once, globally.
+    pub const ALL: [AgentKind; 6] = [
+        AgentKind::ProjectManager,
+        AgentKind::Backend,
+        AgentKind::Frontend,
+        AgentKind::Qa,
+        AgentKind::Research,
+        AgentKind::DevOps,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             AgentKind::ProjectManager => "project_manager",
@@ -28,6 +38,32 @@ impl AgentKind {
             AgentKind::Qa => "qa",
             AgentKind::Research => "research",
             AgentKind::DevOps => "devops",
+        }
+    }
+
+    pub fn role_label(&self) -> &'static str {
+        match self {
+            AgentKind::ProjectManager => "Project Manager",
+            AgentKind::Backend => "Backend Engineer",
+            AgentKind::Frontend => "Frontend Engineer",
+            AgentKind::Qa => "QA Engineer",
+            AgentKind::Research => "Research Agent",
+            AgentKind::DevOps => "DevOps Agent",
+        }
+    }
+
+    pub fn default_prompt(&self) -> String {
+        format!("You are the {} for this project.", self.role_label())
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            AgentKind::ProjectManager => "PM",
+            AgentKind::Backend => "Backend",
+            AgentKind::Frontend => "Frontend",
+            AgentKind::Qa => "QA",
+            AgentKind::Research => "Research",
+            AgentKind::DevOps => "DevOps",
         }
     }
 }

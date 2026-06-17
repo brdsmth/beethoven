@@ -5,15 +5,25 @@ use std::collections::HashMap;
 
 #[derive(Debug, Default)]
 pub struct RuntimeState {
+    pub projects: HashMap<String, Project>,
+    pub agent_templates: HashMap<String, AgentTemplate>,
     pub goals: HashMap<String, Goal>,
     pub tasks: HashMap<String, Task>,
-    pub agents: HashMap<String, Agent>,
+    pub agent_instances: HashMap<String, AgentInstance>,
     pub inbox: HashMap<String, InboxItem>,
 }
 
 fn decode<T: serde::de::DeserializeOwned>(event: &Event) -> T {
     serde_json::from_value(event.payload.clone())
         .unwrap_or_else(|e| panic!("malformed payload for {:?}: {e}", event.event_type))
+}
+
+fn project_id_of(event: &Event) -> String {
+    event
+        .scope
+        .project_id()
+        .unwrap_or_else(|| panic!("{:?} must be project-scoped", event.event_type))
+        .to_string()
 }
 
 impl RuntimeState {
@@ -28,12 +38,45 @@ impl RuntimeState {
     pub fn apply(&mut self, event: &Event) {
         let ts = event.timestamp;
         match event.event_type {
+            EventType::ProjectCreated => {
+                let p: ProjectCreatedPayload = decode(event);
+                self.projects.insert(
+                    p.id.clone(),
+                    Project {
+                        id: p.id,
+                        name: p.name,
+                        slug: p.slug,
+                        repository_path: p.repository_path.into(),
+                        default_branch: p.default_branch,
+                        status: ProjectStatus::Active,
+                        created_at: ts,
+                        updated_at: ts,
+                    },
+                );
+            }
+            EventType::AgentTemplateCreated => {
+                let p: AgentTemplateCreatedPayload = decode(event);
+                self.agent_templates.insert(
+                    p.id.clone(),
+                    AgentTemplate {
+                        id: p.id,
+                        kind: p.kind,
+                        role: p.role,
+                        prompt: p.prompt,
+                        permissions: p.permissions,
+                        tools: p.tools,
+                        created_at: ts,
+                    },
+                );
+            }
             EventType::GoalCreated => {
+                let project_id = project_id_of(event);
                 let p: GoalCreatedPayload = decode(event);
                 self.goals.insert(
                     p.id.clone(),
                     Goal {
                         id: p.id,
+                        project_id,
                         title: p.title,
                         description: p.description,
                         status: GoalStatus::Open,
@@ -50,12 +93,16 @@ impl RuntimeState {
                 }
             }
             EventType::AgentCreated => {
+                let project_id = project_id_of(event);
                 let p: AgentCreatedPayload = decode(event);
-                self.agents.insert(
+                self.agent_instances.insert(
                     p.id.clone(),
-                    Agent {
+                    AgentInstance {
                         id: p.id,
+                        project_id,
+                        template_id: p.template_id,
                         kind: p.kind,
+                        name: p.name,
                         status: AgentStatus::Created,
                         current_task_id: None,
                         created_at: ts,
@@ -65,24 +112,26 @@ impl RuntimeState {
             }
             EventType::AgentStarted => {
                 let p: AgentStartedPayload = decode(event);
-                if let Some(a) = self.agents.get_mut(&p.id) {
+                if let Some(a) = self.agent_instances.get_mut(&p.id) {
                     a.status = AgentStatus::Idle;
                     a.updated_at = ts;
                 }
             }
             EventType::AgentStopped => {
                 let p: AgentStartedPayload = decode(event);
-                if let Some(a) = self.agents.get_mut(&p.id) {
+                if let Some(a) = self.agent_instances.get_mut(&p.id) {
                     a.status = AgentStatus::Completed;
                     a.updated_at = ts;
                 }
             }
             EventType::TaskCreated => {
+                let project_id = project_id_of(event);
                 let p: TaskCreatedPayload = decode(event);
                 self.tasks.insert(
                     p.id.clone(),
                     Task {
                         id: p.id,
+                        project_id,
                         goal_id: p.goal_id,
                         parent_task_id: p.parent_task_id.clone(),
                         title: p.title,
@@ -105,7 +154,7 @@ impl RuntimeState {
                         parent.updated_at = ts;
                     }
                     if let Some(aid) = freed_agent_id {
-                        if let Some(a) = self.agents.get_mut(&aid) {
+                        if let Some(a) = self.agent_instances.get_mut(&aid) {
                             a.status = AgentStatus::Idle;
                             a.current_task_id = None;
                             a.updated_at = ts;
@@ -120,7 +169,7 @@ impl RuntimeState {
                     t.assigned_agent_id = Some(p.agent_id.clone());
                     t.updated_at = ts;
                 }
-                if let Some(a) = self.agents.get_mut(&p.agent_id) {
+                if let Some(a) = self.agent_instances.get_mut(&p.agent_id) {
                     a.status = AgentStatus::Assigned;
                     a.current_task_id = Some(p.task_id);
                     a.updated_at = ts;
@@ -134,7 +183,7 @@ impl RuntimeState {
                     t.updated_at = ts;
                 }
                 if let Some(aid) = agent_id {
-                    if let Some(a) = self.agents.get_mut(&aid) {
+                    if let Some(a) = self.agent_instances.get_mut(&aid) {
                         a.status = AgentStatus::Executing;
                         a.updated_at = ts;
                     }
@@ -149,7 +198,7 @@ impl RuntimeState {
                     t.updated_at = ts;
                 }
                 if let Some(aid) = agent_id {
-                    if let Some(a) = self.agents.get_mut(&aid) {
+                    if let Some(a) = self.agent_instances.get_mut(&aid) {
                         a.status = AgentStatus::Idle;
                         a.current_task_id = None;
                         a.updated_at = ts;
@@ -166,7 +215,7 @@ impl RuntimeState {
                     t.updated_at = ts;
                 }
                 if let Some(aid) = agent_id {
-                    if let Some(a) = self.agents.get_mut(&aid) {
+                    if let Some(a) = self.agent_instances.get_mut(&aid) {
                         a.status = AgentStatus::Idle;
                         a.current_task_id = None;
                         a.updated_at = ts;
@@ -177,11 +226,13 @@ impl RuntimeState {
                 }
             }
             EventType::QuestionRaised => {
+                let project_id = project_id_of(event);
                 let p: QuestionRaisedPayload = decode(event);
                 self.inbox.insert(
                     p.inbox_id.clone(),
                     InboxItem {
                         id: p.inbox_id,
+                        project_id,
                         kind: InboxKind::Question,
                         task_id: Some(p.task_id),
                         agent_id: Some(p.agent_id),
@@ -210,11 +261,13 @@ impl RuntimeState {
                 }
             }
             EventType::DecisionRequested => {
+                let project_id = project_id_of(event);
                 let p: DecisionRequestedPayload = decode(event);
                 self.inbox.insert(
                     p.inbox_id.clone(),
                     InboxItem {
                         id: p.inbox_id,
+                        project_id,
                         kind: InboxKind::Decision,
                         task_id: p.task_id,
                         agent_id: p.agent_id,

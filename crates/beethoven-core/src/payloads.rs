@@ -3,6 +3,25 @@ use beethoven_agents::AgentKind;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ProjectCreatedPayload {
+    pub id: String,
+    pub name: String,
+    pub slug: String,
+    pub repository_path: String,
+    pub default_branch: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AgentTemplateCreatedPayload {
+    pub id: String,
+    pub kind: AgentKind,
+    pub role: String,
+    pub prompt: String,
+    pub permissions: Vec<String>,
+    pub tools: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GoalCreatedPayload {
     pub id: String,
     pub title: String,
@@ -18,7 +37,9 @@ pub struct GoalUpdatedPayload {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AgentCreatedPayload {
     pub id: String,
+    pub template_id: String,
     pub kind: AgentKind,
+    pub name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
