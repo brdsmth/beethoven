@@ -6,3 +6,11 @@ license.workspace = true
 
 [dependencies]
 beethoven-core.workspace = true
+beethoven-db.workspace = true
+beethoven-events.workspace = true
+beethoven-agents.workspace = true
+tauri.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
