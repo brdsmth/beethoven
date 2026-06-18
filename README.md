@@ -11,14 +11,14 @@ for the real-model-runtime plan, and
 for the continuous-runtime plan. On top of Phase 1.6's Project → Initiative →
 Requirement → Plan → Epic hierarchy and Project → Goal → Task hierarchy
 (both terminating in the same `Task`/execution/review pipeline) and Phase
-1.7a's real model invocation, this is **Phase 1.8**: a continuously-running
-daemon (`beethoven start`) that recovers from crashes and executes tasks
-across every active project concurrently, instead of a human invoking `run`
-by hand on a loop. PM planning and review are still deterministic
-heuristics — replacing those with model-driven behavior is Phase 1.7b (see
-[Stub behavior](#stub-behavior)). A few pieces of the spec were deliberately
-simplified or skipped — see [Continuous runtime](#continuous-runtime) for
-what and why.
+1.7a's real model invocation and Phase 1.8's continuous runtime, this is
+**Phase 1.9a**: a read-only Tauri + React desktop UI, Mission Control,
+giving the continuously-running organization a visual home (see
+[Mission Control (desktop UI)](#mission-control-desktop-ui)). PM planning
+and review are still deterministic heuristics — replacing those with
+model-driven behavior is Phase 1.7b (see [Stub behavior](#stub-behavior)).
+A few pieces of the spec were deliberately simplified or skipped — see
+[Continuous runtime](#continuous-runtime) for what and why.
 
 ## Build
 
@@ -247,6 +247,49 @@ and after each decision resolution, never polled.
 cargo run -- initiative show <initiative-id>   # requirements/epics/decisions + status
 cargo run -- initiative list --project sample
 ```
+
+## Mission Control (desktop UI)
+
+A Tauri 2 + React desktop app (`apps/desktop`) that gives the runtime a
+visual home. It reads the same SQLite-backed event log the CLI does
+(`beethoven_db::SqliteEventStore` + `beethoven_core::RuntimeState::replay`,
+via the `beethoven-tauri` crate's command/derivation layer) — it is a new
+*reader* of existing state, not a new source of truth. No `Runtime`/
+`ModelRuntime` runs in the desktop process in this phase, since every
+command is a pure read.
+
+```bash
+cd apps/desktop
+npm install
+npm run tauri dev    # reads the same ~/.beethoven (or BEETHOVEN_HOME) the CLI uses
+```
+
+Realtime updates come from Tauri's own event bridge, not a literal
+websocket: a background task polls the event log every 1.5s and emits one
+`state-changed` event on change, which the frontend uses to invalidate and
+refetch every TanStack Query — so the UI updates on its own (within ~1.5s)
+whenever `beethoven run`/`start` or any CLI command appends events, no
+manual refresh needed.
+
+**Implemented (Phase 1.9a, read-only):**
+
+- Runtime status (daemon liveness, last start/stop, active agent/task/inbox
+  counts)
+- Projects (list + detail: initiatives/epics/decisions, goals/tasks)
+- Agents (per-project org tree + detail: status, current task, last
+  heartbeat, recent activity)
+- Timeline (full event history, filterable by project/agent/event
+  type/date range)
+- Inbox (decisions/questions/approvals/alerts, rendered read-only)
+- Active execution (every in-progress task, its agent, and elapsed runtime)
+- Realtime updates (no manual refresh)
+
+**Deliberately deferred to Phase 1.9b** (so the UI is proven as a pure
+observability layer before any mutation path exists): starting/stopping the
+runtime, answering inbox items, pausing/resuming a project, and retrying a
+task. Inbox action buttons (Approve/Reject/Respond/Answer/Acknowledge) are
+rendered visibly disabled rather than omitted, so 1.9b only has to wire up
+`onClick`, not redesign the cards.
 
 ## Stub behavior
 
