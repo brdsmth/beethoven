@@ -85,6 +85,34 @@ pub fn remove_worktree(repo_path: &Path, worktree_path: &Path, branch: &str) -> 
     Ok(())
 }
 
+/// Reads the `.git` link `git worktree add` wrote at `worktree_path`: a one
+/// line `gitdir: <path>` pointer back at the main repo's
+/// `.git/worktrees/<name>` administrative directory. Captured once at
+/// creation time so it can be restored later if something inside the
+/// worktree replaces it.
+pub fn read_worktree_git_link(worktree_path: &Path) -> Result<String, GitError> {
+    Ok(std::fs::read_to_string(worktree_path.join(".git"))?)
+}
+
+/// Restores `worktree_path`'s `.git` link to `expected_link` if it no longer
+/// matches -- e.g. a task's model run ran its own `git init` (common in
+/// project scaffolding tools), replacing the link with a brand new, disjoint
+/// repo. Without this, status/diff would run against that bogus repo instead
+/// of this worktree's real history, making genuine changes look like none.
+pub fn restore_worktree_git_link(worktree_path: &Path, expected_link: &str) -> Result<(), GitError> {
+    let git_path = worktree_path.join(".git");
+    if std::fs::read_to_string(&git_path).ok().as_deref() == Some(expected_link) {
+        return Ok(());
+    }
+    if git_path.is_dir() {
+        std::fs::remove_dir_all(&git_path)?;
+    } else if git_path.exists() {
+        std::fs::remove_file(&git_path)?;
+    }
+    std::fs::write(&git_path, expected_link)?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GitStatus {
     pub modified: Vec<String>,
@@ -214,6 +242,67 @@ mod tests {
         assert!(diff_text.contains("NOTES.md"));
         assert!(diff_text.contains("README.md"));
         assert!(diff_text.contains("updated"));
+    }
+
+    #[test]
+    fn restore_worktree_git_link_is_a_no_op_when_the_link_already_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+
+        let worktree = dir.path().join("worktree");
+        create_worktree(&repo, &worktree, "task/demo", "main").unwrap();
+        let link = read_worktree_git_link(&worktree).unwrap();
+
+        restore_worktree_git_link(&worktree, &link).unwrap();
+        assert_eq!(read_worktree_git_link(&worktree).unwrap(), link);
+        assert!(status(&worktree).unwrap().is_clean());
+    }
+
+    #[test]
+    fn restore_worktree_git_link_repairs_a_deleted_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+
+        let worktree = dir.path().join("worktree");
+        create_worktree(&repo, &worktree, "task/demo", "main").unwrap();
+        let link = read_worktree_git_link(&worktree).unwrap();
+
+        std::fs::remove_file(worktree.join(".git")).unwrap();
+        std::fs::write(worktree.join("NOTES.md"), "new file\n").unwrap();
+
+        restore_worktree_git_link(&worktree, &link).unwrap();
+
+        let st = status(&worktree).unwrap();
+        assert!(st.added.iter().any(|f| f == "NOTES.md"));
+    }
+
+    #[test]
+    fn restore_worktree_git_link_replaces_a_nested_repo_the_model_initialized() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+
+        let worktree = dir.path().join("worktree");
+        create_worktree(&repo, &worktree, "task/demo", "main").unwrap();
+        let link = read_worktree_git_link(&worktree).unwrap();
+
+        // Simulate a scaffolding tool reinitializing git inside the worktree:
+        // its own real `.git` directory, with everything already committed.
+        std::fs::write(worktree.join("NOTES.md"), "new file\n").unwrap();
+        std::fs::remove_file(worktree.join(".git")).unwrap();
+        run_git(&worktree, &["init", "-q", "-b", "main"]).unwrap();
+        run_git(&worktree, &["config", "user.email", "test@example.com"]).unwrap();
+        run_git(&worktree, &["config", "user.name", "Test"]).unwrap();
+        run_git(&worktree, &["add", "-A"]).unwrap();
+        run_git(&worktree, &["commit", "-q", "-m", "bogus init"]).unwrap();
+        assert!(status(&worktree).unwrap().is_clean(), "the nested repo hides the real change");
+
+        restore_worktree_git_link(&worktree, &link).unwrap();
+
+        let st = status(&worktree).unwrap();
+        assert!(st.added.iter().any(|f| f == "NOTES.md"), "restoring the link should reveal the real change again");
     }
 
     #[test]

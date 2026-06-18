@@ -223,6 +223,7 @@ impl Runtime {
             branch,
             tmux_session: tmux_session_name(&project.slug, agent_kind.as_str(), task_id),
             git_worktree,
+            git_link: String::new(),
         });
     }
 
@@ -701,6 +702,12 @@ impl Runtime {
 
                 match result.status {
                     ExecutionStatus::Completed => {
+                        // The model run is sandboxed but untrusted: a project
+                        // scaffolding step may have run its own `git init` inside
+                        // the worktree, replacing the `.git` link `git worktree add`
+                        // wrote. Restore it before computing status/diff so a
+                        // genuinely successful run is never misread as empty.
+                        workspaces.restore_git_link(&ws_state)?;
                         let git_status = beethoven_git::status(Path::new(&ws_state.git_worktree))?;
                         self.emit_project(
                             &project_id,

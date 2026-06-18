@@ -61,6 +61,10 @@ pub struct WorkspaceState {
     pub branch: String,
     pub tmux_session: String,
     pub git_worktree: String,
+    /// The worktree's `.git` link as `git worktree add` originally wrote it,
+    /// captured so it can be restored if a task's model run replaces it
+    /// (e.g. by running its own `git init`).
+    pub git_link: String,
 }
 
 /// Everything needed to stand up a real workspace: a git worktree on a fresh
@@ -104,6 +108,7 @@ impl WorkspaceManager {
             request.branch,
             request.default_branch,
         )?;
+        let git_link = beethoven_git::read_worktree_git_link(&worktree_path)?;
 
         let session_name = tmux_session_name(request.project_slug, request.agent_label, request.task_id);
         TmuxSession::create(&session_name, &worktree_path)?;
@@ -115,6 +120,7 @@ impl WorkspaceManager {
             branch: request.branch.to_string(),
             tmux_session: session_name,
             git_worktree: worktree_path.to_string_lossy().into_owned(),
+            git_link,
         };
         self.write_state(&root, &state)?;
         Ok(state)
@@ -141,6 +147,14 @@ impl WorkspaceManager {
     /// finish (sentinel-based, see [`TmuxSession::run_and_wait`]).
     pub fn run_in_session(&self, state: &WorkspaceState, command: &str, timeout: Duration) -> Result<String, WorkspacesError> {
         TmuxSession { name: state.tmux_session.clone() }.run_and_wait(command, timeout)
+    }
+
+    /// Restores the worktree's `.git` link if the task's model run replaced
+    /// or deleted it, so git status/diff always reflect this worktree's real
+    /// history regardless of what ran inside it.
+    pub fn restore_git_link(&self, state: &WorkspaceState) -> Result<(), WorkspacesError> {
+        beethoven_git::restore_worktree_git_link(Path::new(&state.git_worktree), &state.git_link)?;
+        Ok(())
     }
 
     fn write_state(&self, root: &Path, state: &WorkspaceState) -> Result<(), WorkspacesError> {

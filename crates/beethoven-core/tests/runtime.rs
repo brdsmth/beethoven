@@ -98,6 +98,39 @@ impl ModelRuntime for SlowModelRuntime {
     }
 }
 
+/// Simulates the production bug a real Claude Code run can trigger: a
+/// scaffolding step inside the model's own sandboxed worktree runs `git
+/// init`, replacing the `.git` link `git worktree add` wrote with a brand
+/// new, disjoint repo. Writes a real file, then clobbers `.git` and commits
+/// it into the bogus repo -- so without the fix, `git status`/`diff` run
+/// against that bogus repo and see no changes at all, even though real work
+/// was done.
+struct GitClobberingModelRuntime;
+
+impl ModelRuntime for GitClobberingModelRuntime {
+    fn provider(&self) -> &'static str {
+        "git-clobbering-stub"
+    }
+
+    fn execute(&self, request: &ExecutionRequest) -> Result<ExecutionResult, AgentsError> {
+        let worktree = Path::new(&request.workspace.git_worktree);
+        std::fs::write(worktree.join("NOTES.md"), "real work the model actually did\n").unwrap();
+        std::fs::remove_file(worktree.join(".git")).unwrap();
+        run_git(worktree, &["init", "-q", "-b", "main"]);
+        run_git(worktree, &["config", "user.email", "model@example.com"]);
+        run_git(worktree, &["config", "user.name", "Model"]);
+        run_git(worktree, &["add", "-A"]);
+        run_git(worktree, &["commit", "-q", "-m", "bogus scaffolding init"]);
+        Ok(ExecutionResult {
+            status: ExecutionStatus::Completed,
+            summary: "model run that clobbered its own .git link".to_string(),
+            raw_response: "ok".to_string(),
+            structured_output: None,
+            cost_usd: None,
+        })
+    }
+}
+
 /// Completes every task without ever touching the worktree, so the captured
 /// diff is always empty -- `ReviewService::review` always returns
 /// `NeedsChanges` for it, deterministically driving the retry-cap path.
@@ -334,6 +367,48 @@ async fn a_completed_task_records_a_real_execution_run_diff_artifact_and_approve
         .find(|a| a.task_id == task.id && a.kind == ArtifactKind::Diff)
         .unwrap();
     assert!(diff_artifact.content.contains("Write the changelog"));
+
+    let review = runtime.state.reviews.values().find(|r| r.task_id == task.id).unwrap();
+    assert_eq!(review.status, ReviewStatus::Approved);
+}
+
+#[tokio::test]
+async fn a_model_run_that_reinitializes_git_inside_its_worktree_still_yields_a_real_diff() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(GitClobberingModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let goal = runtime
+        .create_goal(&project.id, "Docs", "- Write the landing page copy")
+        .await
+        .unwrap();
+    runtime.plan_goal(&goal.id).await.unwrap();
+
+    let report = runtime.run_tick(&project.id).await.unwrap();
+    assert_eq!(report.completed, 1);
+    assert_eq!(report.needs_changes, 0);
+    assert_eq!(report.escalated, 0);
+
+    let task = runtime.state.tasks.values().next().unwrap().clone();
+    assert_eq!(task.status, TaskStatus::Done);
+
+    // Without restoring the worktree's `.git` link before computing the
+    // diff, this would have come back empty -- the model's own `git init`
+    // replaced it with a disjoint repo that already had everything
+    // committed, hiding the real change from status/diff.
+    let diff_artifact = runtime
+        .state
+        .artifacts
+        .values()
+        .find(|a| a.task_id == task.id && a.kind == ArtifactKind::Diff)
+        .unwrap();
+    assert!(diff_artifact.content.contains("NOTES.md"));
+    assert!(diff_artifact.content.contains("real work the model actually did"));
 
     let review = runtime.state.reviews.values().find(|r| r.task_id == task.id).unwrap();
     assert_eq!(review.status, ReviewStatus::Approved);
