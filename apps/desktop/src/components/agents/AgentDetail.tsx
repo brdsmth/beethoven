@@ -1,0 +1,49 @@
+import { useQuery } from "@tanstack/react-query";
+import { api } from "../../lib/api";
+import { formatRelativeTime, humanizeEventType } from "../../lib/format";
+import { Panel } from "../Panel";
+import type { Agent } from "../../lib/types";
+
+export function AgentDetail({ agent }: { agent: Agent }) {
+  const { data: events } = useQuery({
+    queryKey: ["timeline", { agentId: agent.id }],
+    queryFn: () => api.getTimeline({ agentId: agent.id }),
+  });
+
+  return (
+    <Panel title={agent.name}>
+      <div className="grid grid-cols-2 gap-3 text-sm">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-slate-500">Status</div>
+          <div className="text-slate-100">{agent.status}</div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-slate-500">Current Task</div>
+          <div className="text-slate-100">{agent.current_task_title ?? "—"}</div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-slate-500">Last Heartbeat</div>
+          <div className="text-slate-100">
+            {agent.last_heartbeat ? formatRelativeTime(agent.last_heartbeat) : "—"}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <div className="mb-2 text-xs uppercase tracking-wide text-slate-500">Recent Activity</div>
+        {!events || events.length === 0 ? (
+          <div className="text-sm text-slate-500">No recent activity.</div>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {events.slice(0, 10).map((e) => (
+              <li key={e.id} className="flex items-center justify-between text-sm">
+                <span className="text-slate-300">{humanizeEventType(e.event_type)}</span>
+                <span className="text-xs text-slate-500">{formatRelativeTime(e.timestamp)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Panel>
+  );
+}

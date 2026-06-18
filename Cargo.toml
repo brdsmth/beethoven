@@ -10,6 +10,7 @@ members = [
     "crates/beethoven-api",
     "crates/beethoven-cli",
     "crates/beethoven-tauri",
+    "apps/desktop/src-tauri",
 ]
 
 [workspace.package]
