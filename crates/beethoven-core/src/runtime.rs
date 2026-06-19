@@ -201,6 +201,21 @@ impl Runtime {
         self.emit_global(EventType::RuntimeStopped, "system", json!({})).await
     }
 
+    pub async fn mark_runtime_restarted(&mut self) -> Result<(), CoreError> {
+        self.emit_global(EventType::RuntimeRestarted, "system", json!({})).await
+    }
+
+    /// Re-replays `state` from the event store. Tauri's mutating commands
+    /// call this before every `Runtime` method to close the gap against any
+    /// other writer to the same database (e.g. a `beethoven start` CLI daemon
+    /// running concurrently) -- the same freshness guarantee the read-only
+    /// commands already get by re-replaying on every call.
+    pub async fn refresh(&mut self) -> Result<(), CoreError> {
+        let events = self.store.list_all().await?;
+        self.state = RuntimeState::replay(&events);
+        Ok(())
+    }
+
     /// Best-effort teardown of whatever workspace/tmux session the crashed
     /// attempt left behind. The workspace path, branch, and tmux session name
     /// are all deterministic functions of (project, task, agent kind), so they
@@ -685,6 +700,18 @@ impl Runtime {
         let workspaces = self.workspace_manager_for(&project_slug);
         let mut delta = TickReport::default();
 
+        // The task may have been cancelled while this execution was in
+        // flight (started under `start_task`, running in a `spawn_blocking`
+        // call elsewhere in the same `tick_projects` batch). Tear down its
+        // workspace and stop here rather than resurrecting it to `Done`/
+        // `Review` once the (now-irrelevant) result comes back.
+        let still_cancelled =
+            self.state.tasks.get(&task_id).map(|t| t.status == TaskStatus::Cancelled).unwrap_or(false);
+        if still_cancelled {
+            self.teardown_workspace(&project_id, &task_id, &agent_id, &workspaces, &ws_state).await?;
+            return Ok(delta);
+        }
+
         match execution {
             Ok(result) => {
                 self.emit_project(
@@ -921,10 +948,30 @@ impl Runtime {
             project_ids.iter().map(|p| (p.clone(), TickReport::default())).collect();
         let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent.max(1)));
 
+        // Archived projects are removed from active execution entirely for
+        // the rest of this call; Paused projects still finish in-flight work
+        // below but accept no new assignments.
+        let active_project_ids: Vec<String> = project_ids
+            .iter()
+            .filter(|p| {
+                self.state.projects.get(p.as_str()).map(|p| p.status != ProjectStatus::Archived).unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+
         for _ in 0..1000 {
             let mut progressed = false;
 
-            for project_id in project_ids {
+            for project_id in &active_project_ids {
+                let paused = self
+                    .state
+                    .projects
+                    .get(project_id)
+                    .map(|p| p.status == ProjectStatus::Paused)
+                    .unwrap_or(false);
+                if paused {
+                    continue;
+                }
                 let assigned = self.assign_ready_tasks(project_id).await?;
                 if assigned > 0 {
                     reports.get_mut(project_id).expect("seeded above").assigned += assigned;
@@ -933,7 +980,7 @@ impl Runtime {
             }
 
             let mut batch: Vec<PreparedTask> = Vec::new();
-            for project_id in project_ids {
+            for project_id in &active_project_ids {
                 let assigned_task_ids: Vec<String> = self
                     .state
                     .tasks
@@ -1055,6 +1102,221 @@ impl Runtime {
         }
 
         Ok(self.state.inbox.get(inbox_id).expect("just updated").clone())
+    }
+
+    /// Prevents new task assignment for `project_id`; tasks already
+    /// in-flight finish normally within the same tick that paused them.
+    pub async fn pause_project(&mut self, project_id: &str) -> Result<Project, CoreError> {
+        let project = self.require_project(project_id)?;
+        if project.status != ProjectStatus::Active {
+            return Err(CoreError::InvalidState(format!(
+                "project {project_id} is not active (status: {:?})",
+                project.status
+            )));
+        }
+        self.emit_global(EventType::ProjectPaused, "human", json!({"id": project_id})).await?;
+        Ok(self.state.projects.get(project_id).expect("just updated").clone())
+    }
+
+    pub async fn resume_project(&mut self, project_id: &str) -> Result<Project, CoreError> {
+        let project = self.require_project(project_id)?;
+        if project.status != ProjectStatus::Paused {
+            return Err(CoreError::InvalidState(format!(
+                "project {project_id} is not paused (status: {:?})",
+                project.status
+            )));
+        }
+        self.emit_global(EventType::ProjectResumed, "human", json!({"id": project_id})).await?;
+        Ok(self.state.projects.get(project_id).expect("just updated").clone())
+    }
+
+    /// Removes `project_id` from active execution entirely -- unlike
+    /// `pause_project`, no further task assignment *or* task start/finish
+    /// happens for this project in `tick_projects`, even for already
+    /// in-flight work.
+    pub async fn archive_project(&mut self, project_id: &str) -> Result<Project, CoreError> {
+        let project = self.require_project(project_id)?;
+        if project.status == ProjectStatus::Archived {
+            return Err(CoreError::InvalidState(format!("project {project_id} is already archived")));
+        }
+        self.emit_global(EventType::ProjectArchived, "human", json!({"id": project_id})).await?;
+        Ok(self.state.projects.get(project_id).expect("just updated").clone())
+    }
+
+    /// Returns a `Blocked` task to `Ready` for another automatic attempt.
+    pub async fn retry_task(&mut self, task_id: &str) -> Result<Task, CoreError> {
+        let task = self
+            .state
+            .tasks
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| CoreError::TaskNotFound(task_id.to_string()))?;
+        if task.status != TaskStatus::Blocked {
+            return Err(CoreError::InvalidState(format!(
+                "task {task_id} is not blocked (status: {:?})",
+                task.status
+            )));
+        }
+        self.emit_project(&task.project_id, EventType::TaskRetried, "human", json!({"task_id": task_id}))
+            .await?;
+        Ok(self.state.tasks.get(task_id).expect("just updated").clone())
+    }
+
+    /// Stops future execution of a task. A task already mid-execution (an
+    /// `InProgress` model run already kicked off in this same `tick_projects`
+    /// call) is guarded against in `finish_task`, which checks for this
+    /// status before resurrecting it to `Done`.
+    pub async fn cancel_task(&mut self, task_id: &str) -> Result<Task, CoreError> {
+        let task = self
+            .state
+            .tasks
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| CoreError::TaskNotFound(task_id.to_string()))?;
+        if matches!(task.status, TaskStatus::Done | TaskStatus::Cancelled) {
+            return Err(CoreError::InvalidState(format!("task {task_id} is already {:?}", task.status)));
+        }
+        self.emit_project(&task.project_id, EventType::TaskCancelled, "human", json!({"task_id": task_id}))
+            .await?;
+        Ok(self.state.tasks.get(task_id).expect("just updated").clone())
+    }
+
+    /// Moves ownership of a task to another idle agent in the same project.
+    /// Restricted to `Assigned`/`Blocked` tasks -- an `InProgress` task
+    /// already has a live workspace and possibly an in-flight model call that
+    /// reassignment can't safely interrupt.
+    pub async fn reassign_task(&mut self, task_id: &str, new_agent_id: &str) -> Result<Task, CoreError> {
+        let task = self
+            .state
+            .tasks
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| CoreError::TaskNotFound(task_id.to_string()))?;
+        if !matches!(task.status, TaskStatus::Assigned | TaskStatus::Blocked) {
+            return Err(CoreError::InvalidState(format!(
+                "task {task_id} cannot be reassigned from status {:?}",
+                task.status
+            )));
+        }
+        let new_agent = self
+            .state
+            .agent_instances
+            .get(new_agent_id)
+            .cloned()
+            .ok_or_else(|| CoreError::AgentNotFound(new_agent_id.to_string()))?;
+        if new_agent.project_id != task.project_id {
+            return Err(CoreError::InvalidState(format!(
+                "agent {new_agent_id} is not in project {}",
+                task.project_id
+            )));
+        }
+        if new_agent.status != AgentStatus::Idle {
+            return Err(CoreError::InvalidState(format!("agent {new_agent_id} is not idle")));
+        }
+
+        let old_agent_id = task.assigned_agent_id.clone();
+        self.emit_project(
+            &task.project_id,
+            EventType::TaskReassigned,
+            "human",
+            json!({"task_id": task_id, "old_agent_id": old_agent_id, "new_agent_id": new_agent_id}),
+        )
+        .await?;
+        Ok(self.state.tasks.get(task_id).expect("just updated").clone())
+    }
+
+    /// Manual override for an escalated (`Blocked`) task: accept the work
+    /// without further changes. By the time a task reaches `Blocked` its
+    /// workspace has already been torn down, so this is purely a state
+    /// transition, not a new PR/merge -- there is nothing left to merge.
+    pub async fn approve_review(&mut self, task_id: &str) -> Result<Task, CoreError> {
+        let task = self
+            .state
+            .tasks
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| CoreError::TaskNotFound(task_id.to_string()))?;
+        if task.status != TaskStatus::Blocked {
+            return Err(CoreError::InvalidState(format!(
+                "task {task_id} is not blocked (status: {:?})",
+                task.status
+            )));
+        }
+        let pm_id = self.pm_instance_id(&task.project_id).unwrap_or_else(|| "system".to_string());
+        let review_id = Uuid::new_v4().to_string();
+        self.emit_project(
+            &task.project_id,
+            EventType::ReviewApproved,
+            &pm_id,
+            json!({"review_id": review_id, "task_id": task_id}),
+        )
+        .await?;
+        Ok(self.state.tasks.get(task_id).expect("just updated").clone())
+    }
+
+    /// Manual override for an escalated (`Blocked`) task: return it to
+    /// execution for another attempt, same effect as an automatic
+    /// `ReviewRejected` outcome.
+    pub async fn request_review_changes(&mut self, task_id: &str, reason: &str) -> Result<Task, CoreError> {
+        let task = self
+            .state
+            .tasks
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| CoreError::TaskNotFound(task_id.to_string()))?;
+        if task.status != TaskStatus::Blocked {
+            return Err(CoreError::InvalidState(format!(
+                "task {task_id} is not blocked (status: {:?})",
+                task.status
+            )));
+        }
+        self.emit_project(
+            &task.project_id,
+            EventType::ReviewChangesRequested,
+            "human",
+            json!({"task_id": task_id, "reason": reason}),
+        )
+        .await?;
+        Ok(self.state.tasks.get(task_id).expect("just updated").clone())
+    }
+
+    /// Prevents new task assignment to an agent. Restricted to `Idle` agents
+    /// so this can never silently fight `finish_task`'s "free agent to Idle"
+    /// step for an agent that's still mid-task.
+    pub async fn pause_agent(&mut self, agent_id: &str) -> Result<AgentInstance, CoreError> {
+        let agent = self
+            .state
+            .agent_instances
+            .get(agent_id)
+            .cloned()
+            .ok_or_else(|| CoreError::AgentNotFound(agent_id.to_string()))?;
+        if agent.status != AgentStatus::Idle {
+            return Err(CoreError::InvalidState(format!(
+                "agent {agent_id} is not idle (status: {:?})",
+                agent.status
+            )));
+        }
+        self.emit_project(&agent.project_id, EventType::AgentPaused, "human", json!({"id": agent_id}))
+            .await?;
+        Ok(self.state.agent_instances.get(agent_id).expect("just updated").clone())
+    }
+
+    pub async fn resume_agent(&mut self, agent_id: &str) -> Result<AgentInstance, CoreError> {
+        let agent = self
+            .state
+            .agent_instances
+            .get(agent_id)
+            .cloned()
+            .ok_or_else(|| CoreError::AgentNotFound(agent_id.to_string()))?;
+        if agent.status != AgentStatus::Paused {
+            return Err(CoreError::InvalidState(format!(
+                "agent {agent_id} is not paused (status: {:?})",
+                agent.status
+            )));
+        }
+        self.emit_project(&agent.project_id, EventType::AgentResumed, "human", json!({"id": agent_id}))
+            .await?;
+        Ok(self.state.agent_instances.get(agent_id).expect("just updated").clone())
     }
 
     pub async fn create_initiative(
@@ -1251,5 +1513,124 @@ impl Runtime {
             .await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! White-box tests reaching into private internals (`start_task`,
+    //! `finish_task`, `PreparedTask`) to reproduce the exact race
+    //! `finish_task`'s cancellation guard defends against -- a task cancelled
+    //! after its model run was kicked off but before that run's result comes
+    //! back. The public `tick_projects`/`run_tick` API runs `start_task` and
+    //! `finish_task` back-to-back within one call with no seam for a test to
+    //! inject a cancellation in between, so this can only be exercised here.
+    use super::*;
+    use async_trait::async_trait;
+    use std::process::Command;
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git").arg("-C").arg(dir).args(args).status().unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    fn init_repo(path: &Path) {
+        std::fs::create_dir_all(path).unwrap();
+        run_git(path, &["init", "-q", "-b", "main"]);
+        run_git(path, &["config", "user.email", "test@example.com"]);
+        run_git(path, &["config", "user.name", "Test"]);
+        std::fs::write(path.join("README.md"), "scratch repo\n").unwrap();
+        run_git(path, &["add", "-A"]);
+        run_git(path, &["commit", "-q", "-m", "init"]);
+    }
+
+    #[derive(Clone, Default)]
+    struct InMemoryStore {
+        events: Arc<std::sync::Mutex<Vec<Event>>>,
+    }
+
+    #[async_trait]
+    impl EventStore for InMemoryStore {
+        async fn append(&self, event: Event) -> Result<(), beethoven_events::EventStoreError> {
+            self.events.lock().unwrap().push(event);
+            Ok(())
+        }
+
+        async fn list_all(&self) -> Result<Vec<Event>, beethoven_events::EventStoreError> {
+            Ok(self.events.lock().unwrap().clone())
+        }
+    }
+
+    /// Never actually invoked in this test -- the model "execution" is faked
+    /// directly via a hand-built `ExecutionResult` passed to `finish_task`.
+    struct UnusedModelRuntime;
+
+    impl ModelRuntime for UnusedModelRuntime {
+        fn provider(&self) -> &'static str {
+            "unused-stub"
+        }
+
+        fn execute(&self, _request: &ExecutionRequest) -> Result<ExecutionResult, AgentsError> {
+            panic!("this test drives finish_task directly and should never invoke the model runtime");
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_task_mid_execution_stops_finish_task_from_resurrecting_it() {
+        let store = InMemoryStore::default();
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(UnusedModelRuntime))
+            .await
+            .unwrap();
+
+        init_repo(&dir.path().join("repo"));
+        let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+        let goal = runtime.create_goal(&project.id, "Docs", "- Write the changelog").await.unwrap();
+        runtime.plan_goal(&goal.id).await.unwrap();
+
+        let assigned = runtime.assign_ready_tasks(&project.id).await.unwrap();
+        assert_eq!(assigned, 1);
+
+        let task_id = runtime.state.tasks.values().next().unwrap().id.clone();
+        let prepared = match runtime.start_task(&project.id, &task_id).await.unwrap() {
+            StartOutcome::Ready(prepared) => *prepared,
+            StartOutcome::Resolved(_) => panic!("expected a plain completion path, not an early resolution"),
+        };
+        assert_eq!(runtime.state.tasks[&task_id].status, TaskStatus::InProgress);
+
+        // The cancellation a human issues through the UI while the model run
+        // above is still (hypothetically) in flight.
+        let cancelled = runtime.cancel_task(&task_id).await.unwrap();
+        assert_eq!(cancelled.status, TaskStatus::Cancelled);
+
+        let ws_path = Path::new(&prepared.ws_state.git_worktree).to_path_buf();
+        assert!(ws_path.exists());
+
+        let execution = Ok(ExecutionResult {
+            status: ExecutionStatus::Completed,
+            summary: "late result that must be ignored".to_string(),
+            raw_response: "ok".to_string(),
+            structured_output: None,
+            cost_usd: None,
+        });
+        let delta = runtime.finish_task(prepared, execution, DEFAULT_MAX_ATTEMPTS).await.unwrap();
+
+        assert_eq!(delta.completed, 0);
+        assert_eq!(runtime.state.tasks[&task_id].status, TaskStatus::Cancelled);
+        // `start_task` already recorded the run as `Running` (via
+        // `ModelRunStarted`) before the cancellation happened; the guard's
+        // job is just to never let it reach `Completed`.
+        assert!(runtime
+            .state
+            .model_runs
+            .values()
+            .filter(|r| r.task_id.as_deref() == Some(task_id.as_str()))
+            .all(|r| r.status == ModelRunStatus::Running));
+        assert!(!ws_path.exists(), "the orphaned workspace from the cancelled run must still be torn down");
+
+        let events = runtime.list_events().await.unwrap();
+        assert!(!events.iter().any(|e| e.event_type == EventType::TaskCompleted));
+        assert!(!events.iter().any(|e| e.event_type == EventType::ModelRunCompleted));
     }
 }
