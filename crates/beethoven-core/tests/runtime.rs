@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use beethoven_agents::{AgentsError, ExecutionRequest, ExecutionResult, ExecutionStatus, ModelRuntime};
+use beethoven_agents::{
+    AgentsError, ExecutionRequest, ExecutionResult, ExecutionStatus, ModelRuntime, RuntimeProfile, RuntimeRegistry,
+};
 use beethoven_core::{
     AgentKind, AgentStatus, ArtifactKind, DecisionStatus, GoalStatus, InboxKind, InboxStatus, InitiativeStatus,
     ModelRunStatus, ProjectStatus, ReviewStatus, Runtime, TaskStatus,
@@ -152,13 +154,24 @@ impl ModelRuntime for NoOpModelRuntime {
     }
 }
 
+fn registry_with(runtime: impl ModelRuntime + Send + Sync + 'static) -> RuntimeRegistry {
+    let mut registry = RuntimeRegistry::new();
+    registry.register_runtime("test", Arc::new(runtime));
+    registry.register_profile(RuntimeProfile {
+        id: "claude-default".to_string(),
+        runtime_id: "test".to_string(),
+        model: "test".to_string(),
+    });
+    registry
+}
+
 #[tokio::test]
 async fn goal_plan_run_and_answer_flow_survives_a_simulated_restart() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
     let projects_root = dir.path().join("projects");
 
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -191,7 +204,7 @@ async fn goal_plan_run_and_answer_flow_survives_a_simulated_restart() {
     // Simulate a process restart: drop this runtime and build a fresh one from
     // the same persisted event log. State must reconstruct identically.
     drop(runtime);
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root, Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root, registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -231,7 +244,7 @@ async fn answering_an_already_resolved_inbox_item_errors() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -256,7 +269,7 @@ async fn two_projects_run_independently_with_no_shared_agents_or_mixed_tasks() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -331,7 +344,7 @@ async fn a_completed_task_records_a_real_execution_run_diff_artifact_and_approve
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -377,7 +390,7 @@ async fn a_model_run_that_reinitializes_git_inside_its_worktree_still_yields_a_r
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(GitClobberingModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(GitClobberingModelRuntime))
         .await
         .unwrap();
 
@@ -419,7 +432,7 @@ async fn review_blocks_a_risky_task_and_escalates_through_the_existing_inbox_flo
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -464,7 +477,7 @@ async fn initiative_completes_only_once_its_epic_task_is_done_and_its_decision_i
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -521,7 +534,7 @@ async fn an_initiative_with_no_requirements_plans_a_single_fallback_epic() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -555,7 +568,7 @@ async fn recover_resets_a_task_crashed_mid_execution_and_cleans_up_its_workspace
     let repo = dir.path().join("repo");
     init_repo(&repo);
 
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), registry_with(StubModelRuntime))
         .await
         .unwrap();
     let project = runtime.create_project("Sample", repo.clone(), "main").await.unwrap();
@@ -621,7 +634,7 @@ async fn recover_resets_a_task_crashed_mid_execution_and_cleans_up_its_workspace
     // Simulate a process restart: a fresh `Runtime::load` replays the log
     // above into a task stuck `InProgress` with its agent stuck `Executing`.
     drop(runtime);
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root, Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root, registry_with(StubModelRuntime))
         .await
         .unwrap();
     assert_eq!(runtime.state.tasks[&task.id].status, TaskStatus::InProgress);
@@ -661,7 +674,7 @@ async fn two_tasks_in_the_same_tick_execute_concurrently_when_max_concurrent_all
     let mut runtime = Runtime::load(
         Box::new(store),
         dir.path().join("projects"),
-        Box::new(SlowModelRuntime { windows: windows.clone() }),
+        registry_with(SlowModelRuntime { windows: windows.clone() }),
     )
     .await
     .unwrap();
@@ -690,7 +703,7 @@ async fn a_workspace_creation_failure_escalates_just_that_project_not_the_whole_
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -729,7 +742,7 @@ async fn a_task_stuck_needing_changes_escalates_instead_of_retrying_forever() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(NoOpModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(NoOpModelRuntime))
         .await
         .unwrap();
 
@@ -766,7 +779,7 @@ async fn recover_escalates_instead_of_recovering_a_task_that_already_hit_max_att
     let repo = dir.path().join("repo");
     init_repo(&repo);
 
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), registry_with(StubModelRuntime))
         .await
         .unwrap();
     let project = runtime.create_project("Sample", repo.clone(), "main").await.unwrap();
@@ -813,7 +826,7 @@ async fn recover_escalates_instead_of_recovering_a_task_that_already_hit_max_att
         .unwrap();
 
     drop(runtime);
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root, Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root, registry_with(StubModelRuntime))
         .await
         .unwrap();
     assert_eq!(runtime.state.tasks[&task.id].attempt, 2);
@@ -833,7 +846,7 @@ async fn pause_project_prevents_new_assignment_until_resumed() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -865,7 +878,7 @@ async fn archive_project_removes_it_from_active_execution_entirely() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -890,7 +903,7 @@ async fn retry_task_returns_a_blocked_task_to_ready_for_another_attempt() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -919,7 +932,7 @@ async fn cancel_task_stops_it_from_future_execution() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -947,7 +960,7 @@ async fn reassign_task_moves_ownership_to_a_new_idle_agent_in_the_same_project()
     let dir = tempfile::tempdir().unwrap();
     let projects_root = dir.path().join("projects");
 
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -982,7 +995,7 @@ async fn reassign_task_moves_ownership_to_a_new_idle_agent_in_the_same_project()
     // Reload so the hand-appended assignment above is reflected in state,
     // the same way `recover_resets_a_task_crashed_mid_execution...` does.
     drop(runtime);
-    let mut runtime = Runtime::load(Box::new(store), projects_root, Box::new(StubModelRuntime)).await.unwrap();
+    let mut runtime = Runtime::load(Box::new(store), projects_root, registry_with(StubModelRuntime)).await.unwrap();
     assert_eq!(runtime.state.tasks[&task.id].status, TaskStatus::Assigned);
 
     let reassigned = runtime.reassign_task(&task.id, &new_agent.id).await.unwrap();
@@ -1002,7 +1015,7 @@ async fn approve_review_accepts_a_blocked_task_as_a_manual_override() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -1030,7 +1043,7 @@ async fn request_review_changes_returns_a_blocked_task_to_ready() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -1060,7 +1073,7 @@ async fn pause_agent_and_resume_agent_require_idle_and_paused_respectively() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
