@@ -581,6 +581,102 @@ impl RuntimeState {
                     a.updated_at = ts;
                 }
             }
+            EventType::ProjectPaused => {
+                let p: ProjectStatusChangedPayload = decode(event);
+                if let Some(proj) = self.projects.get_mut(&p.id) {
+                    proj.status = ProjectStatus::Paused;
+                    proj.updated_at = ts;
+                }
+            }
+            EventType::ProjectResumed => {
+                let p: ProjectStatusChangedPayload = decode(event);
+                if let Some(proj) = self.projects.get_mut(&p.id) {
+                    proj.status = ProjectStatus::Active;
+                    proj.updated_at = ts;
+                }
+            }
+            EventType::ProjectArchived => {
+                let p: ProjectStatusChangedPayload = decode(event);
+                if let Some(proj) = self.projects.get_mut(&p.id) {
+                    proj.status = ProjectStatus::Archived;
+                    proj.updated_at = ts;
+                }
+            }
+            EventType::TaskRetried => {
+                let p: TaskRetriedPayload = decode(event);
+                if let Some(t) = self.tasks.get_mut(&p.task_id) {
+                    t.status = TaskStatus::Ready;
+                    t.attempt += 1;
+                    t.updated_at = ts;
+                }
+            }
+            EventType::TaskCancelled => {
+                let p: TaskCancelledPayload = decode(event);
+                let agent_id = self.tasks.get(&p.task_id).and_then(|t| t.assigned_agent_id.clone());
+                if let Some(t) = self.tasks.get_mut(&p.task_id) {
+                    t.status = TaskStatus::Cancelled;
+                    t.assigned_agent_id = None;
+                    t.updated_at = ts;
+                }
+                if let Some(aid) = agent_id {
+                    if let Some(a) = self.agent_instances.get_mut(&aid) {
+                        a.status = AgentStatus::Idle;
+                        a.current_task_id = None;
+                        a.updated_at = ts;
+                    }
+                }
+            }
+            EventType::TaskReassigned => {
+                let p: TaskReassignedPayload = decode(event);
+                if let Some(old_id) = &p.old_agent_id {
+                    if let Some(a) = self.agent_instances.get_mut(old_id) {
+                        a.status = AgentStatus::Idle;
+                        a.current_task_id = None;
+                        a.updated_at = ts;
+                    }
+                }
+                if let Some(a) = self.agent_instances.get_mut(&p.new_agent_id) {
+                    a.status = AgentStatus::Assigned;
+                    a.current_task_id = Some(p.task_id.clone());
+                    a.updated_at = ts;
+                }
+                if let Some(t) = self.tasks.get_mut(&p.task_id) {
+                    t.status = TaskStatus::Assigned;
+                    t.assigned_agent_id = Some(p.new_agent_id.clone());
+                    t.updated_at = ts;
+                }
+            }
+            EventType::ReviewChangesRequested => {
+                let p: ReviewChangesRequestedPayload = decode(event);
+                let agent_id = self.tasks.get(&p.task_id).and_then(|t| t.assigned_agent_id.clone());
+                if let Some(t) = self.tasks.get_mut(&p.task_id) {
+                    t.status = TaskStatus::Ready;
+                    t.assigned_agent_id = None;
+                    t.attempt += 1;
+                    t.updated_at = ts;
+                }
+                if let Some(aid) = agent_id {
+                    if let Some(a) = self.agent_instances.get_mut(&aid) {
+                        a.status = AgentStatus::Idle;
+                        a.current_task_id = None;
+                        a.updated_at = ts;
+                    }
+                }
+            }
+            EventType::AgentPaused => {
+                let p: AgentStatusChangedPayload = decode(event);
+                if let Some(a) = self.agent_instances.get_mut(&p.id) {
+                    a.status = AgentStatus::Paused;
+                    a.updated_at = ts;
+                }
+            }
+            EventType::AgentResumed => {
+                let p: AgentStatusChangedPayload = decode(event);
+                if let Some(a) = self.agent_instances.get_mut(&p.id) {
+                    a.status = AgentStatus::Idle;
+                    a.updated_at = ts;
+                }
+            }
             EventType::WorkspaceCreated
             | EventType::WorkspaceDestroyed
             | EventType::PRMerged
@@ -594,6 +690,7 @@ impl RuntimeState {
             | EventType::PMReviewCompleted
             | EventType::RuntimeStarted
             | EventType::RuntimeStopped
+            | EventType::RuntimeRestarted
             | EventType::AgentHeartbeat => {
                 // Recorded in the event log for audit/timeline purposes only;
                 // no derived-state fields track these yet.

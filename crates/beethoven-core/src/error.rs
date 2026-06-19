@@ -25,4 +25,8 @@ pub enum CoreError {
     InitiativeNotFound(String),
     #[error("decision not found or already resolved: {0}")]
     DecisionNotFound(String),
+    #[error("agent not found: {0}")]
+    AgentNotFound(String),
+    #[error("invalid state: {0}")]
+    InvalidState(String),
 }

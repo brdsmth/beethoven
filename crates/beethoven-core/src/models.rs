@@ -7,6 +7,7 @@ use std::path::PathBuf;
 #[serde(rename_all = "snake_case")]
 pub enum ProjectStatus {
     Active,
+    Paused,
     Archived,
 }
 
@@ -65,6 +66,7 @@ pub enum TaskStatus {
     Approved,
     Done,
     Blocked,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +100,7 @@ pub enum AgentStatus {
     Blocked,
     Waiting,
     Escalated,
+    Paused,
 }
 
 /// A project-scoped, running agent. Owns memory/task-queue/workspace

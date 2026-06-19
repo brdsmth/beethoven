@@ -244,3 +244,40 @@ pub struct DecisionEscalatedPayload {
     pub inbox_id: String,
     pub prompt: String,
 }
+
+/// Shared by `ProjectPaused`/`ProjectResumed`/`ProjectArchived` -- all three
+/// just flip `Project.status`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProjectStatusChangedPayload {
+    pub id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TaskRetriedPayload {
+    pub task_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TaskCancelledPayload {
+    pub task_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TaskReassignedPayload {
+    pub task_id: String,
+    pub old_agent_id: Option<String>,
+    pub new_agent_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReviewChangesRequestedPayload {
+    pub task_id: String,
+    pub reason: String,
+}
+
+/// Shared by `AgentPaused`/`AgentResumed` -- both just flip
+/// `AgentInstance.status`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AgentStatusChangedPayload {
+    pub id: String,
+}
