@@ -1,10 +1,12 @@
 mod model;
 mod prompt;
+mod registry;
 mod review;
 mod schema;
 
 pub use model::{AgentsError, ClaudeCodeRuntime, ExecutionRequest, ExecutionResult, ExecutionStatus, ModelRuntime};
 pub use prompt::{PmPlanningPromptContext, PromptBuilder, ReviewPromptContext, WorkerPromptContext};
+pub use registry::{default_registry, RuntimeProfile, RuntimeRegistry};
 pub use review::{ReviewOutcome, ReviewService};
 pub use schema::{
     parse_structured_output, PmPlanResponse, ReviewDecision, ReviewResponse, PM_PLANNING_JSON_SCHEMA,

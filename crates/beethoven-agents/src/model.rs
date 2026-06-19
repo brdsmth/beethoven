@@ -13,6 +13,10 @@ pub enum AgentsError {
     InvalidResponse(#[from] serde_json::Error),
     #[error("model process failed: {0}")]
     ProcessFailed(String),
+    #[error("unknown runtime profile: {0}")]
+    UnknownProfile(String),
+    #[error("unknown runtime: {0}")]
+    UnknownRuntime(String),
 }
 
 /// Everything a `ModelRuntime` needs to run one model invocation inside a
