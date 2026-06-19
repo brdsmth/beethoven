@@ -1,4 +1,4 @@
-export type ProjectStatus = "active" | "archived";
+export type ProjectStatus = "active" | "paused" | "archived";
 export type GoalStatus = "open" | "planned" | "completed";
 export type TaskStatus =
   | "draft"
@@ -8,7 +8,8 @@ export type TaskStatus =
   | "review"
   | "approved"
   | "done"
-  | "blocked";
+  | "blocked"
+  | "cancelled";
 export type AgentStatus =
   | "created"
   | "idle"
@@ -19,7 +20,8 @@ export type AgentStatus =
   | "completed"
   | "blocked"
   | "waiting"
-  | "escalated";
+  | "escalated"
+  | "paused";
 export type AgentKind =
   | "project_manager"
   | "backend"
@@ -31,6 +33,8 @@ export type InboxKind = "decision" | "approval" | "question" | "alert";
 export type InboxStatus = "open" | "resolved";
 export type InitiativeStatus = "discovery" | "planned" | "completed";
 export type DecisionStatus = "open" | "resolved";
+export type ModelRunStatus = "running" | "completed" | "failed";
+export type ArtifactKind = "diff" | "files_modified";
 
 export interface TaskCounts {
   draft: number;
@@ -41,6 +45,7 @@ export interface TaskCounts {
   approved: number;
   done: number;
   blocked: number;
+  cancelled: number;
 }
 
 export interface Task {
@@ -207,4 +212,152 @@ export interface TimelineFilters {
   eventType?: string;
   since?: string;
   until?: string;
+}
+
+// --- Cross-project / operator-mode read views (Phase 1.9b) ---------------
+
+export interface InitiativeSummary {
+  id: string;
+  project_id: string;
+  project_slug: string;
+  project_name: string;
+  title: string;
+  description: string;
+  status: InitiativeStatus;
+  requirement_count: number;
+  epic_count: number;
+  task_count: number;
+  open_decision_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DecisionSummary {
+  id: string;
+  project_id: string;
+  project_slug: string;
+  initiative_id: string;
+  initiative_title: string;
+  title: string;
+  context: string;
+  status: DecisionStatus;
+  created_at: string;
+}
+
+export interface Workspace {
+  task_id: string;
+  task_title: string;
+  project_id: string;
+  project_slug: string;
+  agent_id: string;
+  agent_name: string;
+  branch: string;
+  git_worktree: string;
+  tmux_session: string;
+}
+
+export interface DiffSummary {
+  id: string;
+  task_id: string;
+  task_title: string;
+  project_id: string;
+  project_slug: string;
+  content: string;
+  created_at: string;
+}
+
+export interface ModelRun {
+  id: string;
+  agent_id: string;
+  provider: string;
+  status: ModelRunStatus;
+  summary: string | null;
+  started_at: string;
+  completed_at: string | null;
+}
+
+export interface Artifact {
+  id: string;
+  kind: ArtifactKind;
+  content: string;
+  created_at: string;
+}
+
+export interface TaskDetail {
+  task: Task;
+  model_runs: ModelRun[];
+  artifacts: Artifact[];
+  timeline: TimelineEvent[];
+}
+
+// --- Raw mutation return shapes -------------------------------------------
+//
+// Action commands (`pause_project`, `retry_task`, etc.) hand back the
+// underlying beethoven-core domain struct as-is, not the enriched `*Dto`
+// shape the list/detail read commands build -- so these are deliberately
+// narrower than ProjectSummary/Task/Agent/InboxItem above. Callers
+// invalidate the relevant query rather than reading off these directly.
+
+export interface ProjectRecord {
+  id: string;
+  name: string;
+  slug: string;
+  repository_path: string;
+  default_branch: string;
+  status: ProjectStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskRecord {
+  id: string;
+  project_id: string;
+  goal_id: string | null;
+  epic_id: string | null;
+  parent_task_id: string | null;
+  title: string;
+  description: string;
+  status: TaskStatus;
+  assigned_agent_id: string | null;
+  branch: string | null;
+  pr_url: string | null;
+  attempt: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentInstanceRecord {
+  id: string;
+  project_id: string;
+  template_id: string;
+  kind: AgentKind;
+  name: string;
+  status: AgentStatus;
+  current_task_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InboxItemRecord {
+  id: string;
+  project_id: string;
+  kind: InboxKind;
+  task_id: string | null;
+  agent_id: string | null;
+  decision_id: string | null;
+  prompt: string;
+  status: InboxStatus;
+  response: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export interface DecisionRecord {
+  id: string;
+  project_id: string;
+  initiative_id: string;
+  title: string;
+  context: string;
+  status: DecisionStatus;
+  created_at: string;
 }
