@@ -1,4 +1,7 @@
+import { api } from "../../lib/api";
+import { useAction } from "../../lib/hooks";
 import type { Agent } from "../../lib/types";
+import { ActionButton } from "../ActionButton";
 
 const STATUS_COLOR: Record<Agent["status"], string> = {
   created: "text-slate-500",
@@ -11,6 +14,7 @@ const STATUS_COLOR: Record<Agent["status"], string> = {
   blocked: "text-rose-400",
   waiting: "text-amber-400",
   escalated: "text-rose-400",
+  paused: "text-amber-400",
 };
 
 export function AgentTree({
@@ -52,21 +56,30 @@ function AgentRow({
   selected: boolean;
   onSelect: (id: string) => void;
 }) {
+  const invalidateKeys = [["agents", agent.project_id]];
+  const pause = useAction(api.pauseAgent, { successMessage: `${agent.name} paused`, invalidateKeys });
+  const resume = useAction(api.resumeAgent, { successMessage: `${agent.name} resumed`, invalidateKeys });
+
   return (
-    <button
-      onClick={() => onSelect(agent.id)}
+    <div
       className={`flex items-center justify-between rounded-md px-3 py-2 text-left text-sm ${
         selected ? "bg-indigo-500/20" : "hover:bg-slate-800/60"
       }`}
     >
-      <div>
+      <button onClick={() => onSelect(agent.id)} className="flex-1 text-left">
         <span className="font-medium text-slate-200">{agent.name}</span>
         <span className="ml-2 text-xs text-slate-500">{agent.kind}</span>
-      </div>
+      </button>
       <div className="flex items-center gap-3 text-xs">
         {agent.current_task_title && <span className="text-slate-400">{agent.current_task_title}</span>}
         <span className={STATUS_COLOR[agent.status]}>{agent.status}</span>
+        {agent.status === "idle" && (
+          <ActionButton label="Pause" onClick={() => pause.mutate(agent.id)} pending={pause.isPending} />
+        )}
+        {agent.status === "paused" && (
+          <ActionButton label="Resume" onClick={() => resume.mutate(agent.id)} pending={resume.isPending} />
+        )}
       </div>
-    </button>
+    </div>
   );
 }

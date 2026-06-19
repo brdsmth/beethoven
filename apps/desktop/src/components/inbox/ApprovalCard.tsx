@@ -1,7 +1,14 @@
+import { api } from "../../lib/api";
+import { useAction } from "../../lib/hooks";
 import type { InboxItem } from "../../lib/types";
-import { InboxCardShell, DisabledActionButton } from "./InboxCardShell";
+import { ActionButton, InboxCardShell } from "./InboxCardShell";
 
 export function ApprovalCard({ item }: { item: InboxItem }) {
+  const respond = useAction((response: string) => api.answerInboxItem(item.id, response), {
+    successMessage: "Response sent",
+    invalidateKeys: [["inbox", item.project_id], ["project", item.project_id]],
+  });
+
   return (
     <InboxCardShell
       kind="approval"
@@ -9,8 +16,13 @@ export function ApprovalCard({ item }: { item: InboxItem }) {
       createdAt={item.created_at}
       actions={
         <>
-          <DisabledActionButton label="Approve" />
-          <DisabledActionButton label="Reject" />
+          <ActionButton label="Approve" onClick={() => respond.mutate("approved")} pending={respond.isPending} />
+          <ActionButton
+            label="Reject"
+            tone="danger"
+            onClick={() => respond.mutate("rejected")}
+            pending={respond.isPending}
+          />
         </>
       }
     >

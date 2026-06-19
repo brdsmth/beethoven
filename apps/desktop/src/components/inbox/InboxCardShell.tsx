@@ -1,4 +1,8 @@
 import type { ReactNode } from "react";
+import { ActionButton } from "../ActionButton";
+import { RespondField } from "../RespondField";
+
+export { ActionButton, RespondField };
 
 const KIND_COLOR: Record<string, string> = {
   decision: "border-l-violet-500",
@@ -28,19 +32,8 @@ export function InboxCardShell({
       </div>
       <div className="mt-1 font-medium text-slate-100">{title}</div>
       <div className="mt-2 text-sm text-slate-300">{children}</div>
-      <div className="mt-3 flex gap-2">{actions}</div>
+      <div className="mt-3 flex flex-wrap items-center gap-2">{actions}</div>
     </div>
   );
 }
 
-export function DisabledActionButton({ label }: { label: string }) {
-  return (
-    <button
-      disabled
-      title="Available in Phase 1.9b"
-      className="cursor-not-allowed rounded-md border border-slate-700 px-3 py-1 text-xs text-slate-500"
-    >
-      {label}
-    </button>
-  );
-}
