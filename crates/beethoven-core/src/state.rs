@@ -74,6 +74,7 @@ impl RuntimeState {
                         prompt: p.prompt,
                         permissions: p.permissions,
                         tools: p.tools,
+                        runtime_profile_id: p.runtime_profile_id,
                         created_at: ts,
                     },
                 );

@@ -18,7 +18,7 @@ pub fn run() {
             let runtime = tauri::async_runtime::block_on(beethoven_core::Runtime::load(
                 Box::new(store.clone()),
                 beethoven_db::projects_root(&home),
-                Box::new(beethoven_agents::ClaudeCodeRuntime::default()),
+                beethoven_agents::default_registry(),
             ))?;
             app.manage(AppState {
                 store,

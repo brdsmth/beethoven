@@ -33,6 +33,7 @@ pub struct AgentTemplate {
     pub prompt: String,
     pub permissions: Vec<String>,
     pub tools: Vec<String>,
+    pub runtime_profile_id: String,
     pub created_at: DateTime<Utc>,
 }
 

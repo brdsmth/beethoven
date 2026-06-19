@@ -19,6 +19,13 @@ pub struct AgentTemplateCreatedPayload {
     pub prompt: String,
     pub permissions: Vec<String>,
     pub tools: Vec<String>,
+    #[serde(default = "default_runtime_profile_id")]
+    pub runtime_profile_id: String,
+}
+
+/// Replay default for event logs recorded before runtime profiles existed.
+fn default_runtime_profile_id() -> String {
+    "claude-default".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]

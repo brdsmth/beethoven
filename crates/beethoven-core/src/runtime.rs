@@ -4,7 +4,7 @@ use crate::state::RuntimeState;
 use beethoven_agents::{
     AgentKind, AgentsError, ExecutionOutcome, ExecutionRequest, ExecutionResult, ExecutionService, ExecutionStatus,
     InitiativePlanningService, ModelRuntime, PlanningService, PromptBuilder, RequirementInput, ReviewOutcome,
-    ReviewService, TaskExecutionContext, WorkerPromptContext,
+    ReviewService, RuntimeRegistry, TaskExecutionContext, WorkerPromptContext,
 };
 use beethoven_events::{Event, EventStore, EventType};
 use beethoven_workspaces::{tmux_session_name, WorkspaceManager, WorkspaceRequest, WorkspaceState};
@@ -63,6 +63,7 @@ struct PreparedTask {
     ws_state: WorkspaceState,
     prompt_path: PathBuf,
     artifacts_dir: PathBuf,
+    model_runtime: Arc<dyn ModelRuntime + Send + Sync>,
 }
 
 /// Outcome of `start_task`: either the task is ready for a real model
@@ -109,11 +110,7 @@ fn slugify(input: &str) -> String {
 pub struct Runtime {
     store: Box<dyn EventStore>,
     projects_root: PathBuf,
-    // `Arc` (not `Box`) so concurrent task executions (see `tick_projects`)
-    // can each hold a cheap handle into a `spawn_blocking` closure without
-    // ever needing `&self`/`&mut self` borrowed while the real, slow model
-    // call is in flight.
-    model_runtime: Arc<dyn ModelRuntime + Send + Sync>,
+    registry: RuntimeRegistry,
     pub state: RuntimeState,
 }
 
@@ -121,14 +118,14 @@ impl Runtime {
     pub async fn load(
         store: Box<dyn EventStore>,
         projects_root: PathBuf,
-        model_runtime: Box<dyn ModelRuntime + Send + Sync>,
+        registry: RuntimeRegistry,
     ) -> Result<Self, CoreError> {
         let events = store.list_all().await?;
         let state = RuntimeState::replay(&events);
         Ok(Self {
             store,
             projects_root,
-            model_runtime: Arc::from(model_runtime),
+            registry,
             state,
         })
     }
@@ -369,6 +366,7 @@ impl Runtime {
                     "prompt": kind.default_prompt(),
                     "permissions": Vec::<String>::new(),
                     "tools": Vec::<String>::new(),
+                    "runtime_profile_id": "claude-default",
                 }),
             )
             .await?;
@@ -583,6 +581,18 @@ impl Runtime {
             ExecutionOutcome::Completed => {
                 let run_id = Uuid::new_v4().to_string();
 
+                let runtime_profile_id = self
+                    .state
+                    .agent_instances
+                    .get(&agent_id)
+                    .and_then(|agent| self.state.agent_templates.get(&agent.template_id))
+                    .map(|template| template.runtime_profile_id.clone())
+                    .unwrap_or_else(|| "claude-default".to_string());
+                let model_runtime = self
+                    .registry
+                    .resolve(&runtime_profile_id)
+                    .map_err(|e| CoreError::InvalidState(e.to_string()))?;
+
                 let prompt = PromptBuilder::worker(&WorkerPromptContext {
                     project_name: &project.name,
                     task_title: &task.title,
@@ -610,7 +620,7 @@ impl Runtime {
                         "agent_id": agent_id,
                         "project_id": project_id,
                         "task_id": task_id,
-                        "provider": self.model_runtime.provider(),
+                        "provider": model_runtime.provider(),
                     }),
                 )
                 .await?;
@@ -627,6 +637,7 @@ impl Runtime {
                     ws_state,
                     prompt_path,
                     artifacts_dir,
+                    model_runtime,
                 })))
             }
             ExecutionOutcome::RaisedQuestion(prompt) => {
@@ -1013,7 +1024,7 @@ impl Runtime {
                     )
                     .await?;
 
-                    let model_runtime = Arc::clone(&self.model_runtime);
+                    let model_runtime = Arc::clone(&prepared.model_runtime);
                     let project_id = prepared.project_id.clone();
                     let agent_id = prepared.agent_id.clone();
                     let task_id = prepared.task_id.clone();
@@ -1527,6 +1538,7 @@ mod tests {
     //! inject a cancellation in between, so this can only be exercised here.
     use super::*;
     use async_trait::async_trait;
+    use beethoven_agents::RuntimeProfile;
     use std::process::Command;
 
     fn run_git(dir: &Path, args: &[&str]) {
@@ -1575,12 +1587,23 @@ mod tests {
         }
     }
 
+    fn registry_with(runtime: impl ModelRuntime + Send + Sync + 'static) -> RuntimeRegistry {
+        let mut registry = RuntimeRegistry::new();
+        registry.register_runtime("test", Arc::new(runtime));
+        registry.register_profile(RuntimeProfile {
+            id: "claude-default".to_string(),
+            runtime_id: "test".to_string(),
+            model: "test".to_string(),
+        });
+        registry
+    }
+
     #[tokio::test]
     async fn cancelling_a_task_mid_execution_stops_finish_task_from_resurrecting_it() {
         let store = InMemoryStore::default();
         let dir = tempfile::tempdir().unwrap();
 
-        let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(UnusedModelRuntime))
+        let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(UnusedModelRuntime))
             .await
             .unwrap();
 

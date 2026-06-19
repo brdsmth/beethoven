@@ -202,7 +202,7 @@ async fn main() -> Result<()> {
     let mut runtime = Runtime::load(
         Box::new(store),
         beethoven_db::projects_root(&home),
-        Box::new(beethoven_agents::ClaudeCodeRuntime::default()),
+        beethoven_agents::default_registry(),
     )
     .await?;
 
