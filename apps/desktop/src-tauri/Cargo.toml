@@ -20,6 +20,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 beethoven-tauri = { path = "../../../crates/beethoven-tauri" }
 beethoven-db = { path = "../../../crates/beethoven-db" }
+beethoven-core = { path = "../../../crates/beethoven-core" }
+beethoven-agents = { path = "../../../crates/beethoven-agents" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }

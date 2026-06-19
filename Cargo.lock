@@ -403,6 +403,8 @@ dependencies = [
  "beethoven-core",
  "beethoven-db",
  "beethoven-events",
+ "beethoven-git",
+ "beethoven-workspaces",
  "chrono",
  "serde",
  "serde_json",
@@ -982,6 +984,8 @@ dependencies = [
 name = "desktop"
 version = "0.1.0"
 dependencies = [
+ "beethoven-agents",
+ "beethoven-core",
  "beethoven-db",
  "beethoven-tauri",
  "serde",
