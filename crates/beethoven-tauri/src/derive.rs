@@ -1,9 +1,10 @@
 use crate::dto::*;
 use beethoven_core::{
-    AgentInstance, AgentStatus, Decision, DecisionStatus, Epic, Goal, GoalStatus, Initiative, InitiativeStatus,
-    InboxItem, InboxStatus, Project, Requirement, RuntimeState, Task, TaskStatus,
+    AgentInstance, AgentStatus, Artifact, ArtifactKind, Decision, DecisionStatus, Epic, Goal, GoalStatus, Initiative,
+    InitiativeStatus, InboxItem, InboxStatus, ModelRun, Project, Requirement, RuntimeState, Task, TaskStatus,
 };
 use beethoven_events::{Event, EventType};
+use beethoven_workspaces::{tmux_session_name, WorkspaceManager};
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -64,6 +65,7 @@ fn project_summary(state: &RuntimeState, p: &Project) -> ProjectSummaryDto {
             TaskStatus::Approved => counts.approved += 1,
             TaskStatus::Done => counts.done += 1,
             TaskStatus::Blocked => counts.blocked += 1,
+            TaskStatus::Cancelled => counts.cancelled += 1,
         }
     }
     let open_inbox_count =
@@ -445,10 +447,193 @@ pub fn workflow_map(state: &RuntimeState, initiative_id: &str) -> WorkflowMapDto
             TaskStatus::InProgress => map.execution_count += 1,
             TaskStatus::Review | TaskStatus::Approved => map.review_count += 1,
             TaskStatus::Done => map.complete_count += 1,
-            TaskStatus::Blocked => {}
+            TaskStatus::Blocked | TaskStatus::Cancelled => {}
         }
     }
     map
+}
+
+/// Every initiative across every project, oldest-first, as summary counts
+/// rather than the full nested epic/task tree `project_detail` builds.
+pub fn initiatives_for(state: &RuntimeState) -> Vec<InitiativeSummaryDto> {
+    let mut initiatives: Vec<&Initiative> = state.initiatives.values().collect();
+    initiatives.sort_by_key(|i| i.created_at);
+    initiatives
+        .into_iter()
+        .filter_map(|i| {
+            let project = state.projects.get(&i.project_id)?;
+            let requirement_count = state.requirements.values().filter(|r| r.initiative_id == i.id).count();
+            let epic_ids: HashSet<&str> =
+                state.epics.values().filter(|e| e.initiative_id == i.id).map(|e| e.id.as_str()).collect();
+            let epic_count = epic_ids.len();
+            let task_count =
+                state.tasks.values().filter(|t| t.epic_id.as_deref().is_some_and(|eid| epic_ids.contains(eid))).count();
+            let open_decision_count = state
+                .decisions
+                .values()
+                .filter(|d| d.initiative_id == i.id && d.status == DecisionStatus::Open)
+                .count();
+            Some(InitiativeSummaryDto {
+                id: i.id.clone(),
+                project_id: project.id.clone(),
+                project_slug: project.slug.clone(),
+                project_name: project.name.clone(),
+                title: i.title.clone(),
+                description: i.description.clone(),
+                status: i.status,
+                requirement_count,
+                epic_count,
+                task_count,
+                open_decision_count,
+                created_at: i.created_at,
+                updated_at: i.updated_at,
+            })
+        })
+        .collect()
+}
+
+/// Every decision across every project, oldest-first, joined to its
+/// project/initiative for display and action context.
+pub fn decisions_for(state: &RuntimeState) -> Vec<DecisionSummaryDto> {
+    let mut decisions: Vec<&Decision> = state.decisions.values().collect();
+    decisions.sort_by_key(|d| d.created_at);
+    decisions
+        .into_iter()
+        .filter_map(|d| {
+            let project = state.projects.get(&d.project_id)?;
+            let initiative_title = state.initiatives.get(&d.initiative_id).map(|i| i.title.clone()).unwrap_or_default();
+            Some(DecisionSummaryDto {
+                id: d.id.clone(),
+                project_id: project.id.clone(),
+                project_slug: project.slug.clone(),
+                initiative_id: d.initiative_id.clone(),
+                initiative_title,
+                title: d.title.clone(),
+                context: d.context.clone(),
+                status: d.status,
+                created_at: d.created_at,
+            })
+        })
+        .collect()
+}
+
+/// Every `Assigned`/`InProgress` task's on-disk workspace -- path, branch,
+/// tmux session -- reconstructed the same deterministic way
+/// `Runtime::cleanup_orphaned_workspace` does, with no new persisted state.
+pub fn workspaces_for(state: &RuntimeState, projects_root: &Path) -> Vec<WorkspaceDto> {
+    let mut tasks: Vec<&Task> =
+        state.tasks.values().filter(|t| matches!(t.status, TaskStatus::Assigned | TaskStatus::InProgress)).collect();
+    tasks.sort_by_key(|t| t.created_at);
+
+    tasks
+        .into_iter()
+        .filter_map(|t| {
+            let agent_id = t.assigned_agent_id.as_ref()?;
+            let agent = state.agent_instances.get(agent_id)?;
+            let project = state.projects.get(&t.project_id)?;
+
+            let branch = t.branch.clone().unwrap_or_else(|| beethoven_git::branch_name(&t.title));
+            let workspaces = WorkspaceManager::new(projects_root.join(&project.slug).join("workspaces"));
+            let git_worktree = workspaces.path_for(&t.id).join("repo").to_string_lossy().into_owned();
+            let tmux_session = tmux_session_name(&project.slug, agent.kind.as_str(), &t.id);
+
+            Some(WorkspaceDto {
+                task_id: t.id.clone(),
+                task_title: t.title.clone(),
+                project_id: project.id.clone(),
+                project_slug: project.slug.clone(),
+                agent_id: agent.id.clone(),
+                agent_name: agent.name.clone(),
+                branch,
+                git_worktree,
+                tmux_session,
+            })
+        })
+        .collect()
+}
+
+/// The `limit` most recently captured diff artifacts across every project,
+/// newest-first, joined to their task/project.
+pub fn recent_diffs(state: &RuntimeState, limit: usize) -> Vec<DiffSummaryDto> {
+    let mut diffs: Vec<&Artifact> = state.artifacts.values().filter(|a| a.kind == ArtifactKind::Diff).collect();
+    diffs.sort_by_key(|a| a.created_at);
+    diffs.reverse();
+    diffs.truncate(limit);
+
+    diffs
+        .into_iter()
+        .filter_map(|a| {
+            let task = state.tasks.get(&a.task_id)?;
+            let project = state.projects.get(&task.project_id)?;
+            Some(DiffSummaryDto {
+                id: a.id.clone(),
+                task_id: a.task_id.clone(),
+                task_title: task.title.clone(),
+                project_id: project.id.clone(),
+                project_slug: project.slug.clone(),
+                content: a.content.clone(),
+                created_at: a.created_at,
+            })
+        })
+        .collect()
+}
+
+/// A task's full execution history: itself, its model runs, its captured
+/// artifacts, and the timeline slice that mentions its `task_id` -- backs
+/// the shared Task Detail panel's "View Diff"/"View Logs" actions.
+pub fn task_detail(state: &RuntimeState, events: &[Event], task_id: &str) -> Option<TaskDetailDto> {
+    let t = state.tasks.get(task_id)?;
+    let task = task_dto(state, t);
+
+    let mut model_runs: Vec<&ModelRun> =
+        state.model_runs.values().filter(|r| r.task_id.as_deref() == Some(task_id)).collect();
+    model_runs.sort_by_key(|r| r.started_at);
+    let model_runs = model_runs
+        .into_iter()
+        .map(|r| ModelRunDto {
+            id: r.id.clone(),
+            agent_id: r.agent_id.clone(),
+            provider: r.provider.clone(),
+            status: r.status,
+            summary: r.summary.clone(),
+            started_at: r.started_at,
+            completed_at: r.completed_at,
+        })
+        .collect();
+
+    let mut artifacts: Vec<&Artifact> = state.artifacts.values().filter(|a| a.task_id == task_id).collect();
+    artifacts.sort_by_key(|a| a.created_at);
+    let artifacts = artifacts
+        .into_iter()
+        .map(|a| ArtifactDto {
+            id: a.id.clone(),
+            kind: a.kind,
+            content: a.content.clone(),
+            created_at: a.created_at,
+        })
+        .collect();
+
+    let mut timeline: Vec<TimelineEventDto> = events
+        .iter()
+        .filter(|e| e.payload.get("task_id").and_then(|v| v.as_str()) == Some(task_id))
+        .map(|e| TimelineEventDto {
+            id: e.id.clone(),
+            project_id: e.scope.project_id().map(|s| s.to_string()),
+            event_type: e.event_type.as_str().to_string(),
+            actor_id: e.actor_id.clone(),
+            payload: e.payload.clone(),
+            timestamp: e.timestamp,
+        })
+        .collect();
+    timeline.sort_by_key(|e| e.timestamp);
+    timeline.reverse();
+
+    Some(TaskDetailDto {
+        task,
+        model_runs,
+        artifacts,
+        timeline,
+    })
 }
 
 #[cfg(test)]
@@ -748,5 +933,91 @@ mod tests {
         assert_eq!(map.complete_count, 1); // t2 is Done
         assert_eq!(map.execution_count, 0);
         assert_eq!(map.task_count, 0);
+    }
+
+    #[test]
+    fn initiatives_for_summarizes_counts_across_projects() {
+        let (state, _events) = fixture();
+        let initiatives = initiatives_for(&state);
+        assert_eq!(initiatives.len(), 1);
+        let i1 = &initiatives[0];
+        assert_eq!(i1.project_slug, "punch");
+        assert_eq!(i1.requirement_count, 1);
+        assert_eq!(i1.epic_count, 1);
+        assert_eq!(i1.task_count, 1); // t2, via e1
+        assert_eq!(i1.open_decision_count, 1); // d1
+    }
+
+    #[test]
+    fn decisions_for_joins_project_and_initiative_context() {
+        let (state, _events) = fixture();
+        let decisions = decisions_for(&state);
+        assert_eq!(decisions.len(), 1);
+        let d1 = &decisions[0];
+        assert_eq!(d1.project_slug, "punch");
+        assert_eq!(d1.initiative_title, "Build Gmail Agent");
+        assert_eq!(d1.status, DecisionStatus::Open);
+    }
+
+    #[test]
+    fn workspaces_for_lists_only_assigned_and_in_progress_tasks_with_deterministic_paths() {
+        let (state, _events) = fixture();
+        let root = std::env::temp_dir().join("beethoven-tauri-test-workspaces-root");
+        let workspaces = workspaces_for(&state, &root);
+        // t1 is InProgress; t2 is Done and excluded.
+        assert_eq!(workspaces.len(), 1);
+        let w = &workspaces[0];
+        assert_eq!(w.task_id, "t1");
+        assert_eq!(w.project_slug, "punch");
+        assert_eq!(w.agent_name, "Backend-1");
+        assert_eq!(w.branch, beethoven_git::branch_name("Implement login form"));
+        let expected_manager = WorkspaceManager::new(root.join("punch").join("workspaces"));
+        assert_eq!(w.git_worktree, expected_manager.path_for("t1").join("repo").to_string_lossy().into_owned());
+        assert_eq!(w.tmux_session, tmux_session_name("punch", "backend", "t1"));
+    }
+
+    #[test]
+    fn recent_diffs_joins_task_and_project_and_respects_the_limit() {
+        let (_state, mut events) = fixture();
+        events.push(ev(
+            24,
+            EventScope::Project("p1".to_string()),
+            EventType::DiffCaptured,
+            Some("a1"),
+            json!({"task_id": "t1", "diff": "diff --git a/foo b/foo\n+added line"}),
+        ));
+        let state = RuntimeState::replay(&events);
+
+        let diffs = recent_diffs(&state, 10);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].task_id, "t1");
+        assert_eq!(diffs[0].project_slug, "punch");
+
+        assert_eq!(recent_diffs(&state, 0).len(), 0);
+    }
+
+    #[test]
+    fn task_detail_collects_model_runs_artifacts_and_a_task_scoped_timeline() {
+        let (_state, mut events) = fixture();
+        events.push(ev(
+            24,
+            EventScope::Project("p1".to_string()),
+            EventType::DiffCaptured,
+            Some("a1"),
+            json!({"task_id": "t1", "diff": "diff --git a/foo b/foo\n+added line"}),
+        ));
+        let state = RuntimeState::replay(&events);
+
+        let detail = task_detail(&state, &events, "t1").expect("task exists");
+        assert_eq!(detail.task.id, "t1");
+        assert_eq!(detail.model_runs.len(), 1);
+        assert_eq!(detail.model_runs[0].id, "mr1");
+        assert_eq!(detail.artifacts.len(), 1);
+        assert_eq!(detail.artifacts[0].kind, ArtifactKind::Diff);
+        // TaskAssigned, TaskStarted, ModelRunStarted, QuestionRaised, DiffCaptured.
+        assert_eq!(detail.timeline.len(), 5);
+        assert_eq!(detail.timeline[0].event_type, "DiffCaptured"); // newest first
+
+        assert!(task_detail(&state, &events, "missing").is_none());
     }
 }

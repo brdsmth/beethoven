@@ -1,6 +1,7 @@
 use beethoven_agents::AgentKind;
 use beethoven_core::{
-    AgentStatus, DecisionStatus, GoalStatus, InboxKind, InboxStatus, InitiativeStatus, ProjectStatus, TaskStatus,
+    AgentStatus, ArtifactKind, DecisionStatus, GoalStatus, InboxKind, InboxStatus, InitiativeStatus, ModelRunStatus,
+    ProjectStatus, TaskStatus,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -15,6 +16,7 @@ pub struct TaskCountsDto {
     pub approved: usize,
     pub done: usize,
     pub blocked: usize,
+    pub cancelled: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -194,4 +196,99 @@ pub struct WorkflowMapDto {
     pub execution_count: usize,
     pub review_count: usize,
     pub complete_count: usize,
+}
+
+/// A cross-project initiative list row (Operator/CEO Mode's Initiatives
+/// page) -- counts rather than the full nested epic/task tree
+/// `ProjectDetailDto`'s `InitiativeDto` carries, matching the existing
+/// summary-vs-detail split `ProjectSummaryDto`/`ProjectDetailDto` already use.
+#[derive(Debug, Clone, Serialize)]
+pub struct InitiativeSummaryDto {
+    pub id: String,
+    pub project_id: String,
+    pub project_slug: String,
+    pub project_name: String,
+    pub title: String,
+    pub description: String,
+    pub status: InitiativeStatus,
+    pub requirement_count: usize,
+    pub epic_count: usize,
+    pub task_count: usize,
+    pub open_decision_count: usize,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A cross-project decision list row (CEO Mode's Decisions page), with
+/// enough project/initiative context to act on it without drilling in.
+#[derive(Debug, Clone, Serialize)]
+pub struct DecisionSummaryDto {
+    pub id: String,
+    pub project_id: String,
+    pub project_slug: String,
+    pub initiative_id: String,
+    pub initiative_title: String,
+    pub title: String,
+    pub context: String,
+    pub status: DecisionStatus,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One task's active on-disk workspace -- path, branch, and tmux session --
+/// derived the same deterministic way `Runtime::cleanup_orphaned_workspace`
+/// reconstructs them, with no new persisted state.
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceDto {
+    pub task_id: String,
+    pub task_title: String,
+    pub project_id: String,
+    pub project_slug: String,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub branch: String,
+    pub git_worktree: String,
+    pub tmux_session: String,
+}
+
+/// One recent `Artifact{kind: Diff}`, joined to its task/project (Operator
+/// Mode's Diffs page).
+#[derive(Debug, Clone, Serialize)]
+pub struct DiffSummaryDto {
+    pub id: String,
+    pub task_id: String,
+    pub task_title: String,
+    pub project_id: String,
+    pub project_slug: String,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelRunDto {
+    pub id: String,
+    pub agent_id: String,
+    pub provider: String,
+    pub status: ModelRunStatus,
+    pub summary: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ArtifactDto {
+    pub id: String,
+    pub kind: ArtifactKind,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One task's full execution history: the task itself, every model run and
+/// captured artifact, and the timeline slice that mentions it -- backs the
+/// shared Task Detail panel's "View Diff"/"View Logs" actions.
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskDetailDto {
+    pub task: TaskDto,
+    pub model_runs: Vec<ModelRunDto>,
+    pub artifacts: Vec<ArtifactDto>,
+    pub timeline: Vec<TimelineEventDto>,
 }

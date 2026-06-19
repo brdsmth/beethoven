@@ -1,15 +1,39 @@
 use crate::derive;
 use crate::dto::*;
-use crate::state::AppState;
-use beethoven_core::RuntimeState;
+use crate::state::{AppState, DaemonHandle};
+use beethoven_core::{AgentInstance, Decision, InboxItem, Project, Runtime, RuntimeState, Task};
 use beethoven_events::{Event, EventStore};
 use chrono::{DateTime, Utc};
-use tauri::State;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tauri::{AppHandle, Manager, State};
+use tokio::sync::MutexGuard;
+
+/// The same tick policy defaults `beethoven-cli`'s `beethoven start` uses
+/// (see `DEFAULT_MAX_CONCURRENT`/`DEFAULT_MAX_ATTEMPTS` in
+/// `beethoven-core::runtime`, and `Start`'s `clap` defaults in
+/// `beethoven-cli`) -- the desktop daemon loop isn't configurable from the
+/// UI in this phase, so it just matches the CLI's own defaults.
+const DAEMON_TICK_INTERVAL_SECS: u64 = 5;
+const DAEMON_MAX_CONCURRENT: usize = 4;
+const DAEMON_MAX_ATTEMPTS: u32 = 3;
 
 async fn load_state(state: &AppState) -> Result<(RuntimeState, Vec<Event>), String> {
     let events = state.store.list_all().await.map_err(|e| e.to_string())?;
     let runtime_state = RuntimeState::replay(&events);
     Ok((runtime_state, events))
+}
+
+/// Locks `AppState::runtime` and refreshes it from the event store before
+/// handing back the guard, closing the gap against any other writer to the
+/// same database (e.g. a `beethoven start` CLI daemon running concurrently)
+/// -- the same freshness guarantee `load_state` already gives every read
+/// command by re-replaying on every call.
+async fn with_runtime(state: &AppState) -> Result<MutexGuard<'_, Runtime>, String> {
+    let mut guard = state.runtime.lock().await;
+    guard.refresh().await.map_err(|e| e.to_string())?;
+    Ok(guard)
 }
 
 #[tauri::command]
@@ -89,4 +113,255 @@ pub async fn get_workflow_map(state: State<'_, AppState>, initiative_id: String)
 #[tauri::command]
 pub fn get_home_dir(state: State<'_, AppState>) -> String {
     state.home.display().to_string()
+}
+
+#[tauri::command]
+pub async fn get_initiatives(state: State<'_, AppState>) -> Result<Vec<InitiativeSummaryDto>, String> {
+    let (rs, _events) = load_state(&state).await?;
+    Ok(derive::initiatives_for(&rs))
+}
+
+#[tauri::command]
+pub async fn get_decisions(state: State<'_, AppState>) -> Result<Vec<DecisionSummaryDto>, String> {
+    let (rs, _events) = load_state(&state).await?;
+    Ok(derive::decisions_for(&rs))
+}
+
+#[tauri::command]
+pub async fn get_workspaces(state: State<'_, AppState>) -> Result<Vec<WorkspaceDto>, String> {
+    let (rs, _events) = load_state(&state).await?;
+    Ok(derive::workspaces_for(&rs, &beethoven_db::projects_root(&state.home)))
+}
+
+#[tauri::command]
+pub async fn get_recent_diffs(state: State<'_, AppState>, limit: Option<usize>) -> Result<Vec<DiffSummaryDto>, String> {
+    let (rs, _events) = load_state(&state).await?;
+    Ok(derive::recent_diffs(&rs, limit.unwrap_or(50)))
+}
+
+#[tauri::command]
+pub async fn get_task_detail(state: State<'_, AppState>, task_id: String) -> Result<TaskDetailDto, String> {
+    let (rs, events) = load_state(&state).await?;
+    derive::task_detail(&rs, &events, &task_id).ok_or_else(|| format!("task not found: {task_id}"))
+}
+
+// --- Inbox actions ---------------------------------------------------
+
+#[tauri::command]
+pub async fn answer_inbox_item(
+    state: State<'_, AppState>,
+    inbox_id: String,
+    response: String,
+) -> Result<InboxItem, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.answer_inbox(&inbox_id, &response).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn resolve_decision(
+    state: State<'_, AppState>,
+    decision_id: String,
+    response: String,
+) -> Result<Decision, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.resolve_decision(&decision_id, &response).await.map_err(|e| e.to_string())
+}
+
+// --- Project actions ---------------------------------------------------
+
+#[tauri::command]
+pub async fn pause_project(state: State<'_, AppState>, project_id: String) -> Result<Project, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.pause_project(&project_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn resume_project(state: State<'_, AppState>, project_id: String) -> Result<Project, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.resume_project(&project_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn archive_project(state: State<'_, AppState>, project_id: String) -> Result<Project, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.archive_project(&project_id).await.map_err(|e| e.to_string())
+}
+
+// --- Task actions ---------------------------------------------------
+
+#[tauri::command]
+pub async fn retry_task(state: State<'_, AppState>, task_id: String) -> Result<Task, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.retry_task(&task_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_task(state: State<'_, AppState>, task_id: String) -> Result<Task, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.cancel_task(&task_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn reassign_task(
+    state: State<'_, AppState>,
+    task_id: String,
+    new_agent_id: String,
+) -> Result<Task, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.reassign_task(&task_id, &new_agent_id).await.map_err(|e| e.to_string())
+}
+
+// --- Review actions ---------------------------------------------------
+
+#[tauri::command]
+pub async fn approve_review(state: State<'_, AppState>, task_id: String) -> Result<Task, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.approve_review(&task_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn request_review_changes(
+    state: State<'_, AppState>,
+    task_id: String,
+    reason: String,
+) -> Result<Task, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.request_review_changes(&task_id, &reason).await.map_err(|e| e.to_string())
+}
+
+// --- Agent actions ---------------------------------------------------
+
+#[tauri::command]
+pub async fn pause_agent(state: State<'_, AppState>, agent_id: String) -> Result<AgentInstance, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.pause_agent(&agent_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn resume_agent(state: State<'_, AppState>, agent_id: String) -> Result<AgentInstance, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.resume_agent(&agent_id).await.map_err(|e| e.to_string())
+}
+
+// --- Runtime controls ---------------------------------------------------
+//
+// The desktop process's own in-process daemon loop, gated by the same
+// pidfile `beethoven-cli`'s `beethoven start`/`beethoven stop` use, so the
+// CLI daemon and this loop can never tick the same project concurrently.
+// Mirrors `run_daemon_loop` in `beethoven-cli/src/main.rs`: recover -> mark
+// started -> tick on an interval -> mark stopped.
+
+async fn run_desktop_daemon_loop(app: AppHandle, shutdown: Arc<AtomicBool>) {
+    let state = app.state::<AppState>();
+
+    {
+        let mut runtime = state.runtime.lock().await;
+        if let Err(e) = runtime.refresh().await {
+            eprintln!("desktop runtime loop: refresh failed: {e}");
+        }
+        if let Err(e) = runtime.recover(DAEMON_MAX_ATTEMPTS).await {
+            eprintln!("desktop runtime loop: recovery failed: {e}");
+        }
+        if let Err(e) = runtime.mark_runtime_started().await {
+            eprintln!("desktop runtime loop: mark_runtime_started failed: {e}");
+        }
+    }
+
+    while !shutdown.load(Ordering::SeqCst) {
+        {
+            let mut runtime = state.runtime.lock().await;
+            match runtime.refresh().await {
+                Ok(()) => {
+                    let project_ids: Vec<String> = runtime.state.projects.keys().cloned().collect();
+                    if !project_ids.is_empty() {
+                        if let Err(e) =
+                            runtime.tick_projects(&project_ids, DAEMON_MAX_CONCURRENT, DAEMON_MAX_ATTEMPTS).await
+                        {
+                            eprintln!("desktop runtime loop: tick failed: {e}");
+                        }
+                    }
+                }
+                Err(e) => eprintln!("desktop runtime loop: refresh failed: {e}"),
+            }
+        }
+
+        for _ in 0..DAEMON_TICK_INTERVAL_SECS {
+            if shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    let mut runtime = state.runtime.lock().await;
+    if let Err(e) = runtime.mark_runtime_stopped().await {
+        eprintln!("desktop runtime loop: mark_runtime_stopped failed: {e}");
+    }
+}
+
+#[tauri::command]
+pub async fn runtime_start(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let pid_file = beethoven_db::pid_path(&state.home);
+    if let Some(existing_pid) = beethoven_db::read_pid(&pid_file) {
+        if beethoven_db::is_pid_alive(existing_pid) {
+            return Err(format!("a daemon is already running (pid {existing_pid}); stop it first"));
+        }
+    }
+
+    let mut daemon_guard = state.daemon.lock().await;
+    if daemon_guard.is_some() {
+        return Err("the runtime is already running".to_string());
+    }
+
+    std::fs::write(&pid_file, std::process::id().to_string()).map_err(|e| e.to_string())?;
+
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let task_shutdown = shutdown.clone();
+    let task = tauri::async_runtime::spawn(run_desktop_daemon_loop(app, task_shutdown));
+    *daemon_guard = Some(DaemonHandle { shutdown, task });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn runtime_stop(state: State<'_, AppState>) -> Result<(), String> {
+    let pid_file = beethoven_db::pid_path(&state.home);
+    let Some(pid) = beethoven_db::read_pid(&pid_file) else {
+        return Err("no daemon is running".to_string());
+    };
+    if !beethoven_db::is_pid_alive(pid) {
+        let _ = std::fs::remove_file(&pid_file);
+        return Err(format!("no daemon is running (removed stale pidfile for pid {pid})"));
+    }
+
+    if pid == std::process::id() {
+        let mut daemon_guard = state.daemon.lock().await;
+        let Some(handle) = daemon_guard.take() else {
+            return Err("the runtime is not running in this process".to_string());
+        };
+        handle.shutdown.store(true, Ordering::SeqCst);
+        let _ = tokio::time::timeout(Duration::from_secs(10), handle.task).await;
+        let _ = std::fs::remove_file(&pid_file);
+        Ok(())
+    } else {
+        std::process::Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status()
+            .map_err(|e| e.to_string())?;
+        for _ in 0..50 {
+            if !beethoven_db::is_pid_alive(pid) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        Err(format!("daemon (pid {pid}) did not exit within 10s of being sent SIGTERM"))
+    }
+}
+
+#[tauri::command]
+pub async fn runtime_restart(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    runtime_stop(state.clone()).await?;
+    runtime_start(app, state.clone()).await?;
+    let mut runtime = with_runtime(&state).await?;
+    runtime.mark_runtime_restarted().await.map_err(|e| e.to_string())
 }
