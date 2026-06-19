@@ -75,8 +75,22 @@ pub enum EventType {
 
     RuntimeStarted,
     RuntimeStopped,
+    RuntimeRestarted,
     TaskRecovered,
     AgentHeartbeat,
+
+    ProjectPaused,
+    ProjectResumed,
+    ProjectArchived,
+
+    TaskRetried,
+    TaskCancelled,
+    TaskReassigned,
+
+    ReviewChangesRequested,
+
+    AgentPaused,
+    AgentResumed,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -136,8 +150,18 @@ impl std::str::FromStr for EventType {
             "PMReviewCompleted" => EventType::PMReviewCompleted,
             "RuntimeStarted" => EventType::RuntimeStarted,
             "RuntimeStopped" => EventType::RuntimeStopped,
+            "RuntimeRestarted" => EventType::RuntimeRestarted,
             "TaskRecovered" => EventType::TaskRecovered,
             "AgentHeartbeat" => EventType::AgentHeartbeat,
+            "ProjectPaused" => EventType::ProjectPaused,
+            "ProjectResumed" => EventType::ProjectResumed,
+            "ProjectArchived" => EventType::ProjectArchived,
+            "TaskRetried" => EventType::TaskRetried,
+            "TaskCancelled" => EventType::TaskCancelled,
+            "TaskReassigned" => EventType::TaskReassigned,
+            "ReviewChangesRequested" => EventType::ReviewChangesRequested,
+            "AgentPaused" => EventType::AgentPaused,
+            "AgentResumed" => EventType::AgentResumed,
             other => return Err(UnknownEventType(other.to_string())),
         })
     }
@@ -194,8 +218,18 @@ impl EventType {
             EventType::PMReviewCompleted => "PMReviewCompleted",
             EventType::RuntimeStarted => "RuntimeStarted",
             EventType::RuntimeStopped => "RuntimeStopped",
+            EventType::RuntimeRestarted => "RuntimeRestarted",
             EventType::TaskRecovered => "TaskRecovered",
             EventType::AgentHeartbeat => "AgentHeartbeat",
+            EventType::ProjectPaused => "ProjectPaused",
+            EventType::ProjectResumed => "ProjectResumed",
+            EventType::ProjectArchived => "ProjectArchived",
+            EventType::TaskRetried => "TaskRetried",
+            EventType::TaskCancelled => "TaskCancelled",
+            EventType::TaskReassigned => "TaskReassigned",
+            EventType::ReviewChangesRequested => "ReviewChangesRequested",
+            EventType::AgentPaused => "AgentPaused",
+            EventType::AgentResumed => "AgentResumed",
         }
     }
 }
@@ -280,7 +314,7 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
-    const ALL_EVENT_TYPES: [EventType; 50] = [
+    const ALL_EVENT_TYPES: [EventType; 60] = [
         EventType::ProjectCreated,
         EventType::AgentTemplateCreated,
         EventType::GoalCreated,
@@ -329,8 +363,18 @@ mod tests {
         EventType::PMReviewCompleted,
         EventType::RuntimeStarted,
         EventType::RuntimeStopped,
+        EventType::RuntimeRestarted,
         EventType::TaskRecovered,
         EventType::AgentHeartbeat,
+        EventType::ProjectPaused,
+        EventType::ProjectResumed,
+        EventType::ProjectArchived,
+        EventType::TaskRetried,
+        EventType::TaskCancelled,
+        EventType::TaskReassigned,
+        EventType::ReviewChangesRequested,
+        EventType::AgentPaused,
+        EventType::AgentResumed,
     ];
 
     #[test]
