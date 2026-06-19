@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use beethoven_agents::{AgentsError, ExecutionRequest, ExecutionResult, ExecutionStatus, ModelRuntime};
 use beethoven_core::{
     AgentKind, AgentStatus, ArtifactKind, DecisionStatus, GoalStatus, InboxKind, InboxStatus, InitiativeStatus,
-    ModelRunStatus, ReviewStatus, Runtime, TaskStatus,
+    ModelRunStatus, ProjectStatus, ReviewStatus, Runtime, TaskStatus,
 };
 use beethoven_events::{Event, EventStore, EventStoreError, EventType};
 use beethoven_workspaces::{TmuxSession, WorkspaceManager, WorkspaceRequest};
@@ -826,4 +826,264 @@ async fn recover_escalates_instead_of_recovering_a_task_that_already_hit_max_att
     assert_eq!(escalated_task.status, TaskStatus::Blocked);
     let inbox_item = runtime.state.inbox.values().find(|i| i.task_id.as_deref() == Some(task.id.as_str())).unwrap();
     assert!(inbox_item.prompt.contains("gave up after crashing"));
+}
+
+#[tokio::test]
+async fn pause_project_prevents_new_assignment_until_resumed() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let goal = runtime.create_goal(&project.id, "Docs", "- Write the changelog").await.unwrap();
+    runtime.plan_goal(&goal.id).await.unwrap();
+
+    let paused = runtime.pause_project(&project.id).await.unwrap();
+    assert_eq!(paused.status, ProjectStatus::Paused);
+
+    // Pausing an already-paused project is invalid.
+    assert!(runtime.pause_project(&project.id).await.is_err());
+
+    let report = runtime.run_tick(&project.id).await.unwrap();
+    assert_eq!(report.assigned, 0);
+    assert_eq!(report.completed, 0);
+    assert_eq!(runtime.state.tasks.values().next().unwrap().status, TaskStatus::Ready);
+
+    let resumed = runtime.resume_project(&project.id).await.unwrap();
+    assert_eq!(resumed.status, ProjectStatus::Active);
+
+    let report = runtime.run_tick(&project.id).await.unwrap();
+    assert_eq!(report.completed, 1);
+}
+
+#[tokio::test]
+async fn archive_project_removes_it_from_active_execution_entirely() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let goal = runtime.create_goal(&project.id, "Docs", "- Write the changelog").await.unwrap();
+    runtime.plan_goal(&goal.id).await.unwrap();
+
+    let archived = runtime.archive_project(&project.id).await.unwrap();
+    assert_eq!(archived.status, ProjectStatus::Archived);
+
+    let report = runtime.run_tick(&project.id).await.unwrap();
+    assert_eq!(report.assigned, 0);
+    assert_eq!(report.completed, 0);
+    assert_eq!(runtime.state.tasks.values().next().unwrap().status, TaskStatus::Ready);
+
+    assert!(runtime.archive_project(&project.id).await.is_err());
+}
+
+#[tokio::test]
+async fn retry_task_returns_a_blocked_task_to_ready_for_another_attempt() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let goal = runtime
+        .create_goal(&project.id, "Ops", "- Run a risky database migration")
+        .await
+        .unwrap();
+    runtime.plan_goal(&goal.id).await.unwrap();
+    runtime.run_tick(&project.id).await.unwrap();
+
+    let task = runtime.state.tasks.values().next().unwrap().clone();
+    assert_eq!(task.status, TaskStatus::Blocked);
+
+    let retried = runtime.retry_task(&task.id).await.unwrap();
+    assert_eq!(retried.status, TaskStatus::Ready);
+    assert_eq!(retried.attempt, task.attempt + 1);
+
+    // No longer blocked, so retrying again is invalid.
+    assert!(runtime.retry_task(&task.id).await.is_err());
+}
+
+#[tokio::test]
+async fn cancel_task_stops_it_from_future_execution() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let goal = runtime.create_goal(&project.id, "Docs", "- Write the changelog").await.unwrap();
+    let tasks = runtime.plan_goal(&goal.id).await.unwrap();
+    let task = tasks[0].clone();
+
+    let cancelled = runtime.cancel_task(&task.id).await.unwrap();
+    assert_eq!(cancelled.status, TaskStatus::Cancelled);
+
+    let report = runtime.run_tick(&project.id).await.unwrap();
+    assert_eq!(report.assigned, 0);
+    assert_eq!(report.completed, 0);
+    assert_eq!(runtime.state.tasks[&task.id].status, TaskStatus::Cancelled);
+
+    // A cancelled task is terminal; cancelling it again is invalid.
+    assert!(runtime.cancel_task(&task.id).await.is_err());
+}
+
+#[tokio::test]
+async fn reassign_task_moves_ownership_to_a_new_idle_agent_in_the_same_project() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+    let projects_root = dir.path().join("projects");
+
+    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let goal = runtime
+        .create_goal(&project.id, "Ops", "- Run a risky database migration")
+        .await
+        .unwrap();
+    let tasks = runtime.plan_goal(&goal.id).await.unwrap();
+    let task = tasks[0].clone();
+
+    let mut candidates = runtime
+        .state
+        .agent_instances
+        .values()
+        .filter(|a| a.project_id == project.id && a.kind != AgentKind::ProjectManager)
+        .cloned();
+    let old_agent = candidates.next().unwrap();
+    let new_agent = candidates.next().unwrap();
+
+    store
+        .append(Event::for_project(
+            &project.id,
+            EventType::TaskAssigned,
+            &old_agent.id,
+            serde_json::json!({"task_id": task.id, "agent_id": old_agent.id}),
+        ))
+        .await
+        .unwrap();
+
+    // Reload so the hand-appended assignment above is reflected in state,
+    // the same way `recover_resets_a_task_crashed_mid_execution...` does.
+    drop(runtime);
+    let mut runtime = Runtime::load(Box::new(store), projects_root, Box::new(StubModelRuntime)).await.unwrap();
+    assert_eq!(runtime.state.tasks[&task.id].status, TaskStatus::Assigned);
+
+    let reassigned = runtime.reassign_task(&task.id, &new_agent.id).await.unwrap();
+    assert_eq!(reassigned.status, TaskStatus::Assigned);
+    assert_eq!(reassigned.assigned_agent_id, Some(new_agent.id.clone()));
+    assert_eq!(runtime.state.agent_instances[&old_agent.id].status, AgentStatus::Idle);
+    assert_eq!(runtime.state.agent_instances[&old_agent.id].current_task_id, None);
+    assert_eq!(runtime.state.agent_instances[&new_agent.id].status, AgentStatus::Assigned);
+    assert_eq!(runtime.state.agent_instances[&new_agent.id].current_task_id, Some(task.id.clone()));
+
+    // The new agent is no longer idle, so reassigning to it again is invalid.
+    assert!(runtime.reassign_task(&task.id, &new_agent.id).await.is_err());
+}
+
+#[tokio::test]
+async fn approve_review_accepts_a_blocked_task_as_a_manual_override() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let goal = runtime
+        .create_goal(&project.id, "Ops", "- Run a risky database migration")
+        .await
+        .unwrap();
+    runtime.plan_goal(&goal.id).await.unwrap();
+    runtime.run_tick(&project.id).await.unwrap();
+
+    let task = runtime.state.tasks.values().next().unwrap().clone();
+    assert_eq!(task.status, TaskStatus::Blocked);
+
+    let approved = runtime.approve_review(&task.id).await.unwrap();
+    assert_eq!(approved.status, TaskStatus::Approved);
+
+    // No longer blocked, so approving again is invalid.
+    assert!(runtime.approve_review(&task.id).await.is_err());
+}
+
+#[tokio::test]
+async fn request_review_changes_returns_a_blocked_task_to_ready() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let goal = runtime
+        .create_goal(&project.id, "Ops", "- Run a risky database migration")
+        .await
+        .unwrap();
+    runtime.plan_goal(&goal.id).await.unwrap();
+    runtime.run_tick(&project.id).await.unwrap();
+
+    let task = runtime.state.tasks.values().next().unwrap().clone();
+    assert_eq!(task.status, TaskStatus::Blocked);
+
+    let updated = runtime.request_review_changes(&task.id, "needs more tests").await.unwrap();
+    assert_eq!(updated.status, TaskStatus::Ready);
+    assert_eq!(updated.attempt, task.attempt + 1);
+    assert_eq!(updated.assigned_agent_id, None);
+
+    // No longer blocked, so requesting changes again is invalid.
+    assert!(runtime.request_review_changes(&task.id, "again").await.is_err());
+}
+
+#[tokio::test]
+async fn pause_agent_and_resume_agent_require_idle_and_paused_respectively() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), Box::new(StubModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let agent = runtime
+        .state
+        .agent_instances
+        .values()
+        .find(|a| a.project_id == project.id && a.kind != AgentKind::ProjectManager)
+        .unwrap()
+        .clone();
+    assert_eq!(agent.status, AgentStatus::Idle);
+
+    let paused = runtime.pause_agent(&agent.id).await.unwrap();
+    assert_eq!(paused.status, AgentStatus::Paused);
+
+    // Already paused (not idle), so pausing again is invalid.
+    assert!(runtime.pause_agent(&agent.id).await.is_err());
+
+    let resumed = runtime.resume_agent(&agent.id).await.unwrap();
+    assert_eq!(resumed.status, AgentStatus::Idle);
+
+    // Already idle (not paused), so resuming again is invalid.
+    assert!(runtime.resume_agent(&agent.id).await.is_err());
 }
