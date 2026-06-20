@@ -237,3 +237,15 @@ pub struct Decision {
     pub status: DecisionStatus,
     pub created_at: DateTime<Utc>,
 }
+
+/// One edge of the task dependency graph: `task_id` may become eligible for
+/// execution only once `depends_on_task_id` is `Done` (see
+/// `RuntimeState::is_executable`). Deliberately carries no status of its
+/// own -- whether it's currently "satisfied" is never stored, only
+/// recomputed from the two tasks it names, so it can never drift out of
+/// sync with them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskDependency {
+    pub task_id: String,
+    pub depends_on_task_id: String,
+}

@@ -4,8 +4,8 @@ use crate::state::RuntimeState;
 use beethoven_agents::{
     AgentRole, AgentsError, DelegationAgent, DelegationAgentStatus, DelegationDecision, DelegationService,
     DelegationTask, ExecutionOutcome, ExecutionRequest, ExecutionResult, ExecutionService, ExecutionStatus,
-    ModelRuntime, PlanningService, PromptBuilder, ReviewOutcome, ReviewService, RuntimeRegistry,
-    TaskExecutionContext, WorkerPromptContext,
+    FifoScheduler, ModelRuntime, PlanningService, PromptBuilder, QueuedTask, ReviewOutcome, ReviewService,
+    RuntimeRegistry, Scheduler, TaskExecutionContext, TaskQueue, WorkerPromptContext,
 };
 use beethoven_events::{Event, EventStore, EventType};
 use beethoven_workspaces::{tmux_session_name, WorkspaceManager, WorkspaceRequest, WorkspaceState};
@@ -115,6 +115,7 @@ pub struct Runtime {
     store: Arc<dyn EventStore>,
     projects_root: PathBuf,
     registry: RuntimeRegistry,
+    scheduler: Box<dyn Scheduler + Send + Sync>,
     pub state: RuntimeState,
 }
 
@@ -130,6 +131,7 @@ impl Runtime {
             store,
             projects_root,
             registry,
+            scheduler: Box::new(FifoScheduler),
             state,
         })
     }
@@ -656,29 +658,108 @@ impl Runtime {
         Ok(())
     }
 
-    /// Has the project's Lead delegate every currently-`Ready` task: reuse an
-    /// available Worker/Reviewer if one exists, otherwise spawn a new Worker;
-    /// archive any leftover agent the delegation decides has no further work.
-    /// Returns how many tasks were assigned.
-    async fn run_lead_delegation(&mut self, project_id: &str) -> Result<u32, CoreError> {
+    /// Eligible work for one project, oldest-first: every task
+    /// `RuntimeState::is_executable` -- Ready, a leaf, its project Active,
+    /// every dependency `Done`, and no unresolved `Decision` against it
+    /// directly. Shared by every path that can put a task in an agent's
+    /// hands (`run_lead_delegation`'s automatic batch pass and
+    /// `claim_next_task`'s explicit pull) so there is exactly one
+    /// definition of "ready to release," and dependency/decision/pause
+    /// gating is evaluated fresh on every call rather than cached anywhere.
+    fn ready_task_queue(&self, project_id: &str) -> TaskQueue {
+        TaskQueue::new(
+            self.state
+                .tasks
+                .values()
+                .filter(|t| t.project_id == project_id && self.state.is_executable(&t.id))
+                .map(|t| QueuedTask { task_id: t.id.clone(), priority: 0, queued_at: t.created_at })
+                .collect(),
+        )
+    }
+
+    /// Hands `task_id` to `agent_id` -- the single place a task moves out of
+    /// the scheduler's queue into an agent's hands, whether the Lead matched
+    /// it on the agent's behalf (`run_lead_delegation`) or the agent pulled
+    /// it itself (`claim_next_task`). `delegated_by` records which: the
+    /// Lead's id for the former, `agent_id` itself for a self-pull.
+    async fn claim_task_for_agent(
+        &mut self,
+        project_id: &str,
+        delegated_by: &str,
+        agent_id: &str,
+        task_id: &str,
+    ) -> Result<(), CoreError> {
+        let objective = self.state.tasks.get(task_id).map(|t| t.title.clone()).unwrap_or_default();
+        self.emit_project(
+            project_id,
+            EventType::AgentDelegatedTask,
+            delegated_by,
+            json!({"agent_id": agent_id, "task_id": task_id, "delegated_by": delegated_by, "objective": objective}),
+        )
+        .await?;
+        self.emit_project(
+            project_id,
+            EventType::TaskAssigned,
+            delegated_by,
+            json!({"task_id": task_id, "agent_id": agent_id}),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// A `Worker`/`Reviewer` agent requesting its next unit of work, pulled
+    /// from the scheduler's queue rather than pushed by the Lead -- the
+    /// "Worker -> Request Task -> Scheduler -> Receive Task" flow, made a
+    /// real callable primitive rather than only ever simulated inside the
+    /// automatic tick loop. Returns `None` (not an error) if `agent_id` isn't
+    /// currently available to pull -- the Lead itself, already busy/paused/
+    /// archived, or the project has no released work right now -- since
+    /// "nothing to claim yet" is routine for a worker polling, not a failure.
+    pub async fn claim_next_task(&mut self, agent_id: &str) -> Result<Option<Task>, CoreError> {
+        let agent = self
+            .state
+            .agent_instances
+            .get(agent_id)
+            .cloned()
+            .ok_or_else(|| CoreError::AgentNotFound(agent_id.to_string()))?;
+        if agent.role == AgentRole::Lead || !matches!(agent.status, AgentStatus::Idle | AgentStatus::Completed) {
+            return Ok(None);
+        }
+
+        // Project-active, dependency, and decision gating all live in
+        // `is_executable` (via `ready_task_queue`) -- nothing to duplicate here.
+        let queue = self.ready_task_queue(&agent.project_id);
+        let Some(task_id) = self.scheduler.next_tasks(&queue, 1).into_iter().next() else {
+            return Ok(None);
+        };
+
+        self.claim_task_for_agent(&agent.project_id, agent_id, agent_id, &task_id).await?;
+        Ok(self.state.tasks.get(&task_id).cloned())
+    }
+
+    /// Has the project's Lead delegate up to `max_tasks` currently-`Ready`
+    /// tasks: reuse an available Worker/Reviewer if one exists, otherwise
+    /// spawn a new Worker; archive any leftover agent the delegation decides
+    /// has no further work. Returns how many tasks were assigned.
+    ///
+    /// Task *selection* (which Ready tasks, in what order, how many at once)
+    /// is the scheduler's job, not this method's: it asks `self.scheduler`
+    /// which of `ready_task_queue`'s entries to release. `DelegationService`
+    /// then only ever decides *who* (which agent) a released task goes to,
+    /// never *whether*.
+    async fn run_lead_delegation(&mut self, project_id: &str, max_tasks: usize) -> Result<u32, CoreError> {
         let lead_id = self.lead_instance_id(project_id).unwrap_or_else(|| "system".to_string());
 
-        // Container tasks (children planned under them, e.g. a former
-        // Initiative/Epic) are never delegated -- only leaves, which are the
-        // only tasks with real, directly-executable work.
-        let ready_tasks: Vec<DelegationTask> = self
-            .state
-            .tasks
-            .values()
-            .filter(|t| {
-                t.project_id == project_id
-                    && t.status == TaskStatus::Ready
-                    && !self.state.tasks.values().any(|c| c.parent_task_id.as_deref() == Some(t.id.as_str()))
-            })
+        let queue = self.ready_task_queue(project_id);
+        let released_task_ids = self.scheduler.next_tasks(&queue, max_tasks);
+
+        // Preserve the scheduler's release order rather than re-filtering
+        // `self.state.tasks` (a `HashMap`, so iteration order is arbitrary).
+        let ready_tasks: Vec<DelegationTask> = released_task_ids
+            .iter()
+            .filter_map(|id| self.state.tasks.get(id))
             .map(|t| DelegationTask { id: t.id.clone(), title: t.title.clone() })
             .collect();
-        let task_titles: HashMap<String, String> =
-            ready_tasks.iter().map(|t| (t.id.clone(), t.title.clone())).collect();
 
         let agents: Vec<DelegationAgent> = self
             .state
@@ -701,41 +782,13 @@ impl Runtime {
         for decision in decisions {
             match decision {
                 DelegationDecision::DelegateToExisting { agent_id, task_id } => {
-                    let objective = task_titles.get(&task_id).cloned().unwrap_or_default();
-                    self.emit_project(
-                        project_id,
-                        EventType::AgentDelegatedTask,
-                        &lead_id,
-                        json!({"agent_id": agent_id, "task_id": task_id, "delegated_by": lead_id, "objective": objective}),
-                    )
-                    .await?;
-                    self.emit_project(
-                        project_id,
-                        EventType::TaskAssigned,
-                        &lead_id,
-                        json!({"task_id": task_id, "agent_id": agent_id}),
-                    )
-                    .await?;
+                    self.claim_task_for_agent(project_id, &lead_id, &agent_id, &task_id).await?;
                     assigned += 1;
                 }
                 DelegationDecision::SpawnWorker { task_id, role_description, name } => {
                     let agent =
                         self.spawn_agent(project_id, &lead_id, AgentRole::Worker, &role_description, &name).await?;
-                    let objective = task_titles.get(&task_id).cloned().unwrap_or_default();
-                    self.emit_project(
-                        project_id,
-                        EventType::AgentDelegatedTask,
-                        &lead_id,
-                        json!({"agent_id": agent.id, "task_id": task_id, "delegated_by": lead_id, "objective": objective}),
-                    )
-                    .await?;
-                    self.emit_project(
-                        project_id,
-                        EventType::TaskAssigned,
-                        &lead_id,
-                        json!({"task_id": task_id, "agent_id": agent.id}),
-                    )
-                    .await?;
+                    self.claim_task_for_agent(project_id, &lead_id, &agent.id, &task_id).await?;
                     assigned += 1;
                 }
                 DelegationDecision::ArchiveAgent { agent_id } => {
@@ -1236,7 +1289,7 @@ impl Runtime {
                 if paused {
                     continue;
                 }
-                let assigned = self.run_lead_delegation(project_id).await?;
+                let assigned = self.run_lead_delegation(project_id, max_concurrent).await?;
                 if assigned > 0 {
                     reports.get_mut(project_id).expect("seeded above").assigned += assigned;
                     progressed = true;
@@ -1496,6 +1549,61 @@ impl Runtime {
         self.emit_project(&task.project_id, EventType::TaskCancelled, "human", json!({"task_id": task_id}))
             .await?;
         Ok(self.state.tasks.get(task_id).expect("just updated").clone())
+    }
+
+    /// Records that `task_id` may only become executable
+    /// (`RuntimeState::is_executable`) once `depends_on_task_id` is `Done`.
+    /// Rejects a self-dependency, a cross-project edge, a dependency that
+    /// would close a cycle, or either task not existing -- all checked
+    /// *before* anything is emitted, so an invalid edge is never written to
+    /// the event log in the first place rather than needing to be detected
+    /// and repaired afterward.
+    pub async fn add_task_dependency(&mut self, task_id: &str, depends_on_task_id: &str) -> Result<(), CoreError> {
+        if task_id == depends_on_task_id {
+            return Err(CoreError::InvalidState(format!("task {task_id} cannot depend on itself")));
+        }
+        let task = self.state.tasks.get(task_id).ok_or_else(|| CoreError::TaskNotFound(task_id.to_string()))?;
+        let dependency = self
+            .state
+            .tasks
+            .get(depends_on_task_id)
+            .ok_or_else(|| CoreError::TaskNotFound(depends_on_task_id.to_string()))?;
+        if task.project_id != dependency.project_id {
+            return Err(CoreError::InvalidState(format!(
+                "task {task_id} and {depends_on_task_id} are not in the same project"
+            )));
+        }
+        if self.state.creates_cycle(task_id, depends_on_task_id) {
+            return Err(CoreError::InvalidState(format!(
+                "task {task_id} cannot depend on {depends_on_task_id}: it would create a cycle"
+            )));
+        }
+
+        let project_id = task.project_id.clone();
+        self.emit_project(
+            &project_id,
+            EventType::TaskDependencyCreated,
+            "human",
+            json!({"task_id": task_id, "depends_on_task_id": depends_on_task_id}),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Removes a previously-recorded dependency. A no-op (not an error) if
+    /// the edge doesn't exist -- removing something already absent reaches
+    /// the same end state either way.
+    pub async fn remove_task_dependency(&mut self, task_id: &str, depends_on_task_id: &str) -> Result<(), CoreError> {
+        let task = self.state.tasks.get(task_id).ok_or_else(|| CoreError::TaskNotFound(task_id.to_string()))?;
+        let project_id = task.project_id.clone();
+        self.emit_project(
+            &project_id,
+            EventType::TaskDependencyRemoved,
+            "human",
+            json!({"task_id": task_id, "depends_on_task_id": depends_on_task_id}),
+        )
+        .await?;
+        Ok(())
     }
 
     /// Moves ownership of a task to another idle agent in the same project.
@@ -1851,7 +1959,7 @@ mod tests {
             .unwrap();
         runtime.plan_task(&root.id).await.unwrap();
 
-        let assigned = runtime.run_lead_delegation(&project.id).await.unwrap();
+        let assigned = runtime.run_lead_delegation(&project.id, DEFAULT_MAX_CONCURRENT).await.unwrap();
         assert_eq!(assigned, 1);
 
         let task_id = runtime.state.tasks.values().find(|t| t.id != root.id).unwrap().id.clone();
@@ -1894,5 +2002,160 @@ mod tests {
         let events = runtime.list_events().await.unwrap();
         assert!(!events.iter().any(|e| e.event_type == EventType::TaskCompleted));
         assert!(!events.iter().any(|e| e.event_type == EventType::RunCompleted));
+    }
+
+    /// Phase 2.1's acceptance criteria in one test: the scheduler (not
+    /// `DelegationService`) owns *how many* `Ready` tasks get released per
+    /// pass, and never releases more than asked -- the rest stay `Ready`
+    /// rather than being silently dropped or assigned anyway.
+    #[tokio::test]
+    async fn run_lead_delegation_releases_at_most_max_tasks_leaving_the_rest_ready() {
+        let store = InMemoryStore::default();
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(UnusedModelRuntime))
+            .await
+            .unwrap();
+
+        init_repo(&dir.path().join("repo"));
+        let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+
+        // Three independent root tasks -- each is a leaf (no children yet),
+        // so all three are immediately `Ready` and queue-eligible.
+        for title in ["Task A", "Task B", "Task C"] {
+            runtime.create_task(&project.id, None, title, "", "", None, false).await.unwrap();
+        }
+
+        let assigned = runtime.run_lead_delegation(&project.id, 2).await.unwrap();
+        assert_eq!(assigned, 2, "the scheduler must cap release to max_tasks");
+
+        let statuses: Vec<TaskStatus> = runtime.state.tasks.values().map(|t| t.status).collect();
+        assert_eq!(statuses.iter().filter(|s| **s == TaskStatus::Assigned).count(), 2);
+        assert_eq!(
+            statuses.iter().filter(|s| **s == TaskStatus::Ready).count(),
+            1,
+            "the task left out of this release must remain Ready, not lost"
+        );
+    }
+
+    /// The Lead coordinates delegation; it never executes a task itself, so
+    /// it can never be on the other end of a pull.
+    #[tokio::test]
+    async fn claim_next_task_returns_none_for_the_lead_agent() {
+        let store = InMemoryStore::default();
+        let dir = tempfile::tempdir().unwrap();
+        let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(UnusedModelRuntime))
+            .await
+            .unwrap();
+
+        init_repo(&dir.path().join("repo"));
+        let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+        let task = runtime.create_task(&project.id, None, "Docs", "", "", None, false).await.unwrap();
+        let lead_id = runtime.lead_instance_id(&project.id).unwrap();
+
+        let claimed = runtime.claim_next_task(&lead_id).await.unwrap();
+        assert!(claimed.is_none());
+        assert_eq!(runtime.state.tasks[&task.id].status, TaskStatus::Ready);
+    }
+
+    /// The literal "Worker -> Request Task -> Scheduler -> Receive Task"
+    /// flow: an idle worker pulls its own task rather than waiting for the
+    /// Lead to push one. `delegated_by` on the resulting event is the
+    /// worker's own id, not the Lead's -- nobody else made this decision.
+    #[tokio::test]
+    async fn claim_next_task_lets_an_idle_worker_pull_its_own_task() {
+        let store = InMemoryStore::default();
+        let dir = tempfile::tempdir().unwrap();
+        let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(UnusedModelRuntime))
+            .await
+            .unwrap();
+
+        init_repo(&dir.path().join("repo"));
+        let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+        let task = runtime.create_task(&project.id, None, "Docs", "", "", None, false).await.unwrap();
+        let lead_id = runtime.lead_instance_id(&project.id).unwrap();
+        let worker = runtime.spawn_agent(&project.id, &lead_id, AgentRole::Worker, "generalist", "Worker 1").await.unwrap();
+
+        let claimed = runtime.claim_next_task(&worker.id).await.unwrap().expect("a ready task was available");
+        assert_eq!(claimed.id, task.id);
+        assert_eq!(runtime.state.tasks[&task.id].status, TaskStatus::Assigned);
+        assert_eq!(runtime.state.tasks[&task.id].assigned_agent_id, Some(worker.id.clone()));
+        assert_eq!(runtime.state.agent_instances[&worker.id].status, AgentStatus::Assigned);
+
+        let events = runtime.list_events().await.unwrap();
+        let delegated = events
+            .iter()
+            .find(|e| e.event_type == EventType::AgentDelegatedTask)
+            .expect("a delegation event was emitted");
+        assert_eq!(delegated.payload.get("delegated_by").and_then(|v| v.as_str()), Some(worker.id.as_str()));
+    }
+
+    /// A worker that's already mid-task (or paused) has nothing to offer a
+    /// second pull -- it must not double-claim, even though another task is
+    /// sitting `Ready` in the same project's queue.
+    #[tokio::test]
+    async fn claim_next_task_returns_none_for_an_agent_that_is_not_idle() {
+        let store = InMemoryStore::default();
+        let dir = tempfile::tempdir().unwrap();
+        let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(UnusedModelRuntime))
+            .await
+            .unwrap();
+
+        init_repo(&dir.path().join("repo"));
+        let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+        runtime.create_task(&project.id, None, "Task A", "", "", None, false).await.unwrap();
+        runtime.create_task(&project.id, None, "Task B", "", "", None, false).await.unwrap();
+        let lead_id = runtime.lead_instance_id(&project.id).unwrap();
+        let worker = runtime.spawn_agent(&project.id, &lead_id, AgentRole::Worker, "generalist", "Worker 1").await.unwrap();
+
+        runtime.claim_next_task(&worker.id).await.unwrap().expect("claims Task A");
+        let second_claim = runtime.claim_next_task(&worker.id).await.unwrap();
+        assert!(second_claim.is_none(), "a busy worker must not be able to claim a second task");
+    }
+
+    /// `pause_project` is documented as preventing new assignment entirely;
+    /// an explicit pull must respect that exactly like the automatic
+    /// Lead-driven path already does.
+    #[tokio::test]
+    async fn claim_next_task_returns_none_for_a_paused_project() {
+        let store = InMemoryStore::default();
+        let dir = tempfile::tempdir().unwrap();
+        let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(UnusedModelRuntime))
+            .await
+            .unwrap();
+
+        init_repo(&dir.path().join("repo"));
+        let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+        runtime.create_task(&project.id, None, "Docs", "", "", None, false).await.unwrap();
+        let lead_id = runtime.lead_instance_id(&project.id).unwrap();
+        let worker = runtime.spawn_agent(&project.id, &lead_id, AgentRole::Worker, "generalist", "Worker 1").await.unwrap();
+
+        runtime.pause_project(&project.id).await.unwrap();
+        let claimed = runtime.claim_next_task(&worker.id).await.unwrap();
+        assert!(claimed.is_none());
+    }
+
+    /// Phase 2.3's scaling goal in one test: nothing in delegation hardcodes
+    /// a ceiling on how many workers can exist or how many tasks can be
+    /// released in one pass -- a dozen ready tasks spawn a dozen workers.
+    #[tokio::test]
+    async fn run_lead_delegation_scales_to_a_dozen_ready_tasks_with_no_hardcoded_worker_cap() {
+        let store = InMemoryStore::default();
+        let dir = tempfile::tempdir().unwrap();
+        let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(UnusedModelRuntime))
+            .await
+            .unwrap();
+
+        init_repo(&dir.path().join("repo"));
+        let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+        const N: usize = 12;
+        for i in 0..N {
+            runtime.create_task(&project.id, None, &format!("Task {i}"), "", "", None, false).await.unwrap();
+        }
+
+        let assigned = runtime.run_lead_delegation(&project.id, N).await.unwrap();
+        assert_eq!(assigned, N as u32);
+        let workers = runtime.state.agent_instances.values().filter(|a| a.role == AgentRole::Worker).count();
+        assert_eq!(workers, N, "one fresh worker per ready task, with no spawn ceiling");
     }
 }

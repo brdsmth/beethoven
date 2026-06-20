@@ -441,3 +441,123 @@ fn agent_paused_and_resumed_transitions() {
     let state = RuntimeState::replay(&events);
     assert_eq!(state.agent_instances["a1"].status, AgentStatus::Idle);
 }
+
+fn ready_root_task(id: &str, title: &str) -> Event {
+    Event::for_project(
+        "p1",
+        EventType::TaskCreated,
+        "human",
+        json!({
+            "id": id,
+            "parent_task_id": None::<String>,
+            "title": title,
+            "description": "",
+            "status": TaskStatus::Ready,
+            "success_criteria": "",
+            "target_score": 70.0,
+        }),
+    )
+}
+
+#[test]
+fn task_dependency_created_and_removed_round_trip_through_the_reducer() {
+    let mut events = setup_events();
+    events.push(ready_root_task("backend", "Backend"));
+    events.push(ready_root_task("tests", "Tests"));
+    events.push(Event::for_project(
+        "p1",
+        EventType::TaskDependencyCreated,
+        "human",
+        json!({"task_id": "tests", "depends_on_task_id": "backend"}),
+    ));
+
+    let state = RuntimeState::replay(&events);
+    assert_eq!(state.dependencies("tests").len(), 1);
+    assert_eq!(state.dependencies("tests")[0].depends_on_task_id, "backend");
+    assert_eq!(state.dependents("backend").len(), 1);
+    assert_eq!(state.dependents("backend")[0].task_id, "tests");
+
+    events.push(Event::for_project(
+        "p1",
+        EventType::TaskDependencyRemoved,
+        "human",
+        json!({"task_id": "tests", "depends_on_task_id": "backend"}),
+    ));
+    let state = RuntimeState::replay(&events);
+    assert!(state.dependencies("tests").is_empty());
+    assert!(state.dependents("backend").is_empty());
+}
+
+#[test]
+fn a_task_is_not_executable_until_its_dependency_is_done_then_becomes_so_with_no_extra_event() {
+    let mut events = setup_events();
+    events.push(ready_root_task("backend", "Backend"));
+    events.push(ready_root_task("tests", "Tests"));
+    events.push(Event::for_project(
+        "p1",
+        EventType::TaskDependencyCreated,
+        "human",
+        json!({"task_id": "tests", "depends_on_task_id": "backend"}),
+    ));
+
+    let blocked = RuntimeState::replay(&events);
+    assert!(blocked.is_executable("backend"), "no dependency of its own, and Ready -> executable");
+    assert!(!blocked.is_executable("tests"), "its dependency isn't Done yet");
+
+    events.push(Event::for_project("p1", EventType::TaskCompleted, "system", json!({"task_id": "backend"})));
+    let unblocked = RuntimeState::replay(&events);
+    assert!(
+        unblocked.is_executable("tests"),
+        "became executable the instant its dependency completed -- no TaskUnblocked event required"
+    );
+}
+
+#[test]
+fn is_executable_is_false_while_a_decision_is_open_directly_against_a_leaf_task() {
+    let mut events = setup_events();
+    events.push(ready_root_task("leaf", "Leaf"));
+    events.push(Event::for_project(
+        "p1",
+        EventType::DecisionCreated,
+        "pm",
+        json!({"id": "dec1", "task_id": "leaf", "question": "Which provider?", "context": "..."}),
+    ));
+
+    let state = RuntimeState::replay(&events);
+    assert!(!state.is_executable("leaf"));
+}
+
+#[test]
+fn is_executable_is_false_for_a_container_task_even_though_it_is_ready() {
+    let state = RuntimeState::replay(&setup_events());
+    assert!(!state.is_executable("root1"), "a task with children is never directly executable");
+}
+
+#[test]
+fn creates_cycle_detects_a_transitive_cycle_but_not_an_unrelated_pair() {
+    let mut events = setup_events();
+    events.push(ready_root_task("a", "A"));
+    events.push(ready_root_task("b", "B"));
+    events.push(ready_root_task("c", "C"));
+    events.push(ready_root_task("d", "D"));
+    // a depends_on b, b depends_on c: a -> b -> c
+    events.push(Event::for_project(
+        "p1",
+        EventType::TaskDependencyCreated,
+        "human",
+        json!({"task_id": "a", "depends_on_task_id": "b"}),
+    ));
+    events.push(Event::for_project(
+        "p1",
+        EventType::TaskDependencyCreated,
+        "human",
+        json!({"task_id": "b", "depends_on_task_id": "c"}),
+    ));
+
+    let state = RuntimeState::replay(&events);
+    assert!(
+        state.creates_cycle("c", "a"),
+        "c depends_on a would close a -> b -> c -> a"
+    );
+    assert!(!state.creates_cycle("d", "a"), "d is unrelated to the a -> b -> c chain");
+}

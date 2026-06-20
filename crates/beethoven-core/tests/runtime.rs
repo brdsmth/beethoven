@@ -1285,3 +1285,99 @@ async fn task_blocked_sets_blocked_reason_and_clearing_it_via_retry_or_question_
     assert_eq!(answered.status, TaskStatus::Ready);
     assert_eq!(answered.blocked_reason, None);
 }
+
+#[tokio::test]
+async fn add_task_dependency_rejects_self_dependency_and_missing_tasks() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let a = runtime.create_task(&project.id, None, "A", "", "", None, false).await.unwrap();
+
+    assert!(runtime.add_task_dependency(&a.id, &a.id).await.is_err(), "a task cannot depend on itself");
+    assert!(runtime.add_task_dependency(&a.id, "does-not-exist").await.is_err());
+    assert!(runtime.add_task_dependency("does-not-exist", &a.id).await.is_err());
+}
+
+#[tokio::test]
+async fn add_task_dependency_rejects_a_dependency_that_would_close_a_cycle() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let a = runtime.create_task(&project.id, None, "A", "", "", None, false).await.unwrap();
+    let b = runtime.create_task(&project.id, None, "B", "", "", None, false).await.unwrap();
+    let c = runtime.create_task(&project.id, None, "C", "", "", None, false).await.unwrap();
+
+    runtime.add_task_dependency(&a.id, &b.id).await.unwrap(); // A depends on B
+    runtime.add_task_dependency(&b.id, &c.id).await.unwrap(); // B depends on C
+
+    let result = runtime.add_task_dependency(&c.id, &a.id).await; // would close A -> B -> C -> A
+    assert!(result.is_err(), "C depending on A would close a cycle through the existing A -> B -> C chain");
+}
+
+#[tokio::test]
+async fn add_task_dependency_rejects_a_cross_project_edge() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo-a"));
+    init_repo(&dir.path().join("repo-b"));
+    let project_a = runtime.create_project("A", dir.path().join("repo-a"), "main").await.unwrap();
+    let project_b = runtime.create_project("B", dir.path().join("repo-b"), "main").await.unwrap();
+    let task_a = runtime.create_task(&project_a.id, None, "Task A", "", "", None, false).await.unwrap();
+    let task_b = runtime.create_task(&project_b.id, None, "Task B", "", "", None, false).await.unwrap();
+
+    assert!(runtime.add_task_dependency(&task_a.id, &task_b.id).await.is_err());
+}
+
+/// The doc's own example, end to end: `Tests depends_on Backend` means
+/// Tests must never be assigned before Backend completes, and once Backend
+/// completes Tests is released with no further human action -- both within
+/// the same `run_tick` call, since `tick_projects`'s inner loop keeps
+/// re-evaluating the queue until nothing more can progress.
+#[tokio::test]
+async fn a_dependent_task_is_never_assigned_before_its_dependency_completes_and_then_unblocks_automatically() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let backend = runtime.create_task(&project.id, None, "Backend", "", "", None, false).await.unwrap();
+    let tests = runtime.create_task(&project.id, None, "Tests", "", "", None, false).await.unwrap();
+    runtime.add_task_dependency(&tests.id, &backend.id).await.unwrap();
+
+    let report = runtime.run_tick(&project.id).await.unwrap();
+    assert_eq!(report.completed, 2, "Backend completes, which automatically unblocks and completes Tests too");
+    assert_eq!(runtime.state.tasks[&backend.id].status, TaskStatus::Done);
+    assert_eq!(runtime.state.tasks[&tests.id].status, TaskStatus::Done);
+
+    fn task_id_of(e: &Event) -> Option<&str> {
+        e.payload.get("task_id").and_then(|v| v.as_str())
+    }
+
+    let events = runtime.list_events().await.unwrap();
+    let backend_completed_at = events
+        .iter()
+        .position(|e| e.event_type == EventType::TaskCompleted && task_id_of(e) == Some(backend.id.as_str()))
+        .expect("backend completed");
+    let tests_assigned_at = events
+        .iter()
+        .position(|e| e.event_type == EventType::TaskAssigned && task_id_of(e) == Some(tests.id.as_str()))
+        .expect("tests was assigned");
+    assert!(backend_completed_at < tests_assigned_at, "Tests must never be assigned before Backend completes");
+}

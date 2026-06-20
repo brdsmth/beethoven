@@ -14,6 +14,7 @@ pub struct RuntimeState {
     pub artifacts: HashMap<String, Artifact>,
     pub reviews: HashMap<String, Review>,
     pub decisions: HashMap<String, Decision>,
+    pub task_dependencies: Vec<TaskDependency>,
 }
 
 fn decode<T: serde::de::DeserializeOwned>(event: &Event) -> T {
@@ -601,6 +602,18 @@ impl RuntimeState {
                     proj.updated_at = ts;
                 }
             }
+            EventType::TaskDependencyCreated => {
+                let p: TaskDependencyPayload = decode(event);
+                let dep = TaskDependency { task_id: p.task_id, depends_on_task_id: p.depends_on_task_id };
+                if !self.task_dependencies.contains(&dep) {
+                    self.task_dependencies.push(dep);
+                }
+            }
+            EventType::TaskDependencyRemoved => {
+                let p: TaskDependencyPayload = decode(event);
+                self.task_dependencies
+                    .retain(|d| !(d.task_id == p.task_id && d.depends_on_task_id == p.depends_on_task_id));
+            }
             EventType::WorkspaceCreated
             | EventType::WorkspaceDestroyed
             | EventType::PRMerged
@@ -651,6 +664,74 @@ impl RuntimeState {
             .decisions
             .values()
             .any(|d| d.task_id.as_deref() == Some(task_id) && d.status != DecisionStatus::Resolved)
+        {
+            return false;
+        }
+
+        true
+    }
+
+    /// Every task `task_id` directly depends on.
+    pub fn dependencies(&self, task_id: &str) -> Vec<&TaskDependency> {
+        self.task_dependencies.iter().filter(|d| d.task_id == task_id).collect()
+    }
+
+    /// Every task that directly depends on `task_id`.
+    pub fn dependents(&self, task_id: &str) -> Vec<&TaskDependency> {
+        self.task_dependencies.iter().filter(|d| d.depends_on_task_id == task_id).collect()
+    }
+
+    /// True if recording `task_id` depends_on `depends_on_task_id` would
+    /// close a cycle -- i.e. `depends_on_task_id` already (transitively)
+    /// depends on `task_id`. Checked by `Runtime::add_task_dependency`
+    /// before the edge is ever persisted.
+    pub fn creates_cycle(&self, task_id: &str, depends_on_task_id: &str) -> bool {
+        let mut stack = vec![depends_on_task_id.to_string()];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(current) = stack.pop() {
+            if current == task_id {
+                return true;
+            }
+            if !seen.insert(current.clone()) {
+                continue;
+            }
+            for dep in self.dependencies(&current) {
+                stack.push(dep.depends_on_task_id.clone());
+            }
+        }
+        false
+    }
+
+    /// Phase 2.4's central predicate: a leaf task is executable exactly when
+    /// `Ready`, every task it depends on is `Done`, its project is `Active`,
+    /// and no unresolved `Decision` is raised against it directly.
+    /// Deliberately never persisted as its own status -- recomputed from
+    /// current state every time a queue is built (`Runtime::ready_task_queue`),
+    /// so a task automatically becomes executable the instant its last
+    /// blocker clears, with no "unblock" event required and no way for a
+    /// cached blocked flag to drift from the tasks/decisions/project status
+    /// it's derived from.
+    pub fn is_executable(&self, task_id: &str) -> bool {
+        let Some(task) = self.tasks.get(task_id) else { return false };
+        if task.status != TaskStatus::Ready {
+            return false;
+        }
+        if self.tasks.values().any(|c| c.parent_task_id.as_deref() == Some(task_id)) {
+            return false; // a container, never directly executable
+        }
+        let project_active =
+            self.projects.get(&task.project_id).map(|p| p.status == ProjectStatus::Active).unwrap_or(false);
+        if !project_active {
+            return false;
+        }
+        let dependencies_satisfied = self
+            .dependencies(task_id)
+            .iter()
+            .all(|d| self.tasks.get(&d.depends_on_task_id).map(|t| t.status == TaskStatus::Done).unwrap_or(false));
+        if !dependencies_satisfied {
+            return false;
+        }
+        if self.decisions.values().any(|d| d.task_id.as_deref() == Some(task_id) && d.status != DecisionStatus::Resolved)
         {
             return false;
         }

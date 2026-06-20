@@ -253,3 +253,11 @@ pub struct DefaultBranchChangedPayload {
     pub id: String,
     pub default_branch: String,
 }
+
+/// Shared by `TaskDependencyCreated`/`TaskDependencyRemoved` -- both just
+/// name one edge of the dependency graph.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TaskDependencyPayload {
+    pub task_id: String,
+    pub depends_on_task_id: String,
+}
