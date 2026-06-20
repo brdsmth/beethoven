@@ -8,7 +8,7 @@ export function ActivityFeed() {
   const events = (data ?? []).slice(0, 15);
 
   return (
-    <Panel title="Recent Activity">
+    <Panel title="Recent Changes">
       {events.length === 0 ? (
         <div className="text-sm text-slate-500">No events yet.</div>
       ) : (

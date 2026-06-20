@@ -4,16 +4,17 @@ import { useElapsedLabel } from "../../lib/hooks";
 import { Panel } from "../Panel";
 import type { ActiveExecution as ActiveExecutionItem } from "../../lib/types";
 
-export function ActiveExecution() {
+export function ActiveExecution({ projectId, title = "Running Work" }: { projectId?: string; title?: string }) {
   const { data } = useQuery({ queryKey: ["activeExecution"], queryFn: api.getActiveExecution });
+  const items = (data ?? []).filter((item) => !projectId || item.project_id === projectId);
 
   return (
-    <Panel title="Active Execution">
-      {!data || data.length === 0 ? (
+    <Panel title={title}>
+      {items.length === 0 ? (
         <div className="text-sm text-slate-500">No tasks in progress.</div>
       ) : (
         <ul className="flex flex-col gap-2">
-          {data.map((item) => (
+          {items.map((item) => (
             <ActiveExecutionRow key={item.task_id} item={item} />
           ))}
         </ul>

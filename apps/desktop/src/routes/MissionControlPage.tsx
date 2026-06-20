@@ -1,23 +1,20 @@
-import { useQuery } from "@tanstack/react-query";
-import { api } from "../lib/api";
 import { useSelectedProject } from "../lib/hooks";
-import { ProjectPicker } from "../components/ProjectPicker";
 import { GoalHeader } from "../components/mission-control/GoalHeader";
 import { RuntimeStatusPanel } from "../components/mission-control/RuntimeStatusPanel";
-import { ProjectHealth } from "../components/mission-control/ProjectHealth";
-import { AgentHealthPanel } from "../components/mission-control/AgentHealthPanel";
+import { ProjectsOverviewPanel } from "../components/mission-control/ProjectsOverviewPanel";
+import { PendingDecisionsPanel } from "../components/mission-control/PendingDecisionsPanel";
+import { QueueHealthPanel } from "../components/mission-control/QueueHealthPanel";
 import { BlockedWorkPanel } from "../components/mission-control/BlockedWorkPanel";
 import { ActiveExecution } from "../components/mission-control/ActiveExecution";
-import { WorkflowMap } from "../components/mission-control/WorkflowMap";
 import { ActivityFeed } from "../components/mission-control/ActivityFeed";
 
+/// What is being built, what is blocked, what needs attention, what is the
+/// current bottleneck, is work progressing -- answerable within five
+/// seconds, per the scheduler-centric UX spec. Three rows: outcomes
+/// (Projects/Progress/Decisions), work state (Running/Blocked/Queue), then
+/// the audit trail (Recent Changes/Runtime Status).
 export function MissionControlPage() {
   const { projects, selectedProjectId, setSelectedProjectId } = useSelectedProject();
-  const { data: goalHeader } = useQuery({
-    queryKey: ["goalHeader", selectedProjectId],
-    queryFn: () => api.getGoalHeader(selectedProjectId as string),
-    enabled: !!selectedProjectId,
-  });
 
   if (!selectedProjectId) {
     return <div className="text-sm text-slate-500">No projects yet.</div>;
@@ -25,25 +22,26 @@ export function MissionControlPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-slate-100">Mission Control</h1>
-        <ProjectPicker projects={projects} selectedProjectId={selectedProjectId} onChange={setSelectedProjectId} />
+      <h1 className="text-lg font-semibold text-slate-100">Mission Control</h1>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <ProjectsOverviewPanel selectedProjectId={selectedProjectId} onSelect={setSelectedProjectId} />
+        <GoalHeader projectId={selectedProjectId} />
+        <PendingDecisionsPanel projectId={selectedProjectId} />
       </div>
 
-      <GoalHeader projectId={selectedProjectId} />
-
-      <div className="grid grid-cols-2 gap-4">
-        <RuntimeStatusPanel />
-        <ProjectHealth projectId={selectedProjectId} />
-        <AgentHealthPanel projectId={selectedProjectId} />
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <ActiveExecution projectId={selectedProjectId} />
         <BlockedWorkPanel projectId={selectedProjectId} />
+        <QueueHealthPanel projectId={selectedProjectId} />
       </div>
 
-      <ActiveExecution />
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <ActivityFeed />
+        <RuntimeStatusPanel />
+      </div>
 
-      <WorkflowMap taskId={goalHeader?.active_task_id ?? null} />
-
-      <ActivityFeed />
+      {projects.length === 0 && <div className="text-sm text-slate-500">No projects yet.</div>}
     </div>
   );
 }
