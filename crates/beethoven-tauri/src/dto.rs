@@ -19,6 +19,16 @@ pub struct TaskCountsDto {
     pub cancelled: usize,
 }
 
+/// A compact reference to another task -- enough to link to and label it
+/// without pulling in its whole subtree. Backs `TaskDto.dependencies`/
+/// `dependents`.
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskRefDto {
+    pub id: String,
+    pub title: String,
+    pub status: TaskStatus,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskDto {
     pub id: String,
@@ -35,6 +45,15 @@ pub struct TaskDto {
     pub blocked_reason: Option<String>,
     pub success_criteria: String,
     pub target_score: f32,
+    /// Tasks this one depends on -- it cannot become executable until every
+    /// one of these is `done`.
+    pub dependencies: Vec<TaskRefDto>,
+    /// Tasks that depend on this one.
+    pub dependents: Vec<TaskRefDto>,
+    /// `RuntimeState::is_executable` computed fresh at read time: `Ready`,
+    /// a leaf, its project `Active`, every dependency `Done`, and no
+    /// unresolved `Decision` against it directly. Never persisted.
+    pub is_executable: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -166,6 +185,19 @@ pub struct RuntimeStatusDto {
     pub active_agent_count: usize,
     pub active_task_count: usize,
     pub open_inbox_count: usize,
+    /// Non-Lead agents currently `Assigned`/`Executing` -- the scheduler-
+    /// centric "Workers Active" stat, narrower than `active_agent_count`
+    /// (which also counts a busy Lead).
+    pub worker_count: usize,
+    /// Tasks the scheduler would release right now across every `Active`
+    /// project -- `RuntimeState::is_executable`, not merely `Ready`.
+    pub queue_depth: usize,
+    pub ready_task_count: usize,
+    pub blocked_task_count: usize,
+    /// Tasks whose most recent `Run` failed -- distinct from `Blocked`,
+    /// which also covers tasks blocked by a raised question or a low
+    /// review score, not just an outright run failure.
+    pub failed_task_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]

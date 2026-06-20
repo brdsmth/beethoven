@@ -1,8 +1,8 @@
 use crate::dto::*;
 use beethoven_agents::RuntimeRegistry;
 use beethoven_core::{
-    AgentInstance, AgentStatus, AgentTemplate, Artifact, ArtifactKind, Decision, DecisionStatus, InboxItem,
-    InboxStatus, Project, RuntimeState, Task, TaskStatus,
+    AgentInstance, AgentRole, AgentStatus, AgentTemplate, Artifact, ArtifactKind, Decision, DecisionStatus,
+    InboxItem, InboxStatus, Project, RunStatus, RuntimeState, Task, TaskStatus,
 };
 use beethoven_events::{Event, EventType};
 use beethoven_workspaces::{tmux_session_name, WorkspaceManager};
@@ -24,8 +24,19 @@ fn last_heartbeats(events: &[Event]) -> HashMap<String, DateTime<Utc>> {
     map
 }
 
+fn task_ref_dto(state: &RuntimeState, task_id: &str) -> Option<TaskRefDto> {
+    let t = state.tasks.get(task_id)?;
+    Some(TaskRefDto { id: t.id.clone(), title: t.title.clone(), status: t.status })
+}
+
 fn task_dto(state: &RuntimeState, t: &Task) -> TaskDto {
     let assigned_agent_name = t.assigned_agent_id.as_ref().and_then(|id| state.agent_instances.get(id)).map(|a| a.name.clone());
+    let dependencies = state
+        .dependencies(&t.id)
+        .iter()
+        .filter_map(|d| task_ref_dto(state, &d.depends_on_task_id))
+        .collect();
+    let dependents = state.dependents(&t.id).iter().filter_map(|d| task_ref_dto(state, &d.task_id)).collect();
     TaskDto {
         id: t.id.clone(),
         project_id: t.project_id.clone(),
@@ -41,6 +52,9 @@ fn task_dto(state: &RuntimeState, t: &Task) -> TaskDto {
         blocked_reason: t.blocked_reason.clone(),
         success_criteria: t.success_criteria.clone(),
         target_score: t.target_score,
+        dependencies,
+        dependents,
+        is_executable: state.is_executable(&t.id),
         created_at: t.created_at,
         updated_at: t.updated_at,
     }
@@ -333,6 +347,24 @@ pub fn runtime_status(state: &RuntimeState, events: &[Event], home: &Path) -> Ru
     let active_task_count = state.tasks.values().filter(|t| t.status == TaskStatus::InProgress).count();
     let open_inbox_count = state.inbox.values().filter(|i| i.status == InboxStatus::Open).count();
 
+    let worker_count = state
+        .agent_instances
+        .values()
+        .filter(|a| a.role != AgentRole::Lead && matches!(a.status, AgentStatus::Assigned | AgentStatus::Executing))
+        .count();
+    let queue_depth = state.tasks.keys().filter(|id| state.is_executable(id)).count();
+    let ready_task_count = state.tasks.values().filter(|t| t.status == TaskStatus::Ready).count();
+    let blocked_task_count = state.tasks.values().filter(|t| t.status == TaskStatus::Blocked).count();
+    let failed_task_count = state
+        .tasks
+        .values()
+        .filter(|t| {
+            let mut runs: Vec<_> = state.runs.values().filter(|r| r.task_id == t.id).collect();
+            runs.sort_by_key(|r| r.started_at);
+            runs.last().map(|r| r.status == RunStatus::Failed).unwrap_or(false)
+        })
+        .count();
+
     RuntimeStatusDto {
         daemon_running,
         pid,
@@ -342,6 +374,11 @@ pub fn runtime_status(state: &RuntimeState, events: &[Event], home: &Path) -> Ru
         active_agent_count,
         active_task_count,
         open_inbox_count,
+        worker_count,
+        queue_depth,
+        ready_task_count,
+        blocked_task_count,
+        failed_task_count,
     }
 }
 
@@ -963,6 +1000,66 @@ mod tests {
         assert_eq!(status.last_stopped, None);
         assert_eq!(status.active_task_count, 1); // t1 is in progress
         assert_eq!(status.open_inbox_count, 2);
+    }
+
+    #[test]
+    fn runtime_status_reports_queue_worker_and_failure_counts() {
+        let (state, events) = fixture();
+        let home = std::env::temp_dir().join("beethoven-tauri-test-nonexistent-home");
+        let status = runtime_status(&state, &events, &home);
+
+        assert_eq!(status.worker_count, 1, "only a1 is a non-Lead agent currently Executing");
+        assert_eq!(status.ready_task_count, 3); // g1, i1, e1
+        assert_eq!(status.queue_depth, 0, "g1/i1/e1 are all containers, never directly executable");
+        assert_eq!(status.blocked_task_count, 0);
+        assert_eq!(status.failed_task_count, 0);
+    }
+
+    #[test]
+    fn task_dto_reports_dependencies_dependents_and_is_executable() {
+        let p = EventScope::Project("p1".to_string());
+        let events = vec![
+            ev(
+                0,
+                EventScope::Global,
+                EventType::ProjectCreated,
+                Some("human"),
+                json!({"id": "p1", "name": "Punch", "slug": "punch", "repository_path": "/repo", "default_branch": "main"}),
+            ),
+            ev(
+                1,
+                p.clone(),
+                EventType::TaskCreated,
+                Some("human"),
+                json!({"id": "backend", "parent_task_id": null, "title": "Backend", "description": "", "status": "ready", "success_criteria": "", "target_score": 70.0}),
+            ),
+            ev(
+                2,
+                p.clone(),
+                EventType::TaskCreated,
+                Some("human"),
+                json!({"id": "tests", "parent_task_id": null, "title": "Tests", "description": "", "status": "ready", "success_criteria": "", "target_score": 70.0}),
+            ),
+            ev(
+                3,
+                p.clone(),
+                EventType::TaskDependencyCreated,
+                Some("human"),
+                json!({"task_id": "tests", "depends_on_task_id": "backend"}),
+            ),
+        ];
+        let state = RuntimeState::replay(&events);
+
+        let backend_dto = task_dto(&state, state.tasks.get("backend").unwrap());
+        assert!(backend_dto.dependencies.is_empty());
+        assert_eq!(backend_dto.dependents.len(), 1);
+        assert_eq!(backend_dto.dependents[0].id, "tests");
+        assert!(backend_dto.is_executable);
+
+        let tests_dto = task_dto(&state, state.tasks.get("tests").unwrap());
+        assert_eq!(tests_dto.dependencies.len(), 1);
+        assert_eq!(tests_dto.dependencies[0].id, "backend");
+        assert!(!tests_dto.is_executable, "tests depends on backend, which is not Done yet");
     }
 
     #[test]
