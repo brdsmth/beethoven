@@ -3,21 +3,22 @@ import { NavLink } from "react-router-dom";
 import { useViewStore, type AppMode } from "../lib/store";
 import { Toaster } from "./Toaster";
 
+// Work, dependencies, progress, decisions -- not agents. Agents/Agent
+// Health/Timeline used to be top-level nav; they're now Runtime -> Workers
+// and Runtime -> Logs, reachable but no longer primary.
 const CEO_NAV = [
   { to: "/", label: "Mission Control" },
   { to: "/projects", label: "Projects" },
+  { to: "/tasks", label: "Tasks" },
   { to: "/inbox", label: "Inbox" },
   { to: "/decisions", label: "Decisions" },
 ];
 
 const OPERATOR_NAV = [
-  { to: "/agents", label: "Agents" },
-  { to: "/agent-health", label: "Agent Health" },
+  { to: "/runtime", label: "Runtime" },
   { to: "/workspaces", label: "Workspaces" },
   { to: "/diffs", label: "Diffs" },
   { to: "/prompts", label: "Prompts" },
-  { to: "/timeline", label: "Logs" },
-  { to: "/runtime", label: "Runtime" },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
