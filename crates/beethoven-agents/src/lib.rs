@@ -2,11 +2,13 @@ mod model;
 mod prompt;
 mod registry;
 mod review;
+mod scheduler;
 
 pub use model::{AgentsError, ClaudeCodeRuntime, ExecutionRequest, ExecutionResult, ExecutionStatus, ModelRuntime};
 pub use prompt::{PromptBuilder, WorkerPromptContext};
 pub use registry::{default_registry, RuntimeProfile, RuntimeRegistry};
 pub use review::{ReviewOutcome, ReviewResult, ReviewService};
+pub use scheduler::{FifoScheduler, QueuedTask, Scheduler, TaskQueue};
 
 use serde::{Deserialize, Serialize};
 

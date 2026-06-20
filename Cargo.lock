@@ -314,6 +314,7 @@ name = "beethoven-agents"
 version = "0.1.0"
 dependencies = [
  "beethoven-workspaces",
+ "chrono",
  "serde",
  "serde_json",
  "tempfile",
