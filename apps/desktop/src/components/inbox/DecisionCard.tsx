@@ -12,7 +12,7 @@ export function DecisionCard({ item, decision }: { item: InboxItem; decision: De
   return (
     <InboxCardShell
       kind="decision"
-      title={decision?.title ?? item.decision_title ?? "Decision"}
+      title={decision?.question ?? item.decision_question ?? "Decision"}
       createdAt={item.created_at}
       actions={
         <>

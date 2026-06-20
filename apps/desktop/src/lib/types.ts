@@ -1,5 +1,4 @@
 export type ProjectStatus = "active" | "paused" | "archived";
-export type GoalStatus = "open" | "planned" | "completed";
 export type TaskStatus =
   | "draft"
   | "ready"
@@ -14,27 +13,18 @@ export type AgentStatus =
   | "created"
   | "idle"
   | "assigned"
-  | "planning"
   | "executing"
-  | "review"
   | "completed"
-  | "blocked"
-  | "waiting"
-  | "escalated"
-  | "paused";
-export type AgentKind =
-  | "project_manager"
-  | "backend"
-  | "frontend"
-  | "qa"
-  | "research"
-  | "dev_ops";
+  | "paused"
+  | "archived";
+export type AgentRole = "lead" | "worker" | "reviewer";
 export type InboxKind = "decision" | "approval" | "question" | "alert";
 export type InboxStatus = "open" | "resolved";
-export type InitiativeStatus = "discovery" | "planned" | "completed";
 export type DecisionStatus = "open" | "resolved";
-export type ModelRunStatus = "running" | "completed" | "failed";
-export type ArtifactKind = "diff" | "files_modified";
+export type RunStatus = "running" | "completed" | "failed";
+export type ArtifactKind = "prompt" | "response" | "diff" | "files_modified";
+export type ReviewStatus = "pending" | "approved" | "needs_changes";
+export type AgentHealthStatus = "healthy" | "slow" | "stalled";
 
 export interface TaskCounts {
   draft: number;
@@ -51,8 +41,7 @@ export interface TaskCounts {
 export interface Task {
   id: string;
   project_id: string;
-  goal_id: string | null;
-  epic_id: string | null;
+  parent_task_id: string | null;
   title: string;
   description: string;
   status: TaskStatus;
@@ -61,48 +50,30 @@ export interface Task {
   attempt: number;
   branch: string | null;
   pr_url: string | null;
+  blocked_reason: string | null;
+  success_criteria: string;
+  target_score: number;
   created_at: string;
   updated_at: string;
 }
 
-export interface Requirement {
-  id: string;
-  description: string;
-}
-
-export interface Epic {
-  id: string;
-  title: string;
-  tasks: Task[];
+/// One task plus its children, recursively -- the single planning
+/// primitive's tree, replacing the old Initiative(epics(tasks))/Goal(tasks)
+/// nesting with one shape at every level.
+export interface TaskNode {
+  task: Task;
+  children: TaskNode[];
 }
 
 export interface Decision {
   id: string;
-  title: string;
+  project_id: string;
+  task_id: string | null;
+  question: string;
   context: string;
+  answer: string | null;
   status: DecisionStatus;
-}
-
-export interface Initiative {
-  id: string;
-  title: string;
-  description: string;
-  status: InitiativeStatus;
-  requirements: Requirement[];
-  epics: Epic[];
-  decisions: Decision[];
   created_at: string;
-  updated_at: string;
-}
-
-export interface Goal {
-  id: string;
-  title: string;
-  description: string;
-  status: GoalStatus;
-  tasks: Task[];
-  created_at: string;
-  updated_at: string;
 }
 
 export interface ProjectSummary {
@@ -120,9 +91,11 @@ export interface ProjectDetail {
   id: string;
   name: string;
   slug: string;
+  repository_path: string;
+  default_branch: string;
   status: ProjectStatus;
-  initiatives: Initiative[];
-  goals: Goal[];
+  tasks: TaskNode[];
+  decisions: Decision[];
   created_at: string;
   updated_at: string;
 }
@@ -130,12 +103,29 @@ export interface ProjectDetail {
 export interface Agent {
   id: string;
   project_id: string;
-  kind: AgentKind;
+  template_id: string;
+  role: AgentRole;
+  role_description: string;
+  parent_agent_id: string | null;
   name: string;
   status: AgentStatus;
   current_task_id: string | null;
   current_task_title: string | null;
   last_heartbeat: string | null;
+  created_at: string;
+}
+
+export interface AgentHealth {
+  agent_id: string;
+  agent_name: string;
+  role: AgentRole;
+  role_description: string;
+  project_id: string;
+  project_slug: string;
+  current_task_id: string | null;
+  current_task_title: string | null;
+  last_heartbeat: string | null;
+  health: AgentHealthStatus;
 }
 
 export interface InboxItem {
@@ -149,7 +139,7 @@ export interface InboxItem {
   agent_id: string | null;
   agent_name: string | null;
   decision_id: string | null;
-  decision_title: string | null;
+  decision_question: string | null;
   response: string | null;
   created_at: string;
   resolved_at: string | null;
@@ -182,28 +172,30 @@ export interface ActiveExecution {
   project_slug: string;
   agent_id: string;
   agent_name: string;
-  agent_kind: AgentKind;
+  agent_role: AgentRole;
   started_at: string;
 }
 
-export type GoalHeaderSource = "initiative" | "goal" | "none";
-
+/// The Mission Control header's progress banner -- the most recently
+/// updated open root task (the old Initiative/Goal header, unified) and how
+/// far its subtree has progressed.
 export interface GoalHeader {
   project_id: string;
   project_name: string;
-  source: GoalHeaderSource;
+  active_task_id: string | null;
   active_label: string | null;
-  active_initiative_id: string | null;
   percent_complete: number;
 }
 
+/// A root task's descendant subtree, bucketed by status -- the old
+/// Initiative/Epic-specific stage map, generalized to any task tree.
 export interface WorkflowMap {
-  initiative_count: number;
-  epic_count: number;
-  task_count: number;
-  execution_count: number;
+  draft_count: number;
+  ready_count: number;
+  executing_count: number;
   review_count: number;
-  complete_count: number;
+  done_count: number;
+  blocked_count: number;
 }
 
 export interface TimelineFilters {
@@ -216,29 +208,13 @@ export interface TimelineFilters {
 
 // --- Cross-project / operator-mode read views (Phase 1.9b) ---------------
 
-export interface InitiativeSummary {
-  id: string;
-  project_id: string;
-  project_slug: string;
-  project_name: string;
-  title: string;
-  description: string;
-  status: InitiativeStatus;
-  requirement_count: number;
-  epic_count: number;
-  task_count: number;
-  open_decision_count: number;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface DecisionSummary {
   id: string;
   project_id: string;
   project_slug: string;
-  initiative_id: string;
-  initiative_title: string;
-  title: string;
+  task_id: string | null;
+  task_title: string | null;
+  question: string;
   context: string;
   status: DecisionStatus;
   created_at: string;
@@ -266,12 +242,15 @@ export interface DiffSummary {
   created_at: string;
 }
 
-export interface ModelRun {
+export interface Run {
   id: string;
   agent_id: string;
+  attempt: number;
   provider: string;
-  status: ModelRunStatus;
+  status: RunStatus;
   summary: string | null;
+  prompt: string | null;
+  response: string | null;
   started_at: string;
   completed_at: string | null;
 }
@@ -283,11 +262,59 @@ export interface Artifact {
   created_at: string;
 }
 
+/// One `Review` of a task's run -- the evaluation that drives the
+/// score-vs-target_score retry decision (Beethoven's loop, with no separate
+/// Loop entity).
+export interface Review {
+  id: string;
+  status: ReviewStatus;
+  score: number;
+  summary: string;
+  recommendations: string[];
+  created_at: string;
+}
+
 export interface TaskDetail {
   task: Task;
-  model_runs: ModelRun[];
+  runs: Run[];
+  reviews: Review[];
   artifacts: Artifact[];
   timeline: TimelineEvent[];
+}
+
+export interface PromptSummary {
+  id: string;
+  run_id: string;
+  task_id: string;
+  task_title: string;
+  project_id: string;
+  project_slug: string;
+  content: string;
+  created_at: string;
+}
+
+export interface RuntimeProfile {
+  id: string;
+  runtime_id: string;
+  model: string;
+}
+
+export interface AgentTemplate {
+  id: string;
+  role: AgentRole;
+  label: string;
+  prompt: string;
+  permissions: string[];
+  tools: string[];
+  runtime_profile: RuntimeProfile | null;
+  created_at: string;
+}
+
+/// What `plan_task` returns: the children it produced (real work to do) and
+/// any decisions auto-escalated to the inbox.
+export interface TaskPlanOutcome {
+  tasks: Task[];
+  decisions: Decision[];
 }
 
 // --- Raw mutation return shapes -------------------------------------------
@@ -312,8 +339,6 @@ export interface ProjectRecord {
 export interface TaskRecord {
   id: string;
   project_id: string;
-  goal_id: string | null;
-  epic_id: string | null;
   parent_task_id: string | null;
   title: string;
   description: string;
@@ -321,7 +346,10 @@ export interface TaskRecord {
   assigned_agent_id: string | null;
   branch: string | null;
   pr_url: string | null;
+  blocked_reason: string | null;
   attempt: number;
+  success_criteria: string;
+  target_score: number;
   created_at: string;
   updated_at: string;
 }
@@ -330,7 +358,9 @@ export interface AgentInstanceRecord {
   id: string;
   project_id: string;
   template_id: string;
-  kind: AgentKind;
+  role: AgentRole;
+  role_description: string;
+  parent_agent_id: string | null;
   name: string;
   status: AgentStatus;
   current_task_id: string | null;
@@ -355,9 +385,10 @@ export interface InboxItemRecord {
 export interface DecisionRecord {
   id: string;
   project_id: string;
-  initiative_id: string;
-  title: string;
+  task_id: string | null;
+  question: string;
   context: string;
+  answer: string | null;
   status: DecisionStatus;
   created_at: string;
 }

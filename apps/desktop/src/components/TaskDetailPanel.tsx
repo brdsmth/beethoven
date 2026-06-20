@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { formatRelativeTime, humanizeEventType } from "../lib/format";
+import { useViewStore } from "../lib/store";
 import { Panel } from "./Panel";
 
 /**
@@ -9,6 +10,7 @@ import { Panel } from "./Panel";
  * different slices of the same already-stored model runs/artifacts/timeline.
  */
 export function TaskDetailPanel({ taskId }: { taskId: string }) {
+  const isOperator = useViewStore((s) => s.mode) === "operator";
   const { data, isLoading } = useQuery({
     queryKey: ["taskDetail", taskId],
     queryFn: () => api.getTaskDetail(taskId),
@@ -18,7 +20,7 @@ export function TaskDetailPanel({ taskId }: { taskId: string }) {
     return <div className="text-sm text-slate-500">Loading…</div>;
   }
 
-  const { task, model_runs, artifacts, timeline } = data;
+  const { task, runs, reviews, artifacts, timeline } = data;
   const diffs = artifacts.filter((a) => a.kind === "diff");
   const filesModified = artifacts.filter((a) => a.kind === "files_modified");
 
@@ -30,8 +32,12 @@ export function TaskDetailPanel({ taskId }: { taskId: string }) {
           <span className="text-xs uppercase text-slate-500">{task.status}</span>
         </div>
         {task.description && <p className="mt-1 text-sm text-slate-400">{task.description}</p>}
+        {task.status === "blocked" && task.blocked_reason && (
+          <p className="mt-1 text-sm text-rose-400">{task.blocked_reason}</p>
+        )}
         <div className="mt-2 flex flex-wrap gap-4 text-xs text-slate-500">
           <span>Attempt {task.attempt}</span>
+          <span>Target Score {task.target_score}</span>
           {task.assigned_agent_name && <span>Agent: {task.assigned_agent_name}</span>}
           {task.branch && <span>Branch: {task.branch}</span>}
           {task.pr_url && (
@@ -41,6 +47,27 @@ export function TaskDetailPanel({ taskId }: { taskId: string }) {
           )}
         </div>
       </div>
+
+      {reviews.length > 0 && (
+        <Panel title="Reviews">
+          <ul className="flex flex-col gap-2">
+            {reviews.map((r) => (
+              <li key={r.id} className="rounded-md border border-slate-800 p-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-200">Score {r.score}</span>
+                  <span className="text-xs uppercase text-slate-500">{r.status}</span>
+                </div>
+                {r.summary && <p className="mt-1 text-xs text-slate-400">{r.summary}</p>}
+                {r.recommendations.length > 0 && (
+                  <ul className="mt-1 list-inside list-disc text-xs text-slate-500">
+                    {r.recommendations.map((rec, idx) => <li key={idx}>{rec}</li>)}
+                  </ul>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      )}
 
       {filesModified.length > 0 && (
         <Panel title="Files Changed">
@@ -70,15 +97,17 @@ export function TaskDetailPanel({ taskId }: { taskId: string }) {
         <div className="text-sm text-slate-500">No diff captured for this task yet.</div>
       )}
 
-      <Panel title="Model Runs">
-        {model_runs.length === 0 ? (
-          <div className="text-sm text-slate-500">No model runs recorded.</div>
+      <Panel title="Runs">
+        {runs.length === 0 ? (
+          <div className="text-sm text-slate-500">No runs recorded.</div>
         ) : (
           <ul className="flex flex-col gap-2">
-            {model_runs.map((run) => (
+            {runs.map((run) => (
               <li key={run.id} className="rounded-md border border-slate-800 p-2 text-sm">
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-200">{run.provider}</span>
+                  <span className="text-slate-200">
+                    {run.provider} · attempt {run.attempt}
+                  </span>
                   <span className={run.status === "failed" ? "text-rose-400" : "text-slate-500"}>{run.status}</span>
                 </div>
                 {run.summary && <p className="mt-1 text-xs text-slate-400">{run.summary}</p>}
@@ -87,6 +116,29 @@ export function TaskDetailPanel({ taskId }: { taskId: string }) {
           </ul>
         )}
       </Panel>
+
+      {isOperator &&
+        runs.map(
+          (run) =>
+            (run.prompt || run.response) && (
+              <div key={run.id} className="flex flex-col gap-4">
+                {run.prompt && (
+                  <Panel title={`Prompt (${run.provider})`}>
+                    <pre className="max-h-96 overflow-auto rounded bg-slate-950 p-2 text-xs text-slate-400">
+                      {run.prompt}
+                    </pre>
+                  </Panel>
+                )}
+                {run.response && (
+                  <Panel title={`Claude Response (${run.provider})`}>
+                    <pre className="max-h-96 overflow-auto rounded bg-slate-950 p-2 text-xs text-slate-400">
+                      {run.response}
+                    </pre>
+                  </Panel>
+                )}
+              </div>
+            ),
+        )}
 
       <Panel title="Logs">
         {timeline.length === 0 ? (

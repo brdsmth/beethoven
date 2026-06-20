@@ -6,15 +6,16 @@ import { Toaster } from "./Toaster";
 const CEO_NAV = [
   { to: "/", label: "Mission Control" },
   { to: "/projects", label: "Projects" },
-  { to: "/initiatives", label: "Initiatives" },
   { to: "/inbox", label: "Inbox" },
   { to: "/decisions", label: "Decisions" },
 ];
 
 const OPERATOR_NAV = [
   { to: "/agents", label: "Agents" },
+  { to: "/agent-health", label: "Agent Health" },
   { to: "/workspaces", label: "Workspaces" },
   { to: "/diffs", label: "Diffs" },
+  { to: "/prompts", label: "Prompts" },
   { to: "/timeline", label: "Logs" },
   { to: "/runtime", label: "Runtime" },
 ];

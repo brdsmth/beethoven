@@ -21,7 +21,7 @@ export function InboxPage() {
     enabled: !!selectedProjectId,
   });
 
-  const decisionsById = new Map((project?.initiatives ?? []).flatMap((i) => i.decisions).map((d) => [d.id, d]));
+  const decisionsById = new Map((project?.decisions ?? []).map((d) => [d.id, d]));
 
   if (!selectedProjectId) {
     return <div className="text-sm text-slate-500">No projects yet.</div>;

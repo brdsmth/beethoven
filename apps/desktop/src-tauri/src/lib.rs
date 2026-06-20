@@ -16,7 +16,7 @@ pub fn run() {
             ))?;
             let watcher_store = store.clone();
             let runtime = tauri::async_runtime::block_on(beethoven_core::Runtime::load(
-                Box::new(store.clone()),
+                std::sync::Arc::new(store.clone()),
                 beethoven_db::projects_root(&home),
                 beethoven_agents::default_registry(),
             ))?;
@@ -33,7 +33,12 @@ pub fn run() {
             beethoven_tauri::commands::get_projects,
             beethoven_tauri::commands::get_project,
             beethoven_tauri::commands::get_agents,
+            beethoven_tauri::commands::get_agent_health,
             beethoven_tauri::commands::get_tasks,
+            beethoven_tauri::commands::create_task,
+            beethoven_tauri::commands::plan_task,
+            beethoven_tauri::commands::approve_draft_task,
+            beethoven_tauri::commands::reject_draft_task,
             beethoven_tauri::commands::get_inbox,
             beethoven_tauri::commands::get_timeline,
             beethoven_tauri::commands::runtime_status,
@@ -46,6 +51,8 @@ pub fn run() {
             beethoven_tauri::commands::pause_project,
             beethoven_tauri::commands::resume_project,
             beethoven_tauri::commands::archive_project,
+            beethoven_tauri::commands::update_project_repository_path,
+            beethoven_tauri::commands::update_project_default_branch,
             beethoven_tauri::commands::retry_task,
             beethoven_tauri::commands::cancel_task,
             beethoven_tauri::commands::reassign_task,
@@ -53,13 +60,17 @@ pub fn run() {
             beethoven_tauri::commands::request_review_changes,
             beethoven_tauri::commands::pause_agent,
             beethoven_tauri::commands::resume_agent,
+            beethoven_tauri::commands::spawn_worker_agent,
+            beethoven_tauri::commands::spawn_reviewer_agent,
+            beethoven_tauri::commands::archive_agent,
             beethoven_tauri::commands::runtime_start,
             beethoven_tauri::commands::runtime_stop,
             beethoven_tauri::commands::runtime_restart,
-            beethoven_tauri::commands::get_initiatives,
             beethoven_tauri::commands::get_decisions,
             beethoven_tauri::commands::get_workspaces,
             beethoven_tauri::commands::get_recent_diffs,
+            beethoven_tauri::commands::get_recent_prompts,
+            beethoven_tauri::commands::get_agent_templates,
             beethoven_tauri::commands::get_task_detail,
         ])
         .run(tauri::generate_context!())

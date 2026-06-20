@@ -16,7 +16,7 @@ export function GoalHeader({ projectId }: { projectId: string }) {
       <div>
         <div className="text-xs uppercase tracking-wide text-slate-500">{data.project_name}</div>
         <div className="mt-1 text-2xl font-semibold text-slate-100">
-          {data.active_label ?? "No active initiative"}
+          {data.active_label ?? "No active objective"}
         </div>
       </div>
       <div className="flex flex-col items-end gap-1">

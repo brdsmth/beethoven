@@ -33,7 +33,7 @@ export function DecisionsPage() {
           <ul className="flex flex-col gap-2">
             {resolved.map((d) => (
               <li key={d.id} className="flex items-center justify-between text-sm">
-                <span className="text-slate-300">{d.title}</span>
+                <span className="text-slate-300">{d.question}</span>
                 <span className="text-xs text-slate-500">{d.project_slug}</span>
               </li>
             ))}
@@ -55,12 +55,12 @@ function DecisionRow({ decision }: { decision: DecisionSummary }) {
     <li className="rounded-md border border-slate-800 p-3">
       <div className="flex items-center justify-between">
         <Link to={`/projects/${decision.project_id}`} className="font-medium text-slate-100 hover:underline">
-          {decision.title}
+          {decision.question}
         </Link>
         <span className="text-xs text-slate-500">{decision.project_slug}</span>
       </div>
       <p className="mt-1 text-sm text-slate-400">{decision.context}</p>
-      <div className="mt-1 text-xs text-slate-500">{decision.initiative_title}</div>
+      {decision.task_title && <div className="mt-1 text-xs text-slate-500">{decision.task_title}</div>}
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <ActionButton
           label="Approve"

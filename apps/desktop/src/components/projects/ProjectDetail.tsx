@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { useAction } from "../../lib/hooks";
-import type { Agent, ProjectDetail as ProjectDetailData, Task } from "../../lib/types";
+import type { Agent, ProjectDetail as ProjectDetailData, Task, TaskNode } from "../../lib/types";
 import { ActionButton } from "../ActionButton";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { Panel } from "../Panel";
@@ -22,7 +22,7 @@ export function ProjectDetail({ project }: { project: ProjectDetailData }) {
     queryKey: ["agents", project.id],
     queryFn: () => api.getAgents(project.id),
   });
-  const idleAgents = (agents ?? []).filter((a) => a.status === "idle");
+  const idleAgents = (agents ?? []).filter((a) => a.status === "idle" && a.role !== "lead");
 
   const invalidateKeys = [["projects"], ["project", project.id]];
   const pause = useAction(api.pauseProject, { successMessage: `${project.name} paused`, invalidateKeys });
@@ -50,83 +50,36 @@ export function ProjectDetail({ project }: { project: ProjectDetailData }) {
         </div>
       </div>
 
-      <Panel title="Initiatives">
-        {project.initiatives.length === 0 ? (
-          <div className="text-sm text-slate-500">No initiatives.</div>
+      <Panel title="Tasks">
+        {project.tasks.length === 0 ? (
+          <div className="text-sm text-slate-500">No tasks yet.</div>
         ) : (
-          <div className="flex flex-col gap-4">
-            {project.initiatives.map((initiative) => (
-              <div key={initiative.id} className="rounded-md border border-slate-800 p-3">
-                <div className="flex items-center justify-between">
-                  <div className="font-medium text-slate-100">{initiative.title}</div>
-                  <span className="text-xs uppercase text-slate-500">{initiative.status}</span>
-                </div>
-                <p className="mt-1 text-sm text-slate-400">{initiative.description}</p>
-
-                {initiative.epics.length > 0 && (
-                  <div className="mt-3">
-                    <div className="text-xs uppercase tracking-wide text-slate-500">Epics</div>
-                    <div className="mt-1 flex flex-col gap-2">
-                      {initiative.epics.map((epic) => (
-                        <div key={epic.id}>
-                          <div className="text-sm text-slate-300">{epic.title}</div>
-                          {epic.tasks.length > 0 && (
-                            <ul className="mt-1 flex flex-col gap-1.5 pl-3">
-                              {epic.tasks.map((task) => (
-                                <TaskRow key={task.id} task={task} idleAgents={idleAgents} />
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {initiative.decisions.length > 0 && (
-                  <div className="mt-3">
-                    <div className="text-xs uppercase tracking-wide text-slate-500">Decisions</div>
-                    <ul className="mt-1 flex flex-col gap-1">
-                      {initiative.decisions.map((d) => (
-                        <li key={d.id} className="text-sm text-slate-300">
-                          {d.title}{" "}
-                          <span
-                            className={`text-xs ${d.status === "open" ? "text-amber-400" : "text-slate-500"}`}
-                          >
-                            ({d.status})
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
+          <div className="flex flex-col gap-3">
+            {project.tasks.map((node) => (
+              <TaskTree key={node.task.id} node={node} idleAgents={idleAgents} />
             ))}
           </div>
         )}
       </Panel>
 
-      <Panel title="Goals">
-        {project.goals.length === 0 ? (
-          <div className="text-sm text-slate-500">No goals.</div>
+      <Panel title="Decisions">
+        {project.decisions.length === 0 ? (
+          <div className="text-sm text-slate-500">No decisions raised.</div>
         ) : (
-          <div className="flex flex-col gap-4">
-            {project.goals.map((goal) => (
-              <div key={goal.id} className="rounded-md border border-slate-800 p-3">
-                <div className="flex items-center justify-between">
-                  <div className="font-medium text-slate-100">{goal.title}</div>
-                  <span className="text-xs uppercase text-slate-500">{goal.status}</span>
-                </div>
-                <ul className="mt-2 flex flex-col gap-1.5">
-                  {goal.tasks.map((task) => (
-                    <TaskRow key={task.id} task={task} idleAgents={idleAgents} />
-                  ))}
-                </ul>
-              </div>
+          <ul className="flex flex-col gap-1">
+            {project.decisions.map((d) => (
+              <li key={d.id} className="text-sm text-slate-300">
+                {d.question}{" "}
+                <span className={`text-xs ${d.status === "open" ? "text-amber-400" : "text-slate-500"}`}>
+                  ({d.status})
+                </span>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </Panel>
+
+      <ProjectSettings project={project} />
 
       <ConfirmDialog
         open={confirmArchive}
@@ -138,6 +91,117 @@ export function ProjectDetail({ project }: { project: ProjectDetailData }) {
         onConfirm={() => archive.mutate(project.id, { onSuccess: () => setConfirmArchive(false) })}
         onCancel={() => setConfirmArchive(false)}
       />
+    </div>
+  );
+}
+
+function ProjectSettings({ project }: { project: ProjectDetailData }) {
+  const editable = project.status === "paused";
+
+  const [repositoryPath, setRepositoryPath] = useState(project.repository_path);
+  const [defaultBranch, setDefaultBranch] = useState(project.default_branch);
+
+  const invalidateKeys = [["projects"], ["project", project.id]];
+  const updatePath = useAction(
+    ({ projectId, repositoryPath }: { projectId: string; repositoryPath: string }) =>
+      api.updateProjectRepositoryPath(projectId, repositoryPath),
+    { successMessage: "Repository path updated", invalidateKeys },
+  );
+  const updateBranch = useAction(
+    ({ projectId, defaultBranch }: { projectId: string; defaultBranch: string }) =>
+      api.updateProjectDefaultBranch(projectId, defaultBranch),
+    { successMessage: "Default branch updated", invalidateKeys },
+  );
+
+  const { data: agentTemplates } = useQuery({ queryKey: ["agentTemplates"], queryFn: api.getAgentTemplates });
+
+  return (
+    <Panel title="Settings">
+      <div className="flex flex-col gap-4">
+        {!editable && <div className="text-xs text-slate-500">Pause the project to edit.</div>}
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs uppercase tracking-wide text-slate-500">Repository Path</label>
+          {editable ? (
+            <div className="flex items-center gap-2">
+              <input
+                value={repositoryPath}
+                onChange={(e) => setRepositoryPath(e.target.value)}
+                className="flex-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-200"
+              />
+              <ActionButton
+                label="Save"
+                onClick={() => updatePath.mutate({ projectId: project.id, repositoryPath })}
+                pending={updatePath.isPending}
+              />
+            </div>
+          ) : (
+            <div className="text-sm text-slate-300">{project.repository_path}</div>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs uppercase tracking-wide text-slate-500">Default Branch</label>
+          {editable ? (
+            <div className="flex items-center gap-2">
+              <input
+                value={defaultBranch}
+                onChange={(e) => setDefaultBranch(e.target.value)}
+                className="flex-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-200"
+              />
+              <ActionButton
+                label="Save"
+                onClick={() => updateBranch.mutate({ projectId: project.id, defaultBranch })}
+                pending={updateBranch.isPending}
+              />
+            </div>
+          ) : (
+            <div className="text-sm text-slate-300">{project.default_branch}</div>
+          )}
+        </div>
+
+        <div>
+          <div className="text-xs uppercase tracking-wide text-slate-500">Runtime</div>
+          {!agentTemplates || agentTemplates.length === 0 ? (
+            <div className="mt-1 text-sm text-slate-500">No agent templates configured.</div>
+          ) : (
+            <ul className="mt-2 flex flex-col gap-1.5">
+              {agentTemplates.map((t) => (
+                <li key={t.id} className="flex items-center justify-between text-sm">
+                  <span className="text-slate-300">{t.label}</span>
+                  <span className="text-xs text-slate-500">
+                    {t.runtime_profile ? `${t.runtime_profile.runtime_id} / ${t.runtime_profile.model}` : "unresolved"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+/// A task plus its descendant tree -- containers (tasks with children) just
+/// render a header and recurse; leaves render the full `TaskRow` actions,
+/// since only leaves are ever delegated to an agent.
+function TaskTree({ node, idleAgents }: { node: TaskNode; idleAgents: Agent[] }) {
+  if (node.children.length === 0) {
+    return <TaskRow task={node.task} idleAgents={idleAgents} />;
+  }
+
+  return (
+    <div className="rounded-md border border-slate-800 p-3">
+      <div className="flex items-center justify-between">
+        <div className="font-medium text-slate-100">{node.task.title}</div>
+        <span className="text-xs uppercase text-slate-500">{node.task.status}</span>
+      </div>
+      {node.task.description && <p className="mt-1 text-sm text-slate-400">{node.task.description}</p>}
+      <div className="mt-3 flex flex-col gap-2 pl-3">
+        {node.children.map((child) => (
+          <TaskTree key={child.task.id} node={child} idleAgents={idleAgents} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -164,11 +228,14 @@ function TaskRow({ task, idleAgents }: { task: Task; idleAgents: Agent[] }) {
   const canReassign = (task.status === "assigned" || task.status === "blocked") && idleAgents.length > 0;
 
   return (
-    <li className="flex flex-col gap-1.5 rounded-md border border-slate-800 px-3 py-2">
+    <div className="flex flex-col gap-1.5 rounded-md border border-slate-800 px-3 py-2">
       <div className="flex items-center justify-between text-sm">
         <span className="text-slate-300">{task.title}</span>
         <span className="text-xs text-slate-500">{task.status}</span>
       </div>
+      {task.status === "blocked" && task.blocked_reason && (
+        <div className="text-xs text-rose-400">{task.blocked_reason}</div>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <ActionButton label="View Diff" onClick={() => setViewDetail(true)} />
         {task.status === "blocked" && (
@@ -212,7 +279,7 @@ function TaskRow({ task, idleAgents }: { task: Task; idleAgents: Agent[] }) {
         onConfirm={() => cancel.mutate(task.id, { onSuccess: () => setConfirmCancel(false) })}
         onCancel={() => setConfirmCancel(false)}
       />
-    </li>
+    </div>
   );
 }
 

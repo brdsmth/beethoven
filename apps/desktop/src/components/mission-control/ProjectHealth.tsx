@@ -15,7 +15,7 @@ export function ProjectHealth({ projectId }: { projectId: string }) {
     <Panel title="Project Health">
       {health ? (
         <div className="grid grid-cols-2 gap-3 text-sm">
-          <Stat label="Active Initiatives" value={health.activeInitiatives} />
+          <Stat label="Open Objectives" value={health.openObjectives} />
           <Stat label="Blocked Tasks" value={health.blockedTasks} tone={health.blockedTasks > 0 ? "warn" : "neutral"} />
           <Stat label="Review Queue" value={health.reviewQueue} />
           <Stat label="Decision Queue" value={health.decisionQueue} tone={health.decisionQueue > 0 ? "warn" : "neutral"} />

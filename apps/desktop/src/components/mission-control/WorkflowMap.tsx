@@ -2,28 +2,28 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { Panel } from "../Panel";
 
-export function WorkflowMap({ initiativeId }: { initiativeId: string | null }) {
+export function WorkflowMap({ taskId }: { taskId: string | null }) {
   const { data } = useQuery({
-    queryKey: ["workflowMap", initiativeId],
-    queryFn: () => api.getWorkflowMap(initiativeId as string),
-    enabled: !!initiativeId,
+    queryKey: ["workflowMap", taskId],
+    queryFn: () => api.getWorkflowMap(taskId as string),
+    enabled: !!taskId,
   });
 
-  if (!initiativeId) {
+  if (!taskId) {
     return (
       <Panel title="Workflow Map">
-        <div className="text-sm text-slate-500">No active initiative.</div>
+        <div className="text-sm text-slate-500">No active objective.</div>
       </Panel>
     );
   }
 
   const stages: { label: string; count: number | undefined }[] = [
-    { label: "Initiative", count: data?.initiative_count },
-    { label: "Epic", count: data?.epic_count },
-    { label: "Task", count: data?.task_count },
-    { label: "Execution", count: data?.execution_count },
+    { label: "Draft", count: data?.draft_count },
+    { label: "Ready", count: data?.ready_count },
+    { label: "Executing", count: data?.executing_count },
     { label: "Review", count: data?.review_count },
-    { label: "Complete", count: data?.complete_count },
+    { label: "Done", count: data?.done_count },
+    { label: "Blocked", count: data?.blocked_count },
   ];
 
   return (

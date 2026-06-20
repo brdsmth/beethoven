@@ -5,6 +5,8 @@ import { ProjectPicker } from "../components/ProjectPicker";
 import { GoalHeader } from "../components/mission-control/GoalHeader";
 import { RuntimeStatusPanel } from "../components/mission-control/RuntimeStatusPanel";
 import { ProjectHealth } from "../components/mission-control/ProjectHealth";
+import { AgentHealthPanel } from "../components/mission-control/AgentHealthPanel";
+import { BlockedWorkPanel } from "../components/mission-control/BlockedWorkPanel";
 import { ActiveExecution } from "../components/mission-control/ActiveExecution";
 import { WorkflowMap } from "../components/mission-control/WorkflowMap";
 import { ActivityFeed } from "../components/mission-control/ActivityFeed";
@@ -33,11 +35,13 @@ export function MissionControlPage() {
       <div className="grid grid-cols-2 gap-4">
         <RuntimeStatusPanel />
         <ProjectHealth projectId={selectedProjectId} />
+        <AgentHealthPanel projectId={selectedProjectId} />
+        <BlockedWorkPanel projectId={selectedProjectId} />
       </div>
 
       <ActiveExecution />
 
-      <WorkflowMap initiativeId={goalHeader?.active_initiative_id ?? null} />
+      <WorkflowMap taskId={goalHeader?.active_task_id ?? null} />
 
       <ActivityFeed />
     </div>
