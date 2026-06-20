@@ -1,4 +1,4 @@
-use crate::schema::{PM_PLANNING_JSON_SCHEMA, REVIEW_JSON_SCHEMA};
+use crate::AgentRole;
 
 pub struct WorkerPromptContext<'a> {
     pub project_name: &'a str,
@@ -6,22 +6,8 @@ pub struct WorkerPromptContext<'a> {
     pub task_description: &'a str,
     pub repository_path: &'a str,
     pub branch: &'a str,
-}
-
-pub struct PmPlanningPromptContext<'a> {
-    pub project_name: &'a str,
-    pub initiative_title: &'a str,
-    pub initiative_description: &'a str,
-    pub requirements: &'a [String],
-    pub repository_path: &'a str,
-}
-
-pub struct ReviewPromptContext<'a> {
-    pub project_name: &'a str,
-    pub task_title: &'a str,
-    pub files_changed: &'a [String],
-    pub diff: &'a str,
-    pub execution_summary: &'a str,
+    pub role: AgentRole,
+    pub role_description: &'a str,
 }
 
 /// The only place prompt text gets assembled. Orchestration code must always
@@ -38,9 +24,15 @@ impl PromptBuilder {
             .filter(|l| !l.is_empty())
             .collect();
 
+        let role_line = match ctx.role {
+            AgentRole::Lead => format!("You are the lead agent for this project. Role: {}\n\n", ctx.role_description),
+            AgentRole::Worker => format!("You are a worker agent. Role: {}\n\n", ctx.role_description),
+            AgentRole::Reviewer => format!("You are a reviewer agent. Role: {}\n\n", ctx.role_description),
+        };
+
         let mut out = format!(
-            "Project:\n{}\n\nTask:\n{}\n\nRepository:\n{}\n\nBranch:\n{}\n",
-            ctx.project_name, ctx.task_title, ctx.repository_path, ctx.branch
+            "{}Project:\n{}\n\nTask:\n{}\n\nRepository:\n{}\n\nBranch:\n{}\n",
+            role_line, ctx.project_name, ctx.task_title, ctx.repository_path, ctx.branch
         );
 
         if !requirements.is_empty() {
@@ -52,43 +44,6 @@ impl PromptBuilder {
             }
         }
 
-        out
-    }
-
-    pub fn pm_planning(ctx: &PmPlanningPromptContext) -> String {
-        let mut out = format!(
-            "Project:\n{}\n\nInitiative:\n{}\n\nDescription:\n{}\n\nRepository:\n{}\n",
-            ctx.project_name, ctx.initiative_title, ctx.initiative_description, ctx.repository_path
-        );
-
-        if !ctx.requirements.is_empty() {
-            out.push_str("\nRequirements:\n");
-            for r in ctx.requirements {
-                out.push_str("- ");
-                out.push_str(r);
-                out.push('\n');
-            }
-        }
-
-        out.push_str(&format!(
-            "\nRespond with structured JSON only, matching this schema:\n{PM_PLANNING_JSON_SCHEMA}\n"
-        ));
-        out
-    }
-
-    pub fn review(ctx: &ReviewPromptContext) -> String {
-        let mut out = format!(
-            "Project:\n{}\n\nTask:\n{}\n\nExecution summary:\n{}\n\nFiles changed:\n{}\n\nDiff:\n{}\n",
-            ctx.project_name,
-            ctx.task_title,
-            ctx.execution_summary,
-            ctx.files_changed.join("\n"),
-            ctx.diff
-        );
-
-        out.push_str(&format!(
-            "\nRespond with structured JSON only, matching this schema:\n{REVIEW_JSON_SCHEMA}\n"
-        ));
         out
     }
 }
@@ -105,11 +60,14 @@ mod tests {
             task_description: "",
             repository_path: "/workspace/sample",
             branch: "task/oauth-login",
+            role: AgentRole::Worker,
+            role_description: "OAuth Research Agent",
         });
         assert!(prompt.contains("Project:\nSample"));
         assert!(prompt.contains("Task:\nImplement OAuth login"));
         assert!(prompt.contains("Repository:\n/workspace/sample"));
         assert!(prompt.contains("Branch:\ntask/oauth-login"));
+        assert!(prompt.contains("You are a worker agent. Role: OAuth Research Agent"));
         assert!(!prompt.contains("Requirements:"));
     }
 
@@ -121,38 +79,10 @@ mod tests {
             task_description: "- Support Google\n- Support GitHub\nsome prose",
             repository_path: "/workspace/sample",
             branch: "task/oauth-login",
+            role: AgentRole::Worker,
+            role_description: "OAuth Research Agent",
         });
         assert!(prompt.contains("Requirements:\n- Support Google\n- Support GitHub\n"));
         assert!(!prompt.contains("some prose"));
-    }
-
-    #[test]
-    fn pm_planning_includes_requirements_and_the_json_schema() {
-        let requirements = vec!["Support PDF attachments".to_string()];
-        let prompt = PromptBuilder::pm_planning(&PmPlanningPromptContext {
-            project_name: "Sample",
-            initiative_title: "Build Gmail Agent",
-            initiative_description: "Routes inbound email",
-            requirements: &requirements,
-            repository_path: "/workspace/sample",
-        });
-        assert!(prompt.contains("Initiative:\nBuild Gmail Agent"));
-        assert!(prompt.contains("- Support PDF attachments"));
-        assert!(prompt.contains("\"requirements\""));
-    }
-
-    #[test]
-    fn review_includes_the_diff_and_the_json_schema() {
-        let files = vec!["src/lib.rs".to_string()];
-        let prompt = PromptBuilder::review(&ReviewPromptContext {
-            project_name: "Sample",
-            task_title: "Implement OAuth login",
-            files_changed: &files,
-            diff: "+ fn login() {}",
-            execution_summary: "Added the login function",
-        });
-        assert!(prompt.contains("Diff:\n+ fn login() {}"));
-        assert!(prompt.contains("src/lib.rs"));
-        assert!(prompt.contains("\"decision\""));
     }
 }

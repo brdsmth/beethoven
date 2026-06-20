@@ -66,7 +66,7 @@ enum Command {
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
-    /// Show goal/task/inbox counts and active agents for a project.
+    /// Show task/inbox counts and active agents for a project.
     Status {
         #[arg(long)]
         project: Option<String>,
@@ -80,27 +80,19 @@ enum Command {
     },
     /// Print the full event log (every project, in order).
     Timeline,
-    /// Goal management.
-    Goal {
+    /// Task management -- the single planning primitive. A task with no
+    /// parent is a root objective (the old Goal/Initiative); a task with
+    /// children is a container (the old Epic).
+    Task {
         #[command(subcommand)]
-        action: GoalAction,
+        action: TaskAction,
     },
     /// Project management.
     Project {
         #[command(subcommand)]
         action: ProjectAction,
     },
-    /// Initiative management (PM domain: discovery -> plan -> epics/decisions).
-    Initiative {
-        #[command(subcommand)]
-        action: InitiativeAction,
-    },
-    /// Requirement management (gathered during an initiative's discovery phase).
-    Requirement {
-        #[command(subcommand)]
-        action: RequirementAction,
-    },
-    /// List or resolve decisions escalated by the PM planner.
+    /// List or resolve decisions escalated by planning.
     Decision {
         #[arg(long)]
         project: Option<String>,
@@ -110,17 +102,36 @@ enum Command {
 }
 
 #[derive(Subcommand)]
-enum GoalAction {
-    /// Create a new goal. Use "- item" lines in the description to seed tasks deterministically.
+enum TaskAction {
+    /// Create a task anywhere in the tree. Omit --parent for a root
+    /// objective; use "- item" lines in the description to seed children
+    /// deterministically once planned. --draft creates it pending approval
+    /// (the old ChangeRequest) instead of immediately `Ready`.
     Create {
         title: String,
         #[arg(short, long, default_value = "")]
         description: String,
         #[arg(long)]
+        parent: Option<String>,
+        #[arg(long)]
         project: Option<String>,
+        #[arg(long)]
+        success_criteria: Option<String>,
+        #[arg(long)]
+        target_score: Option<f32>,
+        #[arg(long)]
+        draft: bool,
     },
-    /// Run the Project Manager planner against a goal, generating tasks.
-    Plan { goal_id: String },
+    /// Break a task down into children: "- item"/"* item" lines in its
+    /// description become child tasks, lines containing "?" become
+    /// Decisions escalated to the inbox.
+    Plan { task_id: String },
+    /// Show a task and its direct children.
+    Show { task_id: String },
+    /// Approve a Draft task into Ready, making it eligible for delegation.
+    Approve { task_id: String },
+    /// Reject a Draft task into Cancelled.
+    Reject { task_id: String },
 }
 
 #[derive(Subcommand)]
@@ -150,38 +161,8 @@ enum ProjectAction {
 }
 
 #[derive(Subcommand)]
-enum InitiativeAction {
-    /// Create a new initiative, starting in the discovery phase.
-    Create {
-        title: String,
-        #[arg(short, long, default_value = "")]
-        description: String,
-        #[arg(long)]
-        project: Option<String>,
-    },
-    /// List initiatives for a project.
-    List {
-        #[arg(long)]
-        project: Option<String>,
-    },
-    /// Show an initiative's requirements, epics, and decisions.
-    Show { initiative_id: String },
-    /// Run the deterministic PM planner against an initiative's requirements,
-    /// generating epics (-> tasks) and decisions (-> inbox escalations).
-    Plan { initiative_id: String },
-}
-
-#[derive(Subcommand)]
-enum RequirementAction {
-    /// Add a requirement to an initiative's discovery phase.
-    Create { initiative_id: String, description: String },
-    /// List requirements gathered for an initiative.
-    List { initiative_id: String },
-}
-
-#[derive(Subcommand)]
 enum DecisionAction {
-    /// Resolve an open decision, unblocking dependent initiative completion.
+    /// Resolve an open decision, unblocking dependent task completion.
     Resolve { decision_id: String, response: String },
 }
 
@@ -200,7 +181,7 @@ async fn main() -> Result<()> {
     beethoven_db::ensure_beethoven_home(&home)?;
     let store = beethoven_db::SqliteEventStore::connect(&beethoven_db::default_db_path(&home)).await?;
     let mut runtime = Runtime::load(
-        Box::new(store),
+        Arc::new(store),
         beethoven_db::projects_root(&home),
         beethoven_agents::default_registry(),
     )
@@ -237,22 +218,48 @@ async fn main() -> Result<()> {
             print_status(&runtime, &project_id);
         }
         Command::Timeline => print_timeline(&runtime).await?,
-        Command::Goal { action } => match action {
-            GoalAction::Create {
+        Command::Task { action } => match action {
+            TaskAction::Create {
                 title,
                 description,
+                parent,
                 project,
+                success_criteria,
+                target_score,
+                draft,
             } => {
                 let project_id = resolve_project(project.as_deref(), &runtime, &home)?;
-                let goal = runtime.create_goal(&project_id, &title, &description).await?;
-                println!("Created goal {} \"{}\"", goal.id, goal.title);
+                let task = runtime
+                    .create_task(
+                        &project_id,
+                        parent.as_deref(),
+                        &title,
+                        &description,
+                        success_criteria.as_deref().unwrap_or(""),
+                        target_score,
+                        draft,
+                    )
+                    .await?;
+                println!("Created task {} \"{}\" [{:?}]", task.id, task.title, task.status);
             }
-            GoalAction::Plan { goal_id } => {
-                let tasks = runtime.plan_goal(&goal_id).await?;
-                println!("Planned {} task(s):", tasks.len());
-                for t in tasks {
-                    println!("  {} {}", t.id, t.title);
+            TaskAction::Plan { task_id } => {
+                let outcome = runtime.plan_task(&task_id).await?;
+                println!("Planned {} task(s), {} decision(s):", outcome.tasks.len(), outcome.decisions.len());
+                for t in &outcome.tasks {
+                    println!("  task     {} {}", t.id, t.title);
                 }
+                for d in &outcome.decisions {
+                    println!("  decision {} {} (escalated to inbox)", d.id, d.question);
+                }
+            }
+            TaskAction::Show { task_id } => print_task(&runtime, &task_id)?,
+            TaskAction::Approve { task_id } => {
+                let task = runtime.approve_draft_task(&task_id).await?;
+                println!("Approved task {} ({:?})", task.id, task.status);
+            }
+            TaskAction::Reject { task_id } => {
+                let task = runtime.reject_draft_task(&task_id).await?;
+                println!("Rejected task {} ({:?})", task.id, task.status);
             }
         },
         Command::Inbox { project, action } => match action {
@@ -297,7 +304,8 @@ async fn main() -> Result<()> {
                 println!("Default branch: {}", project.default_branch);
                 println!("Status: {:?}", project.status);
 
-                let goals = runtime.state.goals.values().filter(|g| g.project_id == project.id).count();
+                let root_tasks: Vec<_> =
+                    runtime.state.tasks.values().filter(|t| t.project_id == project.id && t.parent_task_id.is_none()).collect();
                 let tasks = runtime.state.tasks.values().filter(|t| t.project_id == project.id).count();
                 let instances = runtime
                     .state
@@ -305,7 +313,13 @@ async fn main() -> Result<()> {
                     .values()
                     .filter(|a| a.project_id == project.id)
                     .count();
-                println!("Goals: {goals}  Tasks: {tasks}  Agent instances: {instances}");
+                println!("Tasks: {tasks} ({} root)  Agent instances: {instances}", root_tasks.len());
+                if !root_tasks.is_empty() {
+                    println!("Root tasks:");
+                    for t in root_tasks {
+                        println!("  {} [{:?}] {}", t.id, t.status, t.title);
+                    }
+                }
             }
             ProjectAction::Use { name } => {
                 let project = runtime
@@ -320,65 +334,6 @@ async fn main() -> Result<()> {
                 Some(slug) => println!("{slug}"),
                 None => println!("No active project. Use `beethoven project use <name>`."),
             },
-        },
-        Command::Initiative { action } => match action {
-            InitiativeAction::Create {
-                title,
-                description,
-                project,
-            } => {
-                let project_id = resolve_project(project.as_deref(), &runtime, &home)?;
-                let initiative = runtime.create_initiative(&project_id, &title, &description).await?;
-                println!("Created initiative {} \"{}\"", initiative.id, initiative.title);
-            }
-            InitiativeAction::List { project } => {
-                let project_id = resolve_project(project.as_deref(), &runtime, &home)?;
-                let mut initiatives: Vec<_> = runtime
-                    .state
-                    .initiatives
-                    .values()
-                    .filter(|i| i.project_id == project_id)
-                    .collect();
-                initiatives.sort_by_key(|i| i.created_at);
-                for i in initiatives {
-                    println!("{} [{:?}] {}", i.id, i.status, i.title);
-                }
-            }
-            InitiativeAction::Show { initiative_id } => print_initiative(&runtime, &initiative_id)?,
-            InitiativeAction::Plan { initiative_id } => {
-                let outcome = runtime.plan_initiative(&initiative_id).await?;
-                println!("{}", outcome.plan.summary);
-                for e in &outcome.epics {
-                    println!("  epic     {} {}", e.id, e.title);
-                }
-                for t in &outcome.tasks {
-                    println!("  task     {} {}", t.id, t.title);
-                }
-                for d in &outcome.decisions {
-                    println!("  decision {} {} (escalated to inbox)", d.id, d.title);
-                }
-            }
-        },
-        Command::Requirement { action } => match action {
-            RequirementAction::Create {
-                initiative_id,
-                description,
-            } => {
-                let requirement = runtime.create_requirement(&initiative_id, &description).await?;
-                println!("Created requirement {} \"{}\"", requirement.id, requirement.description);
-            }
-            RequirementAction::List { initiative_id } => {
-                let mut requirements: Vec<_> = runtime
-                    .state
-                    .requirements
-                    .values()
-                    .filter(|r| r.initiative_id == initiative_id)
-                    .collect();
-                requirements.sort_by_key(|r| r.created_at);
-                for r in requirements {
-                    println!("{} {}", r.id, r.description);
-                }
-            }
         },
         Command::Decision { project, action } => match action {
             None => {
@@ -484,6 +439,9 @@ async fn run_daemon_loop(runtime: &mut Runtime, interval: u64, max_concurrent: u
                     }
                 }
                 Err(e) => eprintln!("tick failed: {e}"),
+            }
+            if let Err(e) = runtime.sync_agent_health_events().await {
+                eprintln!("agent health sync failed: {e}");
             }
         }
 
@@ -645,7 +603,6 @@ fn print_status(runtime: &Runtime, project_id: &str) {
     let project = runtime.state.projects.get(project_id).expect("resolved project exists");
     println!("Project: {}\n", project.name);
 
-    let goals = runtime.state.goals.values().filter(|g| g.project_id == project_id).count();
     let tasks: Vec<&Task> = runtime.state.tasks.values().filter(|t| t.project_id == project_id).collect();
     let blocked = tasks.iter().filter(|t| t.status == TaskStatus::Blocked).count();
     let inbox = runtime
@@ -661,7 +618,6 @@ fn print_status(runtime: &Runtime, project_id: &str) {
         .filter(|a| a.project_id == project_id && matches!(a.status, AgentStatus::Assigned | AgentStatus::Executing))
         .count();
 
-    println!("Goals: {goals}");
     println!("Tasks: {}", tasks.len());
     println!("Blocked: {blocked}");
     println!("Inbox: {inbox}");
@@ -687,45 +643,30 @@ fn print_inbox(runtime: &Runtime, project_id: &str) {
     }
 }
 
-fn print_initiative(runtime: &Runtime, initiative_id: &str) -> Result<()> {
-    let initiative = runtime
-        .state
-        .initiatives
-        .get(initiative_id)
-        .ok_or_else(|| anyhow!("no such initiative: {initiative_id}"))?;
-    println!("Title: {}", initiative.title);
-    println!("Description: {}", initiative.description);
-    println!("Status: {:?}", initiative.status);
-
-    println!("\nRequirements:");
-    let mut requirements: Vec<_> = runtime
-        .state
-        .requirements
-        .values()
-        .filter(|r| r.initiative_id == initiative_id)
-        .collect();
-    requirements.sort_by_key(|r| r.created_at);
-    for r in requirements {
-        println!("  {} {}", r.id, r.description);
+fn print_task(runtime: &Runtime, task_id: &str) -> Result<()> {
+    let task = runtime.state.tasks.get(task_id).ok_or_else(|| anyhow!("no such task: {task_id}"))?;
+    println!("Title: {}", task.title);
+    println!("Description: {}", task.description);
+    println!("Status: {:?}", task.status);
+    println!("Attempt: {}", task.attempt);
+    println!("Success criteria: {}", task.success_criteria);
+    println!("Target score: {}", task.target_score);
+    if let Some(parent_id) = &task.parent_task_id {
+        println!("Parent: {parent_id}");
     }
 
-    println!("\nEpics:");
-    let mut epics: Vec<_> = runtime.state.epics.values().filter(|e| e.initiative_id == initiative_id).collect();
-    epics.sort_by_key(|e| e.created_at);
-    for e in epics {
-        println!("  {} {}", e.id, e.title);
+    println!("\nChildren:");
+    let mut children: Vec<_> = runtime.state.tasks.values().filter(|t| t.parent_task_id.as_deref() == Some(task_id)).collect();
+    children.sort_by_key(|t| t.created_at);
+    for c in children {
+        println!("  {} [{:?}] {}", c.id, c.status, c.title);
     }
 
     println!("\nDecisions:");
-    let mut decisions: Vec<_> = runtime
-        .state
-        .decisions
-        .values()
-        .filter(|d| d.initiative_id == initiative_id)
-        .collect();
+    let mut decisions: Vec<_> = runtime.state.decisions.values().filter(|d| d.task_id.as_deref() == Some(task_id)).collect();
     decisions.sort_by_key(|d| d.created_at);
     for d in decisions {
-        println!("  {} [{:?}] {}", d.id, d.status, d.title);
+        println!("  {} [{:?}] {}", d.id, d.status, d.question);
     }
 
     Ok(())
@@ -745,7 +686,7 @@ fn print_decisions(runtime: &Runtime, project_id: &str) {
         return;
     }
     for d in items {
-        println!("{} {}", d.id, d.title);
+        println!("{} {}", d.id, d.question);
     }
 }
 

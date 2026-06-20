@@ -55,7 +55,7 @@ pub struct ExecutionResult {
 /// specific provider.
 pub trait ModelRuntime {
     fn provider(&self) -> &'static str;
-    fn execute(&self, request: &ExecutionRequest) -> Result<ExecutionResult, AgentsError>;
+    fn execute(&self, request: &ExecutionRequest, on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError>;
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,7 +117,7 @@ impl ModelRuntime for ClaudeCodeRuntime {
         "claude-code"
     }
 
-    fn execute(&self, request: &ExecutionRequest) -> Result<ExecutionResult, AgentsError> {
+    fn execute(&self, request: &ExecutionRequest, on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError> {
         let response_path = request.artifacts_dir.join("response.json");
         let stderr_path = request.artifacts_dir.join("stderr.log");
         let exit_code_path = request.artifacts_dir.join("exit_code");
@@ -133,7 +133,7 @@ impl ModelRuntime for ClaudeCodeRuntime {
         let session = TmuxSession {
             name: request.workspace.tmux_session.clone(),
         };
-        session.run_and_wait(&command, self.timeout)?;
+        session.run_and_wait(&command, self.timeout, on_tick)?;
 
         let exit_code: i32 = std::fs::read_to_string(&exit_code_path)
             .ok()
@@ -238,15 +238,18 @@ mod tests {
         std::fs::create_dir_all(&artifacts_dir).unwrap();
 
         let result = ClaudeCodeRuntime::default()
-            .execute(&ExecutionRequest {
-                project_id: "p1",
-                agent_id: "a1",
-                task_id: Some("task-real-claude"),
-                prompt_path: &prompt_path,
-                artifacts_dir: &artifacts_dir,
-                workspace: &state,
-                json_schema: None,
-            })
+            .execute(
+                &ExecutionRequest {
+                    project_id: "p1",
+                    agent_id: "a1",
+                    task_id: Some("task-real-claude"),
+                    prompt_path: &prompt_path,
+                    artifacts_dir: &artifacts_dir,
+                    workspace: &state,
+                    json_schema: None,
+                },
+                &|| {},
+            )
             .unwrap();
 
         assert_eq!(result.status, ExecutionStatus::Completed);

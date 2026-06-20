@@ -2,16 +2,18 @@ use crate::error::CoreError;
 use crate::models::*;
 use crate::state::RuntimeState;
 use beethoven_agents::{
-    AgentKind, AgentsError, ExecutionOutcome, ExecutionRequest, ExecutionResult, ExecutionService, ExecutionStatus,
-    InitiativePlanningService, ModelRuntime, PlanningService, PromptBuilder, RequirementInput, ReviewOutcome,
-    ReviewService, RuntimeRegistry, TaskExecutionContext, WorkerPromptContext,
+    AgentRole, AgentsError, DelegationAgent, DelegationAgentStatus, DelegationDecision, DelegationService,
+    DelegationTask, ExecutionOutcome, ExecutionRequest, ExecutionResult, ExecutionService, ExecutionStatus,
+    ModelRuntime, PlanningService, PromptBuilder, ReviewOutcome, ReviewService, RuntimeRegistry,
+    TaskExecutionContext, WorkerPromptContext,
 };
 use beethoven_events::{Event, EventStore, EventType};
 use beethoven_workspaces::{tmux_session_name, WorkspaceManager, WorkspaceRequest, WorkspaceState};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 /// Default policy values for `run_tick`'s single-project convenience wrapper
@@ -19,6 +21,9 @@ use uuid::Uuid;
 /// as `--max-concurrent`/`--max-attempts` flags instead of these constants.
 const DEFAULT_MAX_CONCURRENT: usize = 4;
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
+
+/// Default quality bar for a task created without an explicit one.
+const DEFAULT_TARGET_SCORE: f32 = 70.0;
 
 #[derive(Debug, Default, Clone)]
 pub struct TickReport {
@@ -55,7 +60,7 @@ pub struct RecoveryReport {
 struct PreparedTask {
     project_id: String,
     project_slug: String,
-    pm_id: String,
+    lead_id: String,
     task_id: String,
     task: Task,
     agent_id: String,
@@ -64,6 +69,7 @@ struct PreparedTask {
     prompt_path: PathBuf,
     artifacts_dir: PathBuf,
     model_runtime: Arc<dyn ModelRuntime + Send + Sync>,
+    store: Arc<dyn EventStore>,
 }
 
 /// Outcome of `start_task`: either the task is ready for a real model
@@ -75,13 +81,11 @@ enum StartOutcome {
     Resolved(TickReport),
 }
 
-/// Result of running the deterministic PM planner against an initiative:
-/// the generated plan plus everything it produced (epics, their tasks, and
-/// any decisions auto-escalated to the inbox).
-#[derive(Debug, Clone)]
-pub struct PlanOutcome {
-    pub plan: Plan,
-    pub epics: Vec<Epic>,
+/// Result of planning a task: the children it produced (real work to do)
+/// and any decisions auto-escalated to the inbox. `Serialize` so the Tauri
+/// `plan_task` command can hand it straight to the frontend.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TaskPlanOutcome {
     pub tasks: Vec<Task>,
     pub decisions: Vec<Decision>,
 }
@@ -108,7 +112,7 @@ fn slugify(input: &str) -> String {
 }
 
 pub struct Runtime {
-    store: Box<dyn EventStore>,
+    store: Arc<dyn EventStore>,
     projects_root: PathBuf,
     registry: RuntimeRegistry,
     pub state: RuntimeState,
@@ -116,7 +120,7 @@ pub struct Runtime {
 
 impl Runtime {
     pub async fn load(
-        store: Box<dyn EventStore>,
+        store: Arc<dyn EventStore>,
         projects_root: PathBuf,
         registry: RuntimeRegistry,
     ) -> Result<Self, CoreError> {
@@ -128,6 +132,12 @@ impl Runtime {
             registry,
             state,
         })
+    }
+
+    /// Read-only access to the registered runtime profiles, for display
+    /// purposes (e.g. read-only Runtime Settings/Agent Configuration views).
+    pub fn registry(&self) -> &RuntimeRegistry {
+        &self.registry
     }
 
     /// Scans for tasks left mid-flight by a crash -- assigned to an agent but
@@ -215,7 +225,7 @@ impl Runtime {
 
     /// Best-effort teardown of whatever workspace/tmux session the crashed
     /// attempt left behind. The workspace path, branch, and tmux session name
-    /// are all deterministic functions of (project, task, agent kind), so they
+    /// are all deterministic functions of (project, task, agent role), so they
     /// can be reconstructed without having persisted a `WorkspaceState`
     /// anywhere -- safe to call even if the crashed attempt never got far
     /// enough to create a workspace at all (`destroy` is then just a no-op).
@@ -223,7 +233,7 @@ impl Runtime {
         let (Some(project), Some(task)) = (self.state.projects.get(project_id), self.state.tasks.get(task_id)) else {
             return;
         };
-        let agent_kind = self.state.agent_instances.get(agent_id).map(|a| a.kind).unwrap_or(AgentKind::Backend);
+        let agent_role = self.state.agent_instances.get(agent_id).map(|a| a.role).unwrap_or(AgentRole::Worker);
         let branch = task.branch.clone().unwrap_or_else(|| beethoven_git::branch_name(&task.title));
         let workspaces = self.workspace_manager_for(&project.slug);
         let git_worktree = workspaces.path_for(task_id).join("repo").to_string_lossy().into_owned();
@@ -233,7 +243,7 @@ impl Runtime {
             created_at: chrono::Utc::now(),
             repository_path: project.repository_path.to_string_lossy().into_owned(),
             branch,
-            tmux_session: tmux_session_name(&project.slug, agent_kind.as_str(), task_id),
+            tmux_session: tmux_session_name(&project.slug, agent_role.as_str(), task_id),
             git_worktree,
             git_link: String::new(),
         });
@@ -327,19 +337,19 @@ impl Runtime {
             .ok_or_else(|| CoreError::ProjectNotFound(project_id.to_string()))
     }
 
-    fn template_id_for(&self, kind: AgentKind) -> Option<String> {
+    fn template_id_for(&self, role: AgentRole) -> Option<String> {
         self.state
             .agent_templates
             .values()
-            .find(|t| t.kind == kind)
+            .find(|t| t.role == role)
             .map(|t| t.id.clone())
     }
 
-    fn pm_instance_id(&self, project_id: &str) -> Option<String> {
+    fn lead_instance_id(&self, project_id: &str) -> Option<String> {
         self.state
             .agent_instances
             .values()
-            .find(|a| a.project_id == project_id && a.kind == AgentKind::ProjectManager)
+            .find(|a| a.project_id == project_id && a.role == AgentRole::Lead)
             .map(|a| a.id.clone())
     }
 
@@ -354,16 +364,21 @@ impl Runtime {
         if !self.state.agent_templates.is_empty() {
             return Ok(());
         }
-        for kind in AgentKind::ALL {
+        for role in AgentRole::ALL {
             let id = Uuid::new_v4().to_string();
+            let prompt = match role {
+                AgentRole::Lead => "You are the lead agent for this project.",
+                AgentRole::Worker => "You are a worker agent.",
+                AgentRole::Reviewer => "You are a reviewer agent.",
+            };
             self.emit_global(
                 EventType::AgentTemplateCreated,
                 "system",
                 json!({
                     "id": id,
-                    "kind": kind,
-                    "role": kind.role_label(),
-                    "prompt": kind.default_prompt(),
+                    "role": role,
+                    "label": role.display_name(),
+                    "prompt": prompt,
                     "permissions": Vec::<String>::new(),
                     "tools": Vec::<String>::new(),
                     "runtime_profile_id": "claude-default",
@@ -397,116 +412,335 @@ impl Runtime {
         )
         .await?;
 
-        for kind in AgentKind::ALL {
-            let template_id = self.template_id_for(kind).expect("templates were just ensured");
-            let instance_id = Uuid::new_v4().to_string();
-            let instance_name = format!("{name} {}", kind.display_name());
-            self.emit_project(
-                &id,
-                EventType::AgentCreated,
-                "system",
-                json!({
-                    "id": instance_id,
-                    "template_id": template_id,
-                    "kind": kind,
-                    "name": instance_name,
-                }),
-            )
-            .await?;
-            self.emit_project(&id, EventType::AgentStarted, "system", json!({"id": instance_id}))
-                .await?;
-        }
+        let lead_template_id = self.template_id_for(AgentRole::Lead).expect("templates were just ensured");
+        let lead_id = Uuid::new_v4().to_string();
+        self.emit_project(
+            &id,
+            EventType::AgentSpawned,
+            "system",
+            json!({
+                "id": lead_id,
+                "template_id": lead_template_id,
+                "role": AgentRole::Lead,
+                "role_description": format!("Lead agent for {name}"),
+                "parent_agent_id": None::<String>,
+                "name": format!("{name} Lead"),
+            }),
+        )
+        .await?;
 
         Ok(self.state.projects.get(&id).expect("just inserted").clone())
     }
 
-    pub async fn create_goal(&mut self, project_id: &str, title: &str, description: &str) -> Result<Goal, CoreError> {
-        self.require_project(project_id)?;
+    /// Spawns a Worker/Reviewer under `parent_agent_id`, which must be the
+    /// project's Lead -- workers/reviewers never spawn their own children in
+    /// this model.
+    pub async fn spawn_agent(
+        &mut self,
+        project_id: &str,
+        parent_agent_id: &str,
+        role: AgentRole,
+        role_description: &str,
+        name: &str,
+    ) -> Result<AgentInstance, CoreError> {
+        if role == AgentRole::Lead {
+            return Err(CoreError::InvalidState("cannot spawn a second Lead agent".to_string()));
+        }
+        let parent = self
+            .state
+            .agent_instances
+            .get(parent_agent_id)
+            .cloned()
+            .ok_or_else(|| CoreError::AgentNotFound(parent_agent_id.to_string()))?;
+        if parent.role != AgentRole::Lead {
+            return Err(CoreError::InvalidState(format!(
+                "agent {parent_agent_id} is not the Lead (role: {:?})",
+                parent.role
+            )));
+        }
+
+        let template_id = self.template_id_for(role).expect("templates were just ensured");
         let id = Uuid::new_v4().to_string();
         self.emit_project(
             project_id,
-            EventType::GoalCreated,
-            "human",
-            json!({"id": id, "title": title, "description": description}),
+            EventType::AgentSpawned,
+            parent_agent_id,
+            json!({
+                "id": id,
+                "template_id": template_id,
+                "role": role,
+                "role_description": role_description,
+                "parent_agent_id": parent_agent_id,
+                "name": name,
+            }),
         )
         .await?;
-        Ok(self.state.goals.get(&id).expect("just inserted").clone())
+        Ok(self.state.agent_instances.get(&id).expect("just inserted").clone())
     }
 
-    pub async fn plan_goal(&mut self, goal_id: &str) -> Result<Vec<Task>, CoreError> {
-        let goal = self
+    /// Archives a Worker/Reviewer from `Created`/`Idle`/`Completed` only --
+    /// never mid-task, never the Lead.
+    pub async fn archive_agent(&mut self, agent_id: &str) -> Result<AgentInstance, CoreError> {
+        let agent = self
             .state
-            .goals
-            .get(goal_id)
+            .agent_instances
+            .get(agent_id)
             .cloned()
-            .ok_or_else(|| CoreError::GoalNotFound(goal_id.to_string()))?;
-        let project_id = goal.project_id.clone();
-        let pm_id = self.pm_instance_id(&project_id).unwrap_or_else(|| "system".to_string());
+            .ok_or_else(|| CoreError::AgentNotFound(agent_id.to_string()))?;
+        if agent.role == AgentRole::Lead {
+            return Err(CoreError::InvalidState("the Lead agent cannot be archived".to_string()));
+        }
+        if !matches!(agent.status, AgentStatus::Created | AgentStatus::Idle | AgentStatus::Completed) {
+            return Err(CoreError::InvalidState(format!(
+                "agent {agent_id} cannot be archived from status {:?}",
+                agent.status
+            )));
+        }
+        self.emit_project(&agent.project_id, EventType::AgentArchived, "system", json!({"id": agent_id}))
+            .await?;
+        Ok(self.state.agent_instances.get(agent_id).expect("just updated").clone())
+    }
 
-        let drafts = PlanningService::plan(&goal.title, &goal.description);
-        let mut created = Vec::with_capacity(drafts.len());
-        for draft in drafts {
+    /// Creates a task anywhere in the tree -- `parent_task_id: None` for a
+    /// root objective (the old Goal/Initiative), `Some(id)` for a child
+    /// (the old Epic/subtask). `draft: true` creates it in `TaskStatus::Draft`
+    /// instead of `Ready` -- proposed work pending human approval (the old
+    /// ChangeRequest), invisible to delegation until `approve_draft_task`.
+    pub async fn create_task(
+        &mut self,
+        project_id: &str,
+        parent_task_id: Option<&str>,
+        title: &str,
+        description: &str,
+        success_criteria: &str,
+        target_score: Option<f32>,
+        draft: bool,
+    ) -> Result<Task, CoreError> {
+        self.require_project(project_id)?;
+        if let Some(parent_id) = parent_task_id {
+            self.state.tasks.get(parent_id).ok_or_else(|| CoreError::TaskNotFound(parent_id.to_string()))?;
+        }
+        let id = Uuid::new_v4().to_string();
+        self.emit_project(
+            project_id,
+            EventType::TaskCreated,
+            "human",
+            json!({
+                "id": id,
+                "parent_task_id": parent_task_id,
+                "title": title,
+                "description": description,
+                "status": if draft { TaskStatus::Draft } else { TaskStatus::Ready },
+                "success_criteria": success_criteria,
+                "target_score": target_score.unwrap_or(DEFAULT_TARGET_SCORE),
+            }),
+        )
+        .await?;
+        Ok(self.state.tasks.get(&id).expect("just inserted").clone())
+    }
+
+    /// Breaks a task down into children (the old Goal/Initiative planning
+    /// step, unified): bullet-list lines become child tasks, lines ending in
+    /// `?` become `Decision`s auto-escalated to the inbox. Works at any
+    /// level of the tree -- a freshly-created root task and a task several
+    /// levels deep are planned identically.
+    pub async fn plan_task(&mut self, task_id: &str) -> Result<TaskPlanOutcome, CoreError> {
+        let task = self.state.tasks.get(task_id).cloned().ok_or_else(|| CoreError::TaskNotFound(task_id.to_string()))?;
+        let project_id = task.project_id.clone();
+        let lead_id = self.lead_instance_id(&project_id).unwrap_or_else(|| "system".to_string());
+
+        self.emit_project(&project_id, EventType::TaskPlanningStarted, &lead_id, json!({"task_id": task_id}))
+            .await?;
+
+        let plan = PlanningService::plan(&task.title, &task.description);
+
+        let mut tasks = Vec::with_capacity(plan.task_drafts.len());
+        for draft in plan.task_drafts {
             let id = Uuid::new_v4().to_string();
             self.emit_project(
                 &project_id,
                 EventType::TaskCreated,
-                &pm_id,
+                &lead_id,
                 json!({
                     "id": id,
-                    "goal_id": goal_id,
-                    "epic_id": None::<String>,
-                    "parent_task_id": None::<String>,
+                    "parent_task_id": task_id,
                     "title": draft.title,
                     "description": draft.description,
+                    "status": TaskStatus::Ready,
+                    "success_criteria": "",
+                    "target_score": DEFAULT_TARGET_SCORE,
                 }),
             )
             .await?;
-            created.push(self.state.tasks.get(&id).expect("just inserted").clone());
+            tasks.push(self.state.tasks.get(&id).expect("just inserted").clone());
         }
 
-        self.emit_project(
-            &project_id,
-            EventType::GoalUpdated,
-            &pm_id,
-            json!({"id": goal_id, "status": GoalStatus::Planned}),
-        )
-        .await?;
+        let mut decisions = Vec::with_capacity(plan.decision_drafts.len());
+        for decision_draft in plan.decision_drafts {
+            let decision_id = Uuid::new_v4().to_string();
+            self.emit_project(
+                &project_id,
+                EventType::DecisionCreated,
+                &lead_id,
+                json!({
+                    "id": decision_id,
+                    "task_id": task_id,
+                    "question": decision_draft.question,
+                    "context": decision_draft.context,
+                }),
+            )
+            .await?;
+            decisions.push(self.state.decisions.get(&decision_id).expect("just inserted").clone());
 
-        Ok(created)
+            let inbox_id = Uuid::new_v4().to_string();
+            self.emit_project(
+                &project_id,
+                EventType::DecisionEscalated,
+                &lead_id,
+                json!({"decision_id": decision_id, "inbox_id": inbox_id, "prompt": decision_draft.context}),
+            )
+            .await?;
+        }
+
+        self.emit_project(&project_id, EventType::TaskPlanningCompleted, &lead_id, json!({"task_id": task_id}))
+            .await?;
+
+        Ok(TaskPlanOutcome { tasks, decisions })
     }
 
-    /// Assigns every currently-`Ready` task in `project_id` to an idle
-    /// non-PM agent. Returns how many were assigned.
-    async fn assign_ready_tasks(&mut self, project_id: &str) -> Result<u32, CoreError> {
-        let pm_id = self.pm_instance_id(project_id).unwrap_or_else(|| "system".to_string());
-        let ready_task_ids: Vec<String> = self
+    /// Approves a `Draft` task (the old ChangeRequest approval) into `Ready`,
+    /// making it eligible for delegation.
+    pub async fn approve_draft_task(&mut self, task_id: &str) -> Result<Task, CoreError> {
+        let task = self.state.tasks.get(task_id).cloned().ok_or_else(|| CoreError::TaskNotFound(task_id.to_string()))?;
+        if task.status != TaskStatus::Draft {
+            return Err(CoreError::InvalidState(format!(
+                "task {task_id} is not a draft (status: {:?})",
+                task.status
+            )));
+        }
+        self.emit_project(&task.project_id, EventType::TaskApproved, "human", json!({"task_id": task_id}))
+            .await?;
+        Ok(self.state.tasks.get(task_id).expect("just updated").clone())
+    }
+
+    /// Rejects a `Draft` task (the old ChangeRequest rejection) into
+    /// `Cancelled`.
+    pub async fn reject_draft_task(&mut self, task_id: &str) -> Result<Task, CoreError> {
+        let task = self.state.tasks.get(task_id).cloned().ok_or_else(|| CoreError::TaskNotFound(task_id.to_string()))?;
+        if task.status != TaskStatus::Draft {
+            return Err(CoreError::InvalidState(format!(
+                "task {task_id} is not a draft (status: {:?})",
+                task.status
+            )));
+        }
+        self.emit_project(&task.project_id, EventType::TaskCancelled, "human", json!({"task_id": task_id}))
+            .await?;
+        Ok(self.state.tasks.get(task_id).expect("just updated").clone())
+    }
+
+    /// Walks up the tree from `task_id`, emitting `TaskCompleted` for each
+    /// ancestor whose children are now all `Done` and whose own `Decision`s
+    /// are all `Resolved` -- stopping at the first ancestor not yet ready.
+    /// This is the entire completion mechanism for container tasks (former
+    /// Initiative/Epic/Goal): they're never executed or reviewed directly,
+    /// only ever completed by their children finishing.
+    async fn complete_parent_chain(&mut self, project_id: &str, task_id: &str) -> Result<(), CoreError> {
+        let mut current = task_id.to_string();
+        while self.state.parent_task_is_complete(&current) {
+            self.emit_project(project_id, EventType::TaskCompleted, "system", json!({"task_id": current})).await?;
+            match self.state.tasks.get(&current).and_then(|t| t.parent_task_id.clone()) {
+                Some(parent_id) => current = parent_id,
+                None => break,
+            }
+        }
+        Ok(())
+    }
+
+    /// Has the project's Lead delegate every currently-`Ready` task: reuse an
+    /// available Worker/Reviewer if one exists, otherwise spawn a new Worker;
+    /// archive any leftover agent the delegation decides has no further work.
+    /// Returns how many tasks were assigned.
+    async fn run_lead_delegation(&mut self, project_id: &str) -> Result<u32, CoreError> {
+        let lead_id = self.lead_instance_id(project_id).unwrap_or_else(|| "system".to_string());
+
+        // Container tasks (children planned under them, e.g. a former
+        // Initiative/Epic) are never delegated -- only leaves, which are the
+        // only tasks with real, directly-executable work.
+        let ready_tasks: Vec<DelegationTask> = self
             .state
             .tasks
             .values()
-            .filter(|t| t.project_id == project_id && t.status == TaskStatus::Ready)
-            .map(|t| t.id.clone())
+            .filter(|t| {
+                t.project_id == project_id
+                    && t.status == TaskStatus::Ready
+                    && !self.state.tasks.values().any(|c| c.parent_task_id.as_deref() == Some(t.id.as_str()))
+            })
+            .map(|t| DelegationTask { id: t.id.clone(), title: t.title.clone() })
+            .collect();
+        let task_titles: HashMap<String, String> =
+            ready_tasks.iter().map(|t| (t.id.clone(), t.title.clone())).collect();
+
+        let agents: Vec<DelegationAgent> = self
+            .state
+            .agent_instances
+            .values()
+            .filter(|a| a.project_id == project_id && a.role != AgentRole::Lead)
+            .map(|a| DelegationAgent {
+                id: a.id.clone(),
+                status: match a.status {
+                    AgentStatus::Created | AgentStatus::Idle => DelegationAgentStatus::Idle,
+                    AgentStatus::Completed => DelegationAgentStatus::Completed,
+                    _ => DelegationAgentStatus::Busy,
+                },
+            })
             .collect();
 
-        let mut assigned = 0;
-        for task_id in ready_task_ids {
-            let idle_agent_id = self
-                .state
-                .agent_instances
-                .values()
-                .find(|a| {
-                    a.project_id == project_id && a.status == AgentStatus::Idle && a.kind != AgentKind::ProjectManager
-                })
-                .map(|a| a.id.clone());
+        let decisions = DelegationService::delegate(&ready_tasks, &agents);
 
-            if let Some(agent_id) = idle_agent_id {
-                self.emit_project(
-                    project_id,
-                    EventType::TaskAssigned,
-                    &pm_id,
-                    json!({"task_id": task_id, "agent_id": agent_id}),
-                )
-                .await?;
-                assigned += 1;
+        let mut assigned = 0;
+        for decision in decisions {
+            match decision {
+                DelegationDecision::DelegateToExisting { agent_id, task_id } => {
+                    let objective = task_titles.get(&task_id).cloned().unwrap_or_default();
+                    self.emit_project(
+                        project_id,
+                        EventType::AgentDelegatedTask,
+                        &lead_id,
+                        json!({"agent_id": agent_id, "task_id": task_id, "delegated_by": lead_id, "objective": objective}),
+                    )
+                    .await?;
+                    self.emit_project(
+                        project_id,
+                        EventType::TaskAssigned,
+                        &lead_id,
+                        json!({"task_id": task_id, "agent_id": agent_id}),
+                    )
+                    .await?;
+                    assigned += 1;
+                }
+                DelegationDecision::SpawnWorker { task_id, role_description, name } => {
+                    let agent =
+                        self.spawn_agent(project_id, &lead_id, AgentRole::Worker, &role_description, &name).await?;
+                    let objective = task_titles.get(&task_id).cloned().unwrap_or_default();
+                    self.emit_project(
+                        project_id,
+                        EventType::AgentDelegatedTask,
+                        &lead_id,
+                        json!({"agent_id": agent.id, "task_id": task_id, "delegated_by": lead_id, "objective": objective}),
+                    )
+                    .await?;
+                    self.emit_project(
+                        project_id,
+                        EventType::TaskAssigned,
+                        &lead_id,
+                        json!({"task_id": task_id, "agent_id": agent.id}),
+                    )
+                    .await?;
+                    assigned += 1;
+                }
+                DelegationDecision::ArchiveAgent { agent_id } => {
+                    self.archive_agent(&agent_id).await?;
+                }
             }
         }
         Ok(assigned)
@@ -514,18 +748,20 @@ impl Runtime {
 
     /// Phase 1 for one `Assigned` task: `TaskStarted`, real workspace/branch/
     /// tmux setup, the execution-gate heuristic, and (if it's going to run a
-    /// real model) prompt generation through `ModelRunStarted`. Never runs
+    /// real model) prompt generation through `RunStarted`. Never runs
     /// the model itself -- that's the only step worth running concurrently
     /// with other tasks', so it's left for the caller to batch separately.
     async fn start_task(&mut self, project_id: &str, task_id: &str) -> Result<StartOutcome, CoreError> {
         let project = self.require_project(project_id)?;
-        let pm_id = self.pm_instance_id(project_id).unwrap_or_else(|| "system".to_string());
+        let lead_id = self.lead_instance_id(project_id).unwrap_or_else(|| "system".to_string());
         let repository_path = project.repository_path.to_string_lossy().into_owned();
         let workspaces = self.workspace_manager_for(&project.slug);
 
         let task = self.state.tasks.get(task_id).expect("task exists").clone();
         let agent_id = task.assigned_agent_id.clone().expect("assigned task has agent");
-        let agent_kind = self.state.agent_instances.get(&agent_id).map(|a| a.kind).unwrap_or(AgentKind::Backend);
+        let agent = self.state.agent_instances.get(&agent_id).cloned();
+        let agent_role = agent.as_ref().map(|a| a.role).unwrap_or(AgentRole::Worker);
+        let agent_role_description = agent.as_ref().map(|a| a.role_description.clone()).unwrap_or_default();
 
         self.emit_project(project_id, EventType::TaskStarted, &agent_id, json!({"task_id": task_id}))
             .await?;
@@ -533,7 +769,7 @@ impl Runtime {
         let branch = beethoven_git::branch_name(&task.title);
         let ws_state = match workspaces.create(&WorkspaceRequest {
             project_slug: &project.slug,
-            agent_label: agent_kind.as_str(),
+            agent_label: agent_role.as_str(),
             task_id,
             repository_path: &repository_path,
             default_branch: &project.default_branch,
@@ -599,6 +835,8 @@ impl Runtime {
                     task_description: &task.description,
                     repository_path: &ws_state.git_worktree,
                     branch: &ws_state.branch,
+                    role: agent_role,
+                    role_description: &agent_role_description,
                 });
                 let prompt_path = workspaces.path_for(task_id).join("prompts").join("prompt.md");
                 if let Err(e) = std::fs::write(&prompt_path, &prompt) {
@@ -608,18 +846,19 @@ impl Runtime {
                     project_id,
                     EventType::PromptGenerated,
                     &agent_id,
-                    json!({"model_run_id": run_id, "task_id": task_id, "prompt": prompt}),
+                    json!({"run_id": run_id, "task_id": task_id, "prompt": prompt}),
                 )
                 .await?;
                 self.emit_project(
                     project_id,
-                    EventType::ModelRunStarted,
+                    EventType::RunStarted,
                     &agent_id,
                     json!({
                         "id": run_id,
                         "agent_id": agent_id,
                         "project_id": project_id,
                         "task_id": task_id,
+                        "attempt": task.attempt,
                         "provider": model_runtime.provider(),
                     }),
                 )
@@ -629,7 +868,7 @@ impl Runtime {
                 Ok(StartOutcome::Ready(Box::new(PreparedTask {
                     project_id: project_id.to_string(),
                     project_slug: project.slug.clone(),
-                    pm_id,
+                    lead_id,
                     task_id: task_id.to_string(),
                     task,
                     agent_id,
@@ -638,6 +877,7 @@ impl Runtime {
                     prompt_path,
                     artifacts_dir,
                     model_runtime,
+                    store: Arc::clone(&self.store),
                 })))
             }
             ExecutionOutcome::RaisedQuestion(prompt) => {
@@ -670,11 +910,12 @@ impl Runtime {
                     &agent_id,
                     json!({
                         "id": sub_id,
-                        "goal_id": task.goal_id,
-                        "epic_id": task.epic_id,
                         "parent_task_id": task_id,
                         "title": draft.title,
                         "description": draft.description,
+                        "status": TaskStatus::Ready,
+                        "success_criteria": "",
+                        "target_score": DEFAULT_TARGET_SCORE,
                     }),
                 )
                 .await?;
@@ -689,7 +930,7 @@ impl Runtime {
 
     /// Phase 3 for one task, run once its real model execution (or panic/
     /// cancellation, surfaced by the caller as an `Err`) comes back:
-    /// `ModelRunCompleted`/`Failed` through review, completion/escalation,
+    /// `RunCompleted`/`Failed` through review, completion/escalation,
     /// and the same unconditional workspace teardown every path ends with.
     async fn finish_task(
         &mut self,
@@ -700,7 +941,7 @@ impl Runtime {
         let PreparedTask {
             project_id,
             project_slug,
-            pm_id,
+            lead_id,
             task_id,
             task,
             agent_id,
@@ -727,7 +968,7 @@ impl Runtime {
             Ok(result) => {
                 self.emit_project(
                     &project_id,
-                    EventType::ModelRunCompleted,
+                    EventType::RunCompleted,
                     &agent_id,
                     json!({
                         "id": run_id,
@@ -752,7 +993,7 @@ impl Runtime {
                             EventType::FilesModified,
                             &agent_id,
                             json!({
-                                "task_id": task_id,
+                                "run_id": run_id,
                                 "modified": git_status.modified,
                                 "added": git_status.added,
                                 "deleted": git_status.deleted,
@@ -765,7 +1006,7 @@ impl Runtime {
                             &project_id,
                             EventType::DiffCaptured,
                             &agent_id,
-                            json!({"task_id": task_id, "diff": diff_text}),
+                            json!({"run_id": run_id, "diff": diff_text}),
                         )
                         .await?;
 
@@ -773,18 +1014,24 @@ impl Runtime {
                         self.emit_project(
                             &project_id,
                             EventType::ReviewStarted,
-                            &pm_id,
-                            json!({"review_id": review_id, "task_id": task_id, "reviewer_agent_id": pm_id}),
+                            &lead_id,
+                            json!({"review_id": review_id, "task_id": task_id, "reviewer_agent_id": lead_id}),
                         )
                         .await?;
 
                         match ReviewService::review(&task.title, &diff_text) {
-                            ReviewOutcome::Approved => {
+                            ReviewOutcome::Scored(scored) if scored.score >= task.target_score => {
                                 self.emit_project(
                                     &project_id,
                                     EventType::ReviewApproved,
-                                    &pm_id,
-                                    json!({"review_id": review_id, "task_id": task_id}),
+                                    &lead_id,
+                                    json!({
+                                        "review_id": review_id,
+                                        "task_id": task_id,
+                                        "score": scored.score,
+                                        "summary": scored.summary,
+                                        "recommendations": scored.recommendations,
+                                    }),
                                 )
                                 .await?;
 
@@ -801,22 +1048,22 @@ impl Runtime {
                                 self.emit_project(
                                     &project_id,
                                     EventType::PRMerged,
-                                    &pm_id,
+                                    &lead_id,
                                     json!({"task_id": task_id, "url": pr.url}),
                                 )
                                 .await?;
                                 delta.completed += 1;
 
-                                if let Some(epic_id) = task.epic_id.clone() {
-                                    let initiative_id = self.state.epics.get(&epic_id).map(|e| e.initiative_id.clone());
-                                    if let Some(initiative_id) = initiative_id {
-                                        self.maybe_complete_initiative(&project_id, &initiative_id).await?;
-                                    }
+                                if let Some(parent_id) = task.parent_task_id.clone() {
+                                    self.complete_parent_chain(&project_id, &parent_id).await?;
                                 }
                             }
-                            ReviewOutcome::NeedsChanges(reason) => {
+                            ReviewOutcome::Scored(scored) => {
                                 if task.attempt >= max_attempts {
-                                    let give_up = format!("giving up after {} attempts: {reason}", task.attempt);
+                                    let give_up = format!(
+                                        "giving up after {} attempts: score {} below target {}: {}",
+                                        task.attempt, scored.score, task.target_score, scored.summary
+                                    );
                                     self.emit_project(
                                         &project_id,
                                         EventType::TaskBlocked,
@@ -842,8 +1089,14 @@ impl Runtime {
                                     self.emit_project(
                                         &project_id,
                                         EventType::ReviewRejected,
-                                        &pm_id,
-                                        json!({"review_id": review_id, "task_id": task_id, "reason": reason}),
+                                        &lead_id,
+                                        json!({
+                                            "review_id": review_id,
+                                            "task_id": task_id,
+                                            "score": scored.score,
+                                            "summary": scored.summary,
+                                            "recommendations": scored.recommendations,
+                                        }),
                                     )
                                     .await?;
                                     delta.needs_changes += 1;
@@ -902,7 +1155,7 @@ impl Runtime {
             Err(e) => {
                 self.emit_project(
                     &project_id,
-                    EventType::ModelRunFailed,
+                    EventType::RunFailed,
                     &agent_id,
                     json!({"id": run_id, "error": e.to_string()}),
                 )
@@ -983,7 +1236,7 @@ impl Runtime {
                 if paused {
                     continue;
                 }
-                let assigned = self.assign_ready_tasks(project_id).await?;
+                let assigned = self.run_lead_delegation(project_id).await?;
                 if assigned > 0 {
                     reports.get_mut(project_id).expect("seeded above").assigned += assigned;
                     progressed = true;
@@ -1031,8 +1284,24 @@ impl Runtime {
                     let prompt_path = prepared.prompt_path.clone();
                     let artifacts_dir = prepared.artifacts_dir.clone();
                     let ws_state = prepared.ws_state.clone();
+                    let heartbeat_store = Arc::clone(&prepared.store);
                     let handle = tokio::task::spawn_blocking(move || {
                         let _permit = permit;
+                        let last_heartbeat = Mutex::new(Instant::now());
+                        let on_tick = || {
+                            let mut last = last_heartbeat.lock().expect("heartbeat mutex is never poisoned");
+                            if last.elapsed() < Duration::from_secs(30) {
+                                return;
+                            }
+                            *last = Instant::now();
+                            let event = Event::for_project(
+                                project_id.as_str(),
+                                EventType::AgentHeartbeat,
+                                agent_id.as_str(),
+                                json!({"agent_id": agent_id, "project_id": project_id, "task_id": task_id}),
+                            );
+                            let _ = tokio::runtime::Handle::current().block_on(heartbeat_store.append(event));
+                        };
                         let request = ExecutionRequest {
                             project_id: &project_id,
                             agent_id: &agent_id,
@@ -1042,7 +1311,7 @@ impl Runtime {
                             workspace: &ws_state,
                             json_schema: None,
                         };
-                        model_runtime.execute(&request)
+                        model_runtime.execute(&request, &on_tick)
                     });
                     handles.push((prepared, handle));
                 }
@@ -1089,7 +1358,7 @@ impl Runtime {
             return Err(CoreError::InboxItemAlreadyResolved(inbox_id.to_string()));
         }
 
-        let pm_id = self.pm_instance_id(&item.project_id).unwrap_or_else(|| "system".to_string());
+        let lead_id = self.lead_instance_id(&item.project_id).unwrap_or_else(|| "system".to_string());
         let event_type = match item.kind {
             InboxKind::Decision => EventType::DecisionResolved,
             InboxKind::Question | InboxKind::Approval | InboxKind::Alert => EventType::QuestionAnswered,
@@ -1098,16 +1367,16 @@ impl Runtime {
         self.emit_project(
             &item.project_id,
             event_type,
-            &pm_id,
+            &lead_id,
             json!({"inbox_id": inbox_id, "response": response}),
         )
         .await?;
 
         if item.kind == InboxKind::Decision {
             if let Some(decision_id) = item.decision_id.clone() {
-                let initiative_id = self.state.decisions.get(&decision_id).map(|d| d.initiative_id.clone());
-                if let Some(initiative_id) = initiative_id {
-                    self.maybe_complete_initiative(&item.project_id, &initiative_id).await?;
+                let task_id = self.state.decisions.get(&decision_id).and_then(|d| d.task_id.clone());
+                if let Some(task_id) = task_id {
+                    self.complete_parent_chain(&item.project_id, &task_id).await?;
                 }
             }
         }
@@ -1151,6 +1420,43 @@ impl Runtime {
             return Err(CoreError::InvalidState(format!("project {project_id} is already archived")));
         }
         self.emit_global(EventType::ProjectArchived, "human", json!({"id": project_id})).await?;
+        Ok(self.state.projects.get(project_id).expect("just updated").clone())
+    }
+
+    /// Repointing a project's repository is only safe while it's `Paused`
+    /// -- an `Active` project may have in-flight worktrees/tmux sessions
+    /// checked out against the old path.
+    pub async fn update_repository_path(&mut self, project_id: &str, new_path: String) -> Result<Project, CoreError> {
+        let project = self.require_project(project_id)?;
+        if project.status != ProjectStatus::Paused {
+            return Err(CoreError::InvalidState(format!(
+                "project {project_id} must be paused to change its repository path (status: {:?})",
+                project.status
+            )));
+        }
+        self.emit_global(
+            EventType::RepositoryPathChanged,
+            "human",
+            json!({"id": project_id, "repository_path": new_path}),
+        )
+        .await?;
+        Ok(self.state.projects.get(project_id).expect("just updated").clone())
+    }
+
+    pub async fn update_default_branch(&mut self, project_id: &str, new_branch: String) -> Result<Project, CoreError> {
+        let project = self.require_project(project_id)?;
+        if project.status != ProjectStatus::Paused {
+            return Err(CoreError::InvalidState(format!(
+                "project {project_id} must be paused to change its default branch (status: {:?})",
+                project.status
+            )));
+        }
+        self.emit_global(
+            EventType::DefaultBranchChanged,
+            "human",
+            json!({"id": project_id, "default_branch": new_branch}),
+        )
+        .await?;
         Ok(self.state.projects.get(project_id).expect("just updated").clone())
     }
 
@@ -1253,13 +1559,19 @@ impl Runtime {
                 task.status
             )));
         }
-        let pm_id = self.pm_instance_id(&task.project_id).unwrap_or_else(|| "system".to_string());
+        let lead_id = self.lead_instance_id(&task.project_id).unwrap_or_else(|| "system".to_string());
         let review_id = Uuid::new_v4().to_string();
         self.emit_project(
             &task.project_id,
             EventType::ReviewApproved,
-            &pm_id,
-            json!({"review_id": review_id, "task_id": task_id}),
+            &lead_id,
+            json!({
+                "review_id": review_id,
+                "task_id": task_id,
+                "score": task.target_score,
+                "summary": "manually approved",
+                "recommendations": Vec::<String>::new(),
+            }),
         )
         .await?;
         Ok(self.state.tasks.get(task_id).expect("just updated").clone())
@@ -1330,152 +1642,105 @@ impl Runtime {
         Ok(self.state.agent_instances.get(agent_id).expect("just updated").clone())
     }
 
-    pub async fn create_initiative(
-        &mut self,
-        project_id: &str,
-        title: &str,
-        description: &str,
-    ) -> Result<Initiative, CoreError> {
-        self.require_project(project_id)?;
-        let id = Uuid::new_v4().to_string();
-        self.emit_project(
-            project_id,
-            EventType::InitiativeCreated,
-            "human",
-            json!({"id": id, "title": title, "description": description}),
-        )
-        .await?;
-        Ok(self.state.initiatives.get(&id).expect("just inserted").clone())
-    }
+    /// Reconciles the `AgentMarkedSlow`/`AgentMarkedStalled` audit trail with
+    /// every in-scope agent's live health (same thresholds as
+    /// `derive::agent_health_for`: Healthy < 60s, Slow 60-180s, Stalled
+    /// >= 180s since the last heartbeat). A fresh heartbeat received after
+    /// the most recent marker is treated as implicit recovery evidence --
+    /// there is no `AgentMarkedHealthy` event in the spec -- so a marker is
+    /// only emitted when the live level is *worse* than whichever of
+    /// {last marker, an implicit Healthy from a fresher heartbeat} is more
+    /// recent. Idempotent: an unchanged level never re-emits. Call once per
+    /// daemon tick, alongside `tick_projects`.
+    pub async fn sync_agent_health_events(&mut self) -> Result<(), CoreError> {
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum Level {
+            Healthy,
+            Slow,
+            Stalled,
+        }
 
-    pub async fn create_requirement(&mut self, initiative_id: &str, description: &str) -> Result<Requirement, CoreError> {
-        let initiative = self
+        fn level_for_age(age_seconds: i64) -> Level {
+            if age_seconds < 60 {
+                Level::Healthy
+            } else if age_seconds < 180 {
+                Level::Slow
+            } else {
+                Level::Stalled
+            }
+        }
+
+        let events = self.store.list_all().await?;
+        let now = chrono::Utc::now();
+
+        let in_scope: Vec<(String, String)> = self
             .state
-            .initiatives
-            .get(initiative_id)
-            .cloned()
-            .ok_or_else(|| CoreError::InitiativeNotFound(initiative_id.to_string()))?;
-        let id = Uuid::new_v4().to_string();
-        self.emit_project(
-            &initiative.project_id,
-            EventType::RequirementCreated,
-            "human",
-            json!({"id": id, "initiative_id": initiative_id, "description": description}),
-        )
-        .await?;
-        Ok(self.state.requirements.get(&id).expect("just inserted").clone())
-    }
-
-    pub async fn plan_initiative(&mut self, initiative_id: &str) -> Result<PlanOutcome, CoreError> {
-        let initiative = self
-            .state
-            .initiatives
-            .get(initiative_id)
-            .cloned()
-            .ok_or_else(|| CoreError::InitiativeNotFound(initiative_id.to_string()))?;
-        let project_id = initiative.project_id.clone();
-        let pm_id = self.pm_instance_id(&project_id).unwrap_or_else(|| "system".to_string());
-
-        self.emit_project(&project_id, EventType::PMPlanningStarted, &pm_id, json!({"initiative_id": initiative_id}))
-            .await?;
-
-        let requirement_inputs: Vec<RequirementInput> = self
-            .state
-            .requirements
+            .agent_instances
             .values()
-            .filter(|r| r.initiative_id == initiative_id)
-            .map(|r| RequirementInput {
-                id: r.id.clone(),
-                description: r.description.clone(),
+            .filter(|a| {
+                matches!(
+                    a.status,
+                    AgentStatus::Assigned | AgentStatus::Executing
+                )
             })
+            .map(|a| (a.id.clone(), a.project_id.clone()))
             .collect();
 
-        let plan = InitiativePlanningService::plan(&initiative.title, &requirement_inputs);
+        for (agent_id, project_id) in in_scope {
+            let mut last_heartbeat: Option<chrono::DateTime<chrono::Utc>> = None;
+            let mut last_marker: Option<(chrono::DateTime<chrono::Utc>, Level)> = None;
+            let mut current_task_id: Option<String> = None;
 
-        let summary = format!(
-            "{} epic(s), {} decision(s) for {}",
-            plan.epics.len(),
-            plan.decisions.len(),
-            initiative.title
-        );
-        let plan_id = Uuid::new_v4().to_string();
-        self.emit_project(
-            &project_id,
-            EventType::PlanCreated,
-            &pm_id,
-            json!({"id": plan_id, "initiative_id": initiative_id, "summary": summary}),
-        )
-        .await?;
+            for e in &events {
+                if e.payload.get("agent_id").and_then(|v| v.as_str()) != Some(agent_id.as_str()) {
+                    continue;
+                }
+                match e.event_type {
+                    EventType::AgentHeartbeat => {
+                        if last_heartbeat.is_none_or(|ts| e.timestamp > ts) {
+                            last_heartbeat = Some(e.timestamp);
+                            current_task_id =
+                                e.payload.get("task_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        }
+                    }
+                    EventType::AgentMarkedSlow if last_marker.as_ref().is_none_or(|(ts, _)| e.timestamp > *ts) => {
+                        last_marker = Some((e.timestamp, Level::Slow));
+                    }
+                    EventType::AgentMarkedStalled if last_marker.as_ref().is_none_or(|(ts, _)| e.timestamp > *ts) => {
+                        last_marker = Some((e.timestamp, Level::Stalled));
+                    }
+                    _ => {}
+                }
+            }
 
-        let mut epics = Vec::with_capacity(plan.epics.len());
-        let mut tasks = Vec::with_capacity(plan.epics.len());
-        for epic_draft in plan.epics {
-            let epic_id = Uuid::new_v4().to_string();
-            self.emit_project(
-                &project_id,
-                EventType::EpicCreated,
-                &pm_id,
-                json!({"id": epic_id, "initiative_id": initiative_id, "title": epic_draft.title}),
-            )
-            .await?;
-            epics.push(self.state.epics.get(&epic_id).expect("just inserted").clone());
+            let effective_last_level = match (last_marker, last_heartbeat) {
+                (Some((marker_ts, _)), Some(hb_ts)) if hb_ts > marker_ts => Level::Healthy,
+                (Some((_, level)), _) => level,
+                (None, _) => Level::Healthy,
+            };
 
-            let task_id = Uuid::new_v4().to_string();
-            self.emit_project(
-                &project_id,
-                EventType::TaskCreated,
-                &pm_id,
-                json!({
-                    "id": task_id,
-                    "goal_id": None::<String>,
-                    "epic_id": epic_id,
-                    "parent_task_id": None::<String>,
-                    "title": format!("Implement: {}", epic_draft.title),
-                    "description": "",
-                }),
-            )
-            .await?;
-            tasks.push(self.state.tasks.get(&task_id).expect("just inserted").clone());
+            let current_level = match last_heartbeat {
+                None => Level::Stalled,
+                Some(ts) => level_for_age((now - ts).num_seconds()),
+            };
+
+            if current_level != effective_last_level && current_level != Level::Healthy {
+                let event_type = match current_level {
+                    Level::Slow => EventType::AgentMarkedSlow,
+                    Level::Stalled => EventType::AgentMarkedStalled,
+                    Level::Healthy => unreachable!("filtered out above"),
+                };
+                self.emit_project(
+                    &project_id,
+                    event_type,
+                    &agent_id,
+                    json!({"agent_id": agent_id, "task_id": current_task_id}),
+                )
+                .await?;
+            }
         }
 
-        let mut decisions = Vec::with_capacity(plan.decisions.len());
-        for decision_draft in plan.decisions {
-            let decision_id = Uuid::new_v4().to_string();
-            self.emit_project(
-                &project_id,
-                EventType::DecisionCreated,
-                &pm_id,
-                json!({
-                    "id": decision_id,
-                    "initiative_id": initiative_id,
-                    "title": decision_draft.title,
-                    "context": decision_draft.context,
-                }),
-            )
-            .await?;
-            decisions.push(self.state.decisions.get(&decision_id).expect("just inserted").clone());
-
-            let inbox_id = Uuid::new_v4().to_string();
-            self.emit_project(
-                &project_id,
-                EventType::DecisionEscalated,
-                &pm_id,
-                json!({"decision_id": decision_id, "inbox_id": inbox_id, "prompt": decision_draft.context}),
-            )
-            .await?;
-        }
-
-        self.emit_project(&project_id, EventType::InitiativePlanned, &pm_id, json!({"id": initiative_id}))
-            .await?;
-        self.emit_project(&project_id, EventType::PMPlanningCompleted, &pm_id, json!({"initiative_id": initiative_id}))
-            .await?;
-
-        Ok(PlanOutcome {
-            plan: self.state.plans.get(&plan_id).expect("just inserted").clone(),
-            epics,
-            tasks,
-            decisions,
-        })
+        Ok(())
     }
 
     pub async fn resolve_decision(&mut self, decision_id: &str, response: &str) -> Result<Decision, CoreError> {
@@ -1495,35 +1760,6 @@ impl Runtime {
         self.answer_inbox(&inbox_id, response).await?;
 
         Ok(self.state.decisions.get(decision_id).expect("just updated").clone())
-    }
-
-    async fn maybe_complete_initiative(&mut self, project_id: &str, initiative_id: &str) -> Result<(), CoreError> {
-        let pm_id = self.pm_instance_id(project_id).unwrap_or_else(|| "system".to_string());
-
-        self.emit_project(project_id, EventType::PMReviewStarted, &pm_id, json!({"initiative_id": initiative_id}))
-            .await?;
-
-        let already_completed = self
-            .state
-            .initiatives
-            .get(initiative_id)
-            .map(|i| i.status == InitiativeStatus::Completed)
-            .unwrap_or(true);
-
-        if !already_completed && self.state.initiative_is_complete(initiative_id) {
-            self.emit_project(
-                project_id,
-                EventType::InitiativeCompleted,
-                &pm_id,
-                json!({"id": initiative_id}),
-            )
-            .await?;
-        }
-
-        self.emit_project(project_id, EventType::PMReviewCompleted, &pm_id, json!({"initiative_id": initiative_id}))
-            .await?;
-
-        Ok(())
     }
 }
 
@@ -1582,7 +1818,7 @@ mod tests {
             "unused-stub"
         }
 
-        fn execute(&self, _request: &ExecutionRequest) -> Result<ExecutionResult, AgentsError> {
+        fn execute(&self, _request: &ExecutionRequest, _on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError> {
             panic!("this test drives finish_task directly and should never invoke the model runtime");
         }
     }
@@ -1603,19 +1839,22 @@ mod tests {
         let store = InMemoryStore::default();
         let dir = tempfile::tempdir().unwrap();
 
-        let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(UnusedModelRuntime))
+        let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(UnusedModelRuntime))
             .await
             .unwrap();
 
         init_repo(&dir.path().join("repo"));
         let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
-        let goal = runtime.create_goal(&project.id, "Docs", "- Write the changelog").await.unwrap();
-        runtime.plan_goal(&goal.id).await.unwrap();
+        let root = runtime
+            .create_task(&project.id, None, "Docs", "- Write the changelog", "", None, false)
+            .await
+            .unwrap();
+        runtime.plan_task(&root.id).await.unwrap();
 
-        let assigned = runtime.assign_ready_tasks(&project.id).await.unwrap();
+        let assigned = runtime.run_lead_delegation(&project.id).await.unwrap();
         assert_eq!(assigned, 1);
 
-        let task_id = runtime.state.tasks.values().next().unwrap().id.clone();
+        let task_id = runtime.state.tasks.values().find(|t| t.id != root.id).unwrap().id.clone();
         let prepared = match runtime.start_task(&project.id, &task_id).await.unwrap() {
             StartOutcome::Ready(prepared) => *prepared,
             StartOutcome::Resolved(_) => panic!("expected a plain completion path, not an early resolution"),
@@ -1642,18 +1881,18 @@ mod tests {
         assert_eq!(delta.completed, 0);
         assert_eq!(runtime.state.tasks[&task_id].status, TaskStatus::Cancelled);
         // `start_task` already recorded the run as `Running` (via
-        // `ModelRunStarted`) before the cancellation happened; the guard's
+        // `RunStarted`) before the cancellation happened; the guard's
         // job is just to never let it reach `Completed`.
         assert!(runtime
             .state
-            .model_runs
+            .runs
             .values()
-            .filter(|r| r.task_id.as_deref() == Some(task_id.as_str()))
-            .all(|r| r.status == ModelRunStatus::Running));
+            .filter(|r| r.task_id == task_id)
+            .all(|r| r.status == RunStatus::Running));
         assert!(!ws_path.exists(), "the orphaned workspace from the cancelled run must still be torn down");
 
         let events = runtime.list_events().await.unwrap();
         assert!(!events.iter().any(|e| e.event_type == EventType::TaskCompleted));
-        assert!(!events.iter().any(|e| e.event_type == EventType::ModelRunCompleted));
+        assert!(!events.iter().any(|e| e.event_type == EventType::RunCompleted));
     }
 }

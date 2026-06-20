@@ -50,12 +50,13 @@ impl TmuxSession {
     /// Requiring the sentinel to appear *alone* on its own output line avoids
     /// that false positive, since only the executed `echo` prints just the
     /// sentinel with nothing else on the line.
-    pub fn run_and_wait(&self, command: &str, timeout: Duration) -> Result<String, WorkspacesError> {
+    pub fn run_and_wait(&self, command: &str, timeout: Duration, on_tick: &dyn Fn()) -> Result<String, WorkspacesError> {
         let sentinel = format!("__beethoven_done_{}__", uuid::Uuid::new_v4());
         self.send_keys(&format!("{command}; echo {sentinel}"))?;
 
         let start = Instant::now();
         loop {
+            on_tick();
             let pane = self.capture_pane()?;
             if pane.lines().any(|line| line.trim() == sentinel) {
                 return Ok(pane);
@@ -99,7 +100,7 @@ mod tests {
         let session = TmuxSession::create(&name, dir.path()).unwrap();
         assert!(TmuxSession::list_active().unwrap().contains(&name));
 
-        let output = session.run_and_wait("echo hello-from-tmux", Duration::from_secs(5)).unwrap();
+        let output = session.run_and_wait("echo hello-from-tmux", Duration::from_secs(5), &|| {}).unwrap();
         assert!(output.contains("hello-from-tmux"));
 
         session.kill().unwrap();

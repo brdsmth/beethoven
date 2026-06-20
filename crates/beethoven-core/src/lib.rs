@@ -6,7 +6,7 @@ mod state;
 
 pub use error::CoreError;
 pub use models::*;
-pub use runtime::{PlanOutcome, Runtime, TickReport};
+pub use runtime::{Runtime, TaskPlanOutcome, TickReport};
 pub use state::RuntimeState;
 
-pub use beethoven_agents::AgentKind;
+pub use beethoven_agents::AgentRole;

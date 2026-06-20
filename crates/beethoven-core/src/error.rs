@@ -13,16 +13,12 @@ pub enum CoreError {
     Io(#[from] std::io::Error),
     #[error("project not found: {0}")]
     ProjectNotFound(String),
-    #[error("goal not found: {0}")]
-    GoalNotFound(String),
     #[error("task not found: {0}")]
     TaskNotFound(String),
     #[error("inbox item not found: {0}")]
     InboxItemNotFound(String),
     #[error("inbox item already resolved: {0}")]
     InboxItemAlreadyResolved(String),
-    #[error("initiative not found: {0}")]
-    InitiativeNotFound(String),
     #[error("decision not found or already resolved: {0}")]
     DecisionNotFound(String),
     #[error("agent not found: {0}")]

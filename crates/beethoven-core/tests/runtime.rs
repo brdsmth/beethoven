@@ -3,10 +3,10 @@ use beethoven_agents::{
     AgentsError, ExecutionRequest, ExecutionResult, ExecutionStatus, ModelRuntime, RuntimeProfile, RuntimeRegistry,
 };
 use beethoven_core::{
-    AgentKind, AgentStatus, ArtifactKind, DecisionStatus, GoalStatus, InboxKind, InboxStatus, InitiativeStatus,
-    ModelRunStatus, ProjectStatus, ReviewStatus, Runtime, TaskStatus,
+    AgentRole, AgentStatus, ArtifactKind, DecisionStatus, InboxKind, InboxStatus, ProjectStatus, ReviewStatus,
+    Runtime, RunStatus, TaskStatus,
 };
-use beethoven_events::{Event, EventStore, EventStoreError, EventType};
+use beethoven_events::{Event, EventScope, EventStore, EventStoreError, EventType};
 use beethoven_workspaces::{TmuxSession, WorkspaceManager, WorkspaceRequest};
 use std::path::Path;
 use std::process::Command;
@@ -57,10 +57,10 @@ impl ModelRuntime for StubModelRuntime {
         "stub"
     }
 
-    fn execute(&self, request: &ExecutionRequest) -> Result<ExecutionResult, AgentsError> {
+    fn execute(&self, request: &ExecutionRequest, on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError> {
         let session = TmuxSession { name: request.workspace.tmux_session.clone() };
         let command = format!("cat '{}' >> NOTES.md", request.prompt_path.display());
-        let output = session.run_and_wait(&command, Duration::from_secs(10))?;
+        let output = session.run_and_wait(&command, Duration::from_secs(10), on_tick)?;
         Ok(ExecutionResult {
             status: ExecutionStatus::Completed,
             summary: "stub: appended the generated prompt to NOTES.md via tmux".to_string(),
@@ -83,12 +83,12 @@ impl ModelRuntime for SlowModelRuntime {
         "slow-stub"
     }
 
-    fn execute(&self, request: &ExecutionRequest) -> Result<ExecutionResult, AgentsError> {
+    fn execute(&self, request: &ExecutionRequest, on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError> {
         let start = Instant::now();
         std::thread::sleep(Duration::from_millis(300));
         let session = TmuxSession { name: request.workspace.tmux_session.clone() };
         let command = format!("cat '{}' >> NOTES.md", request.prompt_path.display());
-        let output = session.run_and_wait(&command, Duration::from_secs(10))?;
+        let output = session.run_and_wait(&command, Duration::from_secs(10), on_tick)?;
         self.windows.lock().unwrap().push((start, Instant::now()));
         Ok(ExecutionResult {
             status: ExecutionStatus::Completed,
@@ -114,7 +114,7 @@ impl ModelRuntime for GitClobberingModelRuntime {
         "git-clobbering-stub"
     }
 
-    fn execute(&self, request: &ExecutionRequest) -> Result<ExecutionResult, AgentsError> {
+    fn execute(&self, request: &ExecutionRequest, _on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError> {
         let worktree = Path::new(&request.workspace.git_worktree);
         std::fs::write(worktree.join("NOTES.md"), "real work the model actually did\n").unwrap();
         std::fs::remove_file(worktree.join(".git")).unwrap();
@@ -143,7 +143,7 @@ impl ModelRuntime for NoOpModelRuntime {
         "noop-stub"
     }
 
-    fn execute(&self, _request: &ExecutionRequest) -> Result<ExecutionResult, AgentsError> {
+    fn execute(&self, _request: &ExecutionRequest, _on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError> {
         Ok(ExecutionResult {
             status: ExecutionStatus::Completed,
             summary: "noop stub: made no changes".to_string(),
@@ -165,13 +165,28 @@ fn registry_with(runtime: impl ModelRuntime + Send + Sync + 'static) -> RuntimeR
     registry
 }
 
+/// `create_project` now seeds only the project's Lead, so tests that need a
+/// Worker to exercise (pause/resume/reassign/recover on a non-Lead agent)
+/// must spawn one explicitly.
+async fn spawn_worker(runtime: &mut Runtime, project_id: &str, name: &str) -> beethoven_core::AgentInstance {
+    let lead_id = runtime
+        .state
+        .agent_instances
+        .values()
+        .find(|a| a.project_id == project_id && a.role == AgentRole::Lead)
+        .unwrap()
+        .id
+        .clone();
+    runtime.spawn_agent(project_id, &lead_id, AgentRole::Worker, "Backend work", name).await.unwrap()
+}
+
 #[tokio::test]
-async fn goal_plan_run_and_answer_flow_survives_a_simulated_restart() {
+async fn task_plan_run_and_answer_flow_survives_a_simulated_restart() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
     let projects_root = dir.path().join("projects");
 
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store.clone()), projects_root.clone(), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -182,29 +197,39 @@ async fn goal_plan_run_and_answer_flow_survives_a_simulated_restart() {
         .unwrap();
     assert_eq!(project.slug, "sample");
 
-    let goal = runtime
-        .create_goal(
+    let root = runtime
+        .create_task(
             &project.id,
+            None,
             "Build login page",
             "- Implement the login form\n- What auth provider should we use?\n- Write the landing page copy",
+            "",
+            None,
+            false,
         )
         .await
         .unwrap();
 
-    let tasks = runtime.plan_goal(&goal.id).await.unwrap();
-    assert_eq!(tasks.len(), 3);
+    let outcome = runtime.plan_task(&root.id).await.unwrap();
+    assert_eq!(outcome.tasks.len(), 2);
+    assert_eq!(outcome.decisions.len(), 1);
 
     let report = runtime.run_tick(&project.id).await.unwrap();
     // "Implement..." spawns and finishes a subtask, "Write the landing page copy"
-    // completes directly, and "What auth provider..." escalates a question.
-    assert_eq!(report.completed, 3);
-    assert_eq!(report.escalated, 1);
+    // completes directly; the question is a Decision escalated at plan time,
+    // not an execution-time escalation, so it never touches `escalated`.
+    assert_eq!(report.completed, 2);
+    assert_eq!(report.escalated, 0);
     assert_eq!(report.subtasks_spawned, 1);
+
+    // The root has all its children done, but its decision is still open, so
+    // it cannot complete yet.
+    assert_eq!(runtime.state.tasks[&root.id].status, TaskStatus::Ready);
 
     // Simulate a process restart: drop this runtime and build a fresh one from
     // the same persisted event log. State must reconstruct identically.
     drop(runtime);
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root, registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store.clone()), projects_root, registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -220,22 +245,20 @@ async fn goal_plan_run_and_answer_flow_survives_a_simulated_restart() {
     let answered = runtime.answer_inbox(&inbox_id, "Use OAuth via Google + GitHub").await.unwrap();
     assert_eq!(answered.status, InboxStatus::Resolved);
 
+    // Resolving the decision immediately completes the root via the
+    // parent-completion cascade -- there is nothing left for run_tick to do.
     let report = runtime.run_tick(&project.id).await.unwrap();
-    assert_eq!(report.completed, 1);
+    assert_eq!(report.completed, 0);
     assert_eq!(report.escalated, 0);
     assert_eq!(report.subtasks_spawned, 0);
 
-    assert_eq!(runtime.state.goals[&goal.id].status, GoalStatus::Completed);
-    assert!(runtime
-        .state
-        .tasks
-        .values()
-        .all(|t| t.status == beethoven_core::TaskStatus::Done));
+    assert_eq!(runtime.state.tasks[&root.id].status, TaskStatus::Done);
+    assert!(runtime.state.tasks.values().all(|t| t.status == TaskStatus::Done));
 
     // Recovery: the full event log replays into the exact same terminal state again.
     let events = runtime.list_events().await.unwrap();
     let replayed = beethoven_core::RuntimeState::replay(&events);
-    assert_eq!(replayed.goals[&goal.id].status, GoalStatus::Completed);
+    assert_eq!(replayed.tasks[&root.id].status, TaskStatus::Done);
     assert_eq!(replayed.tasks.len(), runtime.state.tasks.len());
 }
 
@@ -244,17 +267,14 @@ async fn answering_an_already_resolved_inbox_item_errors() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Solo", dir.path().join("repo"), "main").await.unwrap();
-    let goal = runtime
-        .create_goal(&project.id, "Goal", "- What should we do?")
-        .await
-        .unwrap();
-    runtime.plan_goal(&goal.id).await.unwrap();
+    let root = runtime.create_task(&project.id, None, "Goal", "- What should we do?", "", None, false).await.unwrap();
+    runtime.plan_task(&root.id).await.unwrap();
     runtime.run_tick(&project.id).await.unwrap();
 
     let inbox_id = runtime.state.inbox.keys().next().unwrap().clone();
@@ -269,7 +289,7 @@ async fn two_projects_run_independently_with_no_shared_agents_or_mixed_tasks() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -284,8 +304,8 @@ async fn two_projects_run_independently_with_no_shared_agents_or_mixed_tasks() {
         .await
         .unwrap();
 
-    // Each project bootstraps its own 6 agent instances from the shared templates.
-    assert_eq!(runtime.state.agent_templates.len(), 6);
+    // Each project bootstraps just its own Lead agent from the shared templates.
+    assert_eq!(runtime.state.agent_templates.len(), 3);
     let sample_instances: Vec<_> = runtime
         .state
         .agent_instances
@@ -298,21 +318,19 @@ async fn two_projects_run_independently_with_no_shared_agents_or_mixed_tasks() {
         .values()
         .filter(|a| a.project_id == sailboat.id)
         .collect();
-    assert_eq!(sample_instances.len(), 6);
-    assert_eq!(sailboat_instances.len(), 6);
-    assert_eq!(runtime.state.agent_instances.len(), 12);
+    assert_eq!(sample_instances.len(), 1);
+    assert_eq!(sailboat_instances.len(), 1);
+    assert_eq!(runtime.state.agent_instances.len(), 2);
 
-    let sample_goal = runtime
-        .create_goal(&sample.id, "Sample goal", "- Sample task")
-        .await
-        .unwrap();
-    let sailboat_goal = runtime
-        .create_goal(&sailboat.id, "Sailboat goal", "- Sailboat task")
+    let sample_root =
+        runtime.create_task(&sample.id, None, "Sample goal", "- Sample task", "", None, false).await.unwrap();
+    let sailboat_root = runtime
+        .create_task(&sailboat.id, None, "Sailboat goal", "- Sailboat task", "", None, false)
         .await
         .unwrap();
 
-    runtime.plan_goal(&sample_goal.id).await.unwrap();
-    runtime.plan_goal(&sailboat_goal.id).await.unwrap();
+    runtime.plan_task(&sample_root.id).await.unwrap();
+    runtime.plan_task(&sailboat_root.id).await.unwrap();
 
     // Running only Sample's tick must not touch Sailboat's task at all.
     let sample_report = runtime.run_tick(&sample.id).await.unwrap();
@@ -322,7 +340,7 @@ async fn two_projects_run_independently_with_no_shared_agents_or_mixed_tasks() {
         .state
         .tasks
         .values()
-        .find(|t| t.project_id == sailboat.id)
+        .find(|t| t.project_id == sailboat.id && t.parent_task_id.is_some())
         .unwrap();
     assert_eq!(sailboat_task.status, TaskStatus::Ready);
     assert_eq!(sailboat_task.assigned_agent_id, None);
@@ -333,8 +351,8 @@ async fn two_projects_run_independently_with_no_shared_agents_or_mixed_tasks() {
 
     let sample_tasks: Vec<_> = runtime.state.tasks.values().filter(|t| t.project_id == sample.id).collect();
     let sailboat_tasks: Vec<_> = runtime.state.tasks.values().filter(|t| t.project_id == sailboat.id).collect();
-    assert_eq!(sample_tasks.len(), 1);
-    assert_eq!(sailboat_tasks.len(), 1);
+    assert_eq!(sample_tasks.len(), 2);
+    assert_eq!(sailboat_tasks.len(), 2);
     assert!(sample_tasks.iter().all(|t| t.status == TaskStatus::Done));
     assert!(sailboat_tasks.iter().all(|t| t.status == TaskStatus::Done));
 }
@@ -344,24 +362,21 @@ async fn a_completed_task_records_a_real_execution_run_diff_artifact_and_approve
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
-    let goal = runtime
-        .create_goal(&project.id, "Docs", "- Write the changelog")
-        .await
-        .unwrap();
-    runtime.plan_goal(&goal.id).await.unwrap();
+    let root = runtime.create_task(&project.id, None, "Docs", "- Write the changelog", "", None, false).await.unwrap();
+    runtime.plan_task(&root.id).await.unwrap();
 
     let report = runtime.run_tick(&project.id).await.unwrap();
     assert_eq!(report.completed, 1);
     assert_eq!(report.needs_changes, 0);
     assert_eq!(report.escalated, 0);
 
-    let task = runtime.state.tasks.values().next().unwrap().clone();
+    let task = runtime.state.tasks.values().find(|t| t.parent_task_id.is_some()).unwrap().clone();
     assert_eq!(task.status, TaskStatus::Done);
     assert_eq!(task.branch.as_deref(), Some("task/write-the-changelog"));
     assert!(task.pr_url.is_some());
@@ -369,15 +384,15 @@ async fn a_completed_task_records_a_real_execution_run_diff_artifact_and_approve
     // The real tmux/model stub appended the rendered prompt to NOTES.md inside
     // the worktree, so the captured diff (and the run summary) reflect genuine
     // on-disk work rather than a deterministic stand-in.
-    let run = runtime.state.model_runs.values().find(|r| r.task_id.as_deref() == Some(task.id.as_str())).unwrap();
-    assert_eq!(run.status, ModelRunStatus::Completed);
+    let run = runtime.state.runs.values().find(|r| r.task_id == task.id).unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
     assert!(run.summary.as_deref().unwrap().contains("stub"));
 
     let diff_artifact = runtime
         .state
         .artifacts
         .values()
-        .find(|a| a.task_id == task.id && a.kind == ArtifactKind::Diff)
+        .find(|a| a.run_id == run.id && a.kind == ArtifactKind::Diff)
         .unwrap();
     assert!(diff_artifact.content.contains("Write the changelog"));
 
@@ -390,35 +405,34 @@ async fn a_model_run_that_reinitializes_git_inside_its_worktree_still_yields_a_r
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(GitClobberingModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(GitClobberingModelRuntime))
         .await
         .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
-    let goal = runtime
-        .create_goal(&project.id, "Docs", "- Write the landing page copy")
-        .await
-        .unwrap();
-    runtime.plan_goal(&goal.id).await.unwrap();
+    let root =
+        runtime.create_task(&project.id, None, "Docs", "- Write the landing page copy", "", None, false).await.unwrap();
+    runtime.plan_task(&root.id).await.unwrap();
 
     let report = runtime.run_tick(&project.id).await.unwrap();
     assert_eq!(report.completed, 1);
     assert_eq!(report.needs_changes, 0);
     assert_eq!(report.escalated, 0);
 
-    let task = runtime.state.tasks.values().next().unwrap().clone();
+    let task = runtime.state.tasks.values().find(|t| t.parent_task_id.is_some()).unwrap().clone();
     assert_eq!(task.status, TaskStatus::Done);
 
     // Without restoring the worktree's `.git` link before computing the
     // diff, this would have come back empty -- the model's own `git init`
     // replaced it with a disjoint repo that already had everything
     // committed, hiding the real change from status/diff.
+    let run = runtime.state.runs.values().find(|r| r.task_id == task.id).unwrap();
     let diff_artifact = runtime
         .state
         .artifacts
         .values()
-        .find(|a| a.task_id == task.id && a.kind == ArtifactKind::Diff)
+        .find(|a| a.run_id == run.id && a.kind == ArtifactKind::Diff)
         .unwrap();
     assert!(diff_artifact.content.contains("NOTES.md"));
     assert!(diff_artifact.content.contains("real work the model actually did"));
@@ -432,23 +446,23 @@ async fn review_blocks_a_risky_task_and_escalates_through_the_existing_inbox_flo
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
-    let goal = runtime
-        .create_goal(&project.id, "Ops", "- Run a risky database migration")
+    let root = runtime
+        .create_task(&project.id, None, "Ops", "- Run a risky database migration", "", None, false)
         .await
         .unwrap();
-    runtime.plan_goal(&goal.id).await.unwrap();
+    runtime.plan_task(&root.id).await.unwrap();
 
     let report = runtime.run_tick(&project.id).await.unwrap();
     assert_eq!(report.completed, 0);
     assert_eq!(report.escalated, 1);
 
-    let task = runtime.state.tasks.values().next().unwrap().clone();
+    let task = runtime.state.tasks.values().find(|t| t.parent_task_id.is_some()).unwrap().clone();
     assert_eq!(task.status, TaskStatus::Blocked);
     assert_eq!(task.assigned_agent_id, None);
 
@@ -473,34 +487,36 @@ async fn review_blocks_a_risky_task_and_escalates_through_the_existing_inbox_flo
 }
 
 #[tokio::test]
-async fn initiative_completes_only_once_its_epic_task_is_done_and_its_decision_is_resolved() {
+async fn a_root_task_completes_only_once_all_its_children_are_done_and_its_decisions_are_resolved() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
 
-    let initiative = runtime
-        .create_initiative(&project.id, "Build Gmail Agent", "Routes inbound email to the right team")
+    let root = runtime
+        .create_task(
+            &project.id,
+            None,
+            "Build Gmail Agent",
+            "- Support PDF attachments\n- What auth provider should we use?",
+            "",
+            None,
+            false,
+        )
         .await
         .unwrap();
-    assert_eq!(initiative.status, InitiativeStatus::Discovery);
+    assert_eq!(root.status, TaskStatus::Ready);
 
-    runtime.create_requirement(&initiative.id, "Support PDF attachments").await.unwrap();
-    runtime
-        .create_requirement(&initiative.id, "What auth provider should we use?")
-        .await
-        .unwrap();
-
-    let outcome = runtime.plan_initiative(&initiative.id).await.unwrap();
-    assert_eq!(outcome.epics.len(), 1);
+    let outcome = runtime.plan_task(&root.id).await.unwrap();
     assert_eq!(outcome.tasks.len(), 1);
+    assert_eq!(outcome.tasks[0].title, "Support PDF attachments");
     assert_eq!(outcome.decisions.len(), 1);
-    assert_eq!(runtime.state.initiatives[&initiative.id].status, InitiativeStatus::Planned);
+    assert_eq!(outcome.decisions[0].task_id, Some(root.id.clone()));
 
     let open_decision_inbox: Vec<_> = runtime
         .state
@@ -511,14 +527,16 @@ async fn initiative_completes_only_once_its_epic_task_is_done_and_its_decision_i
     assert_eq!(open_decision_inbox.len(), 1);
     assert_eq!(open_decision_inbox[0].decision_id, Some(outcome.decisions[0].id.clone()));
 
-    // "Implement: ..." spawns and finishes a subtask before the epic's task itself completes.
+    // "Support PDF attachments" is a plain title (no "implement"/"?"), so it
+    // completes directly in one tick.
     let report = runtime.run_tick(&project.id).await.unwrap();
-    assert_eq!(report.completed, 2);
-    assert_eq!(report.subtasks_spawned, 1);
+    assert_eq!(report.completed, 1);
+    assert_eq!(report.subtasks_spawned, 0);
     assert_eq!(report.escalated, 0);
 
-    // The epic's task is done, but the decision is still open, so the initiative cannot complete yet.
-    assert_eq!(runtime.state.initiatives[&initiative.id].status, InitiativeStatus::Planned);
+    // The only child is done, but the decision is still open, so the root
+    // cannot complete yet.
+    assert_eq!(runtime.state.tasks[&root.id].status, TaskStatus::Ready);
 
     let decision = runtime
         .resolve_decision(&outcome.decisions[0].id, "Use OAuth via Google + GitHub")
@@ -526,31 +544,27 @@ async fn initiative_completes_only_once_its_epic_task_is_done_and_its_decision_i
         .unwrap();
     assert_eq!(decision.status, DecisionStatus::Resolved);
 
-    assert_eq!(runtime.state.initiatives[&initiative.id].status, InitiativeStatus::Completed);
+    assert_eq!(runtime.state.tasks[&root.id].status, TaskStatus::Done);
 }
 
 #[tokio::test]
-async fn an_initiative_with_no_requirements_plans_a_single_fallback_epic() {
+async fn a_task_with_no_bullet_list_description_plans_a_single_fallback_child() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
-    let initiative = runtime
-        .create_initiative(&project.id, "Build Gmail Agent", "")
-        .await
-        .unwrap();
+    let root = runtime.create_task(&project.id, None, "Build Gmail Agent", "", "", None, false).await.unwrap();
 
-    let outcome = runtime.plan_initiative(&initiative.id).await.unwrap();
-    assert_eq!(outcome.epics.len(), 1);
-    assert_eq!(outcome.epics[0].title, "Build Gmail Agent");
-    assert_eq!(outcome.decisions.len(), 0);
+    let outcome = runtime.plan_task(&root.id).await.unwrap();
     assert_eq!(outcome.tasks.len(), 1);
-    assert_eq!(outcome.tasks[0].epic_id, Some(outcome.epics[0].id.clone()));
+    assert_eq!(outcome.tasks[0].title, "Implement: Build Gmail Agent");
+    assert_eq!(outcome.decisions.len(), 0);
+    assert_eq!(outcome.tasks[0].parent_task_id, Some(root.id.clone()));
 }
 
 /// Simulates a crash in the exact window `run_tick` leaves open: `TaskStarted`
@@ -568,23 +582,17 @@ async fn recover_resets_a_task_crashed_mid_execution_and_cleans_up_its_workspace
     let repo = dir.path().join("repo");
     init_repo(&repo);
 
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store.clone()), projects_root.clone(), registry_with(StubModelRuntime))
         .await
         .unwrap();
     let project = runtime.create_project("Sample", repo.clone(), "main").await.unwrap();
     // A plain title (no "implement"/"?") so re-running it post-recovery
     // completes directly instead of spawning a subtask or raising a question.
-    let goal = runtime.create_goal(&project.id, "Docs", "- Write the changelog").await.unwrap();
-    let tasks = runtime.plan_goal(&goal.id).await.unwrap();
-    let task = tasks[0].clone();
+    let root = runtime.create_task(&project.id, None, "Docs", "- Write the changelog", "", None, false).await.unwrap();
+    let outcome = runtime.plan_task(&root.id).await.unwrap();
+    let task = outcome.tasks[0].clone();
 
-    let agent = runtime
-        .state
-        .agent_instances
-        .values()
-        .find(|a| a.project_id == project.id && a.kind != AgentKind::ProjectManager)
-        .unwrap()
-        .clone();
+    let agent = spawn_worker(&mut runtime, &project.id, "Worker").await;
 
     // Hand-roll exactly the event sequence `run_tick` would have produced up
     // to (and including) standing up a real workspace, then stop -- as if the
@@ -613,7 +621,7 @@ async fn recover_resets_a_task_crashed_mid_execution_and_cleans_up_its_workspace
     let ws_state = workspaces
         .create(&WorkspaceRequest {
             project_slug: &project.slug,
-            agent_label: agent.kind.as_str(),
+            agent_label: agent.role.as_str(),
             task_id: &task.id,
             repository_path: &repo.to_string_lossy(),
             default_branch: "main",
@@ -634,7 +642,7 @@ async fn recover_resets_a_task_crashed_mid_execution_and_cleans_up_its_workspace
     // Simulate a process restart: a fresh `Runtime::load` replays the log
     // above into a task stuck `InProgress` with its agent stuck `Executing`.
     drop(runtime);
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root, registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store.clone()), projects_root, registry_with(StubModelRuntime))
         .await
         .unwrap();
     assert_eq!(runtime.state.tasks[&task.id].status, TaskStatus::InProgress);
@@ -672,7 +680,7 @@ async fn two_tasks_in_the_same_tick_execute_concurrently_when_max_concurrent_all
     let dir = tempfile::tempdir().unwrap();
 
     let mut runtime = Runtime::load(
-        Box::new(store),
+        Arc::new(store),
         dir.path().join("projects"),
         registry_with(SlowModelRuntime { windows: windows.clone() }),
     )
@@ -681,11 +689,11 @@ async fn two_tasks_in_the_same_tick_execute_concurrently_when_max_concurrent_all
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
-    let goal = runtime
-        .create_goal(&project.id, "Docs", "- Write the changelog\n- Write the readme")
+    let root = runtime
+        .create_task(&project.id, None, "Docs", "- Write the changelog\n- Write the readme", "", None, false)
         .await
         .unwrap();
-    runtime.plan_goal(&goal.id).await.unwrap();
+    runtime.plan_task(&root.id).await.unwrap();
 
     let mut reports = runtime.tick_projects(std::slice::from_ref(&project.id), 2, 3).await.unwrap();
     let report = reports.remove(&project.id).unwrap();
@@ -703,7 +711,7 @@ async fn a_workspace_creation_failure_escalates_just_that_project_not_the_whole_
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
@@ -713,20 +721,23 @@ async fn a_workspace_creation_failure_escalates_just_that_project_not_the_whole_
         .create_project("Broken", dir.path().join("does-not-exist"), "main")
         .await
         .unwrap();
-    let broken_goal = runtime.create_goal(&broken.id, "Docs", "- Write the changelog").await.unwrap();
-    runtime.plan_goal(&broken_goal.id).await.unwrap();
+    let broken_root =
+        runtime.create_task(&broken.id, None, "Docs", "- Write the changelog", "", None, false).await.unwrap();
+    runtime.plan_task(&broken_root.id).await.unwrap();
 
     init_repo(&dir.path().join("good-repo"));
     let healthy = runtime.create_project("Healthy", dir.path().join("good-repo"), "main").await.unwrap();
-    let healthy_goal = runtime.create_goal(&healthy.id, "Docs", "- Write the changelog").await.unwrap();
-    runtime.plan_goal(&healthy_goal.id).await.unwrap();
+    let healthy_root =
+        runtime.create_task(&healthy.id, None, "Docs", "- Write the changelog", "", None, false).await.unwrap();
+    runtime.plan_task(&healthy_root.id).await.unwrap();
 
     let mut reports = runtime.tick_projects(&[broken.id.clone(), healthy.id.clone()], 4, 3).await.unwrap();
 
     let broken_report = reports.remove(&broken.id).unwrap();
     assert_eq!(broken_report.escalated, 1);
     assert_eq!(broken_report.completed, 0);
-    let broken_task = runtime.state.tasks.values().find(|t| t.project_id == broken.id).unwrap();
+    let broken_task =
+        runtime.state.tasks.values().find(|t| t.project_id == broken.id && t.parent_task_id.is_some()).unwrap();
     assert_eq!(broken_task.status, TaskStatus::Blocked);
     let inbox_item = runtime.state.inbox.values().find(|i| i.project_id == broken.id).unwrap();
     assert_eq!(inbox_item.kind, InboxKind::Question);
@@ -742,7 +753,7 @@ async fn a_task_stuck_needing_changes_escalates_instead_of_retrying_forever() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(NoOpModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(NoOpModelRuntime))
         .await
         .unwrap();
 
@@ -752,8 +763,8 @@ async fn a_task_stuck_needing_changes_escalates_instead_of_retrying_forever() {
     // empty and ReviewService::review always returns NeedsChanges -- this
     // would retry forever within tick_projects' own drain loop without the
     // attempt cap.
-    let goal = runtime.create_goal(&project.id, "Docs", "- Write the changelog").await.unwrap();
-    runtime.plan_goal(&goal.id).await.unwrap();
+    let root = runtime.create_task(&project.id, None, "Docs", "- Write the changelog", "", None, false).await.unwrap();
+    runtime.plan_task(&root.id).await.unwrap();
 
     let mut reports = runtime.tick_projects(std::slice::from_ref(&project.id), 4, 2).await.unwrap();
     let report = reports.remove(&project.id).unwrap();
@@ -764,7 +775,7 @@ async fn a_task_stuck_needing_changes_escalates_instead_of_retrying_forever() {
     assert_eq!(report.escalated, 1);
     assert_eq!(report.completed, 0);
 
-    let task = runtime.state.tasks.values().next().unwrap();
+    let task = runtime.state.tasks.values().find(|t| t.parent_task_id.is_some()).unwrap();
     assert_eq!(task.status, TaskStatus::Blocked);
     assert_eq!(task.attempt, 2);
     let inbox_item = runtime.state.inbox.values().find(|i| i.task_id.as_deref() == Some(task.id.as_str())).unwrap();
@@ -779,21 +790,15 @@ async fn recover_escalates_instead_of_recovering_a_task_that_already_hit_max_att
     let repo = dir.path().join("repo");
     init_repo(&repo);
 
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store.clone()), projects_root.clone(), registry_with(StubModelRuntime))
         .await
         .unwrap();
     let project = runtime.create_project("Sample", repo.clone(), "main").await.unwrap();
-    let goal = runtime.create_goal(&project.id, "Docs", "- Write the changelog").await.unwrap();
-    let tasks = runtime.plan_goal(&goal.id).await.unwrap();
-    let task = tasks[0].clone();
+    let root = runtime.create_task(&project.id, None, "Docs", "- Write the changelog", "", None, false).await.unwrap();
+    let outcome = runtime.plan_task(&root.id).await.unwrap();
+    let task = outcome.tasks[0].clone();
 
-    let agent = runtime
-        .state
-        .agent_instances
-        .values()
-        .find(|a| a.project_id == project.id && a.kind != AgentKind::ProjectManager)
-        .unwrap()
-        .clone();
+    let agent = spawn_worker(&mut runtime, &project.id, "Worker").await;
 
     // Simulate a task already on its second attempt (e.g. one prior crash
     // already recovered it once) that crashes again mid-execution.
@@ -826,7 +831,7 @@ async fn recover_escalates_instead_of_recovering_a_task_that_already_hit_max_att
         .unwrap();
 
     drop(runtime);
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root, registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store.clone()), projects_root, registry_with(StubModelRuntime))
         .await
         .unwrap();
     assert_eq!(runtime.state.tasks[&task.id].attempt, 2);
@@ -846,14 +851,14 @@ async fn pause_project_prevents_new_assignment_until_resumed() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
-    let goal = runtime.create_goal(&project.id, "Docs", "- Write the changelog").await.unwrap();
-    runtime.plan_goal(&goal.id).await.unwrap();
+    let root = runtime.create_task(&project.id, None, "Docs", "- Write the changelog", "", None, false).await.unwrap();
+    runtime.plan_task(&root.id).await.unwrap();
 
     let paused = runtime.pause_project(&project.id).await.unwrap();
     assert_eq!(paused.status, ProjectStatus::Paused);
@@ -864,7 +869,7 @@ async fn pause_project_prevents_new_assignment_until_resumed() {
     let report = runtime.run_tick(&project.id).await.unwrap();
     assert_eq!(report.assigned, 0);
     assert_eq!(report.completed, 0);
-    assert_eq!(runtime.state.tasks.values().next().unwrap().status, TaskStatus::Ready);
+    assert!(runtime.state.tasks.values().all(|t| t.status == TaskStatus::Ready));
 
     let resumed = runtime.resume_project(&project.id).await.unwrap();
     assert_eq!(resumed.status, ProjectStatus::Active);
@@ -878,14 +883,14 @@ async fn archive_project_removes_it_from_active_execution_entirely() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
-    let goal = runtime.create_goal(&project.id, "Docs", "- Write the changelog").await.unwrap();
-    runtime.plan_goal(&goal.id).await.unwrap();
+    let root = runtime.create_task(&project.id, None, "Docs", "- Write the changelog", "", None, false).await.unwrap();
+    runtime.plan_task(&root.id).await.unwrap();
 
     let archived = runtime.archive_project(&project.id).await.unwrap();
     assert_eq!(archived.status, ProjectStatus::Archived);
@@ -893,7 +898,7 @@ async fn archive_project_removes_it_from_active_execution_entirely() {
     let report = runtime.run_tick(&project.id).await.unwrap();
     assert_eq!(report.assigned, 0);
     assert_eq!(report.completed, 0);
-    assert_eq!(runtime.state.tasks.values().next().unwrap().status, TaskStatus::Ready);
+    assert!(runtime.state.tasks.values().all(|t| t.status == TaskStatus::Ready));
 
     assert!(runtime.archive_project(&project.id).await.is_err());
 }
@@ -903,20 +908,20 @@ async fn retry_task_returns_a_blocked_task_to_ready_for_another_attempt() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
-    let goal = runtime
-        .create_goal(&project.id, "Ops", "- Run a risky database migration")
+    let root = runtime
+        .create_task(&project.id, None, "Ops", "- Run a risky database migration", "", None, false)
         .await
         .unwrap();
-    runtime.plan_goal(&goal.id).await.unwrap();
+    runtime.plan_task(&root.id).await.unwrap();
     runtime.run_tick(&project.id).await.unwrap();
 
-    let task = runtime.state.tasks.values().next().unwrap().clone();
+    let task = runtime.state.tasks.values().find(|t| t.parent_task_id.is_some()).unwrap().clone();
     assert_eq!(task.status, TaskStatus::Blocked);
 
     let retried = runtime.retry_task(&task.id).await.unwrap();
@@ -932,15 +937,15 @@ async fn cancel_task_stops_it_from_future_execution() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
-    let goal = runtime.create_goal(&project.id, "Docs", "- Write the changelog").await.unwrap();
-    let tasks = runtime.plan_goal(&goal.id).await.unwrap();
-    let task = tasks[0].clone();
+    let root = runtime.create_task(&project.id, None, "Docs", "- Write the changelog", "", None, false).await.unwrap();
+    let outcome = runtime.plan_task(&root.id).await.unwrap();
+    let task = outcome.tasks[0].clone();
 
     let cancelled = runtime.cancel_task(&task.id).await.unwrap();
     assert_eq!(cancelled.status, TaskStatus::Cancelled);
@@ -960,27 +965,21 @@ async fn reassign_task_moves_ownership_to_a_new_idle_agent_in_the_same_project()
     let dir = tempfile::tempdir().unwrap();
     let projects_root = dir.path().join("projects");
 
-    let mut runtime = Runtime::load(Box::new(store.clone()), projects_root.clone(), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store.clone()), projects_root.clone(), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
-    let goal = runtime
-        .create_goal(&project.id, "Ops", "- Run a risky database migration")
+    let root = runtime
+        .create_task(&project.id, None, "Ops", "- Run a risky database migration", "", None, false)
         .await
         .unwrap();
-    let tasks = runtime.plan_goal(&goal.id).await.unwrap();
-    let task = tasks[0].clone();
+    let outcome = runtime.plan_task(&root.id).await.unwrap();
+    let task = outcome.tasks[0].clone();
 
-    let mut candidates = runtime
-        .state
-        .agent_instances
-        .values()
-        .filter(|a| a.project_id == project.id && a.kind != AgentKind::ProjectManager)
-        .cloned();
-    let old_agent = candidates.next().unwrap();
-    let new_agent = candidates.next().unwrap();
+    let old_agent = spawn_worker(&mut runtime, &project.id, "Worker A").await;
+    let new_agent = spawn_worker(&mut runtime, &project.id, "Worker B").await;
 
     store
         .append(Event::for_project(
@@ -995,7 +994,7 @@ async fn reassign_task_moves_ownership_to_a_new_idle_agent_in_the_same_project()
     // Reload so the hand-appended assignment above is reflected in state,
     // the same way `recover_resets_a_task_crashed_mid_execution...` does.
     drop(runtime);
-    let mut runtime = Runtime::load(Box::new(store), projects_root, registry_with(StubModelRuntime)).await.unwrap();
+    let mut runtime = Runtime::load(Arc::new(store), projects_root, registry_with(StubModelRuntime)).await.unwrap();
     assert_eq!(runtime.state.tasks[&task.id].status, TaskStatus::Assigned);
 
     let reassigned = runtime.reassign_task(&task.id, &new_agent.id).await.unwrap();
@@ -1015,20 +1014,20 @@ async fn approve_review_accepts_a_blocked_task_as_a_manual_override() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
-    let goal = runtime
-        .create_goal(&project.id, "Ops", "- Run a risky database migration")
+    let root = runtime
+        .create_task(&project.id, None, "Ops", "- Run a risky database migration", "", None, false)
         .await
         .unwrap();
-    runtime.plan_goal(&goal.id).await.unwrap();
+    runtime.plan_task(&root.id).await.unwrap();
     runtime.run_tick(&project.id).await.unwrap();
 
-    let task = runtime.state.tasks.values().next().unwrap().clone();
+    let task = runtime.state.tasks.values().find(|t| t.parent_task_id.is_some()).unwrap().clone();
     assert_eq!(task.status, TaskStatus::Blocked);
 
     let approved = runtime.approve_review(&task.id).await.unwrap();
@@ -1043,20 +1042,20 @@ async fn request_review_changes_returns_a_blocked_task_to_ready() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
-    let goal = runtime
-        .create_goal(&project.id, "Ops", "- Run a risky database migration")
+    let root = runtime
+        .create_task(&project.id, None, "Ops", "- Run a risky database migration", "", None, false)
         .await
         .unwrap();
-    runtime.plan_goal(&goal.id).await.unwrap();
+    runtime.plan_task(&root.id).await.unwrap();
     runtime.run_tick(&project.id).await.unwrap();
 
-    let task = runtime.state.tasks.values().next().unwrap().clone();
+    let task = runtime.state.tasks.values().find(|t| t.parent_task_id.is_some()).unwrap().clone();
     assert_eq!(task.status, TaskStatus::Blocked);
 
     let updated = runtime.request_review_changes(&task.id, "needs more tests").await.unwrap();
@@ -1073,19 +1072,13 @@ async fn pause_agent_and_resume_agent_require_idle_and_paused_respectively() {
     let store = InMemoryStore::default();
     let dir = tempfile::tempdir().unwrap();
 
-    let mut runtime = Runtime::load(Box::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
         .await
         .unwrap();
 
     init_repo(&dir.path().join("repo"));
     let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
-    let agent = runtime
-        .state
-        .agent_instances
-        .values()
-        .find(|a| a.project_id == project.id && a.kind != AgentKind::ProjectManager)
-        .unwrap()
-        .clone();
+    let agent = spawn_worker(&mut runtime, &project.id, "Worker").await;
     assert_eq!(agent.status, AgentStatus::Idle);
 
     let paused = runtime.pause_agent(&agent.id).await.unwrap();
@@ -1099,4 +1092,196 @@ async fn pause_agent_and_resume_agent_require_idle_and_paused_respectively() {
 
     // Already idle (not paused), so resuming again is invalid.
     assert!(runtime.resume_agent(&agent.id).await.is_err());
+}
+
+#[tokio::test]
+async fn sync_agent_health_events_marks_slow_and_stalled_and_suppresses_after_a_fresh_heartbeat() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Arc::new(store.clone()), dir.path().join("projects"), registry_with(NoOpModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+
+    spawn_worker(&mut runtime, &project.id, "Worker A").await;
+    spawn_worker(&mut runtime, &project.id, "Worker B").await;
+    spawn_worker(&mut runtime, &project.id, "Worker C").await;
+
+    let mut agent_ids: Vec<String> = runtime
+        .state
+        .agent_instances
+        .values()
+        .filter(|a| a.project_id == project.id && a.role != AgentRole::Lead)
+        .map(|a| a.id.clone())
+        .collect();
+    agent_ids.sort();
+    assert_eq!(agent_ids.len(), 3, "spawned exactly 3 workers to exercise 3 independent scenarios");
+    let slow_agent = agent_ids[0].clone();
+    let escalating_agent = agent_ids[1].clone();
+    let recovered_agent = agent_ids[2].clone();
+
+    let now = chrono::Utc::now();
+    for (i, agent_id) in [&slow_agent, &escalating_agent, &recovered_agent].into_iter().enumerate() {
+        store
+            .append(Event {
+                id: format!("assign-{i}"),
+                scope: EventScope::Project(project.id.clone()),
+                event_type: EventType::TaskAssigned,
+                actor_id: Some("test".to_string()),
+                payload: serde_json::json!({"task_id": format!("fake-task-{i}"), "agent_id": agent_id}),
+                timestamp: now,
+            })
+            .await
+            .unwrap();
+    }
+
+    // Scenario 1: no marker yet, heartbeat is 90s stale -> emits AgentMarkedSlow.
+    store
+        .append(Event {
+            id: "hb-slow".to_string(),
+            scope: EventScope::Project(project.id.clone()),
+            event_type: EventType::AgentHeartbeat,
+            actor_id: Some(slow_agent.clone()),
+            payload: serde_json::json!({"agent_id": slow_agent}),
+            timestamp: now - chrono::Duration::seconds(90),
+        })
+        .await
+        .unwrap();
+
+    // Scenario 2: already marked Slow a while back; the heartbeat hasn't
+    // moved since and is now 200s stale -> escalates to AgentMarkedStalled,
+    // not a duplicate Slow.
+    store
+        .append(Event {
+            id: "hb-escalating".to_string(),
+            scope: EventScope::Project(project.id.clone()),
+            event_type: EventType::AgentHeartbeat,
+            actor_id: Some(escalating_agent.clone()),
+            payload: serde_json::json!({"agent_id": escalating_agent}),
+            timestamp: now - chrono::Duration::seconds(200),
+        })
+        .await
+        .unwrap();
+    store
+        .append(Event {
+            id: "marker-escalating-slow".to_string(),
+            scope: EventScope::Project(project.id.clone()),
+            event_type: EventType::AgentMarkedSlow,
+            actor_id: Some(escalating_agent.clone()),
+            payload: serde_json::json!({"agent_id": escalating_agent, "task_id": null}),
+            timestamp: now - chrono::Duration::seconds(150),
+        })
+        .await
+        .unwrap();
+
+    // Scenario 3: was marked Stalled, but a heartbeat 10s ago -- fresher than
+    // the marker -- is implicit recovery evidence, so no new marker fires.
+    store
+        .append(Event {
+            id: "marker-recovered-stalled".to_string(),
+            scope: EventScope::Project(project.id.clone()),
+            event_type: EventType::AgentMarkedStalled,
+            actor_id: Some(recovered_agent.clone()),
+            payload: serde_json::json!({"agent_id": recovered_agent, "task_id": null}),
+            timestamp: now - chrono::Duration::seconds(200),
+        })
+        .await
+        .unwrap();
+    store
+        .append(Event {
+            id: "hb-recovered".to_string(),
+            scope: EventScope::Project(project.id.clone()),
+            event_type: EventType::AgentHeartbeat,
+            actor_id: Some(recovered_agent.clone()),
+            payload: serde_json::json!({"agent_id": recovered_agent}),
+            timestamp: now - chrono::Duration::seconds(10),
+        })
+        .await
+        .unwrap();
+
+    runtime.refresh().await.unwrap();
+    runtime.sync_agent_health_events().await.unwrap();
+
+    let events = runtime.list_events().await.unwrap();
+    let markers_for = |agent_id: &str| -> Vec<EventType> {
+        events
+            .iter()
+            .filter(|e| e.payload.get("agent_id").and_then(|v| v.as_str()) == Some(agent_id))
+            .filter(|e| matches!(e.event_type, EventType::AgentMarkedSlow | EventType::AgentMarkedStalled))
+            .map(|e| e.event_type)
+            .collect()
+    };
+
+    assert_eq!(markers_for(&slow_agent), vec![EventType::AgentMarkedSlow]);
+    assert_eq!(markers_for(&escalating_agent), vec![EventType::AgentMarkedSlow, EventType::AgentMarkedStalled]);
+    assert_eq!(markers_for(&recovered_agent), vec![EventType::AgentMarkedStalled]);
+
+    // Idempotent: an unchanged level (e.g. the slow agent is still just as
+    // stale) must not re-emit on a second call.
+    runtime.sync_agent_health_events().await.unwrap();
+    let events_after_second_call = runtime.list_events().await.unwrap();
+    assert_eq!(events_after_second_call.len(), events.len());
+}
+
+#[tokio::test]
+async fn task_blocked_sets_blocked_reason_and_clearing_it_via_retry_or_question_answer_resets_it() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+        .await
+        .unwrap();
+
+    // Two broken projects so each gets its own escalated, Blocked task --
+    // `git worktree add` fails immediately for a repo that was never
+    // `git init`-ed, blocking the task on the very first tick.
+    let project_a = runtime.create_project("Retry", dir.path().join("missing-repo-a"), "main").await.unwrap();
+    let root_a =
+        runtime.create_task(&project_a.id, None, "Docs", "- Write the changelog", "", None, false).await.unwrap();
+    runtime.plan_task(&root_a.id).await.unwrap();
+
+    let project_b = runtime.create_project("Answer", dir.path().join("missing-repo-b"), "main").await.unwrap();
+    let root_b =
+        runtime.create_task(&project_b.id, None, "Docs", "- Write the changelog", "", None, false).await.unwrap();
+    runtime.plan_task(&root_b.id).await.unwrap();
+
+    runtime.tick_projects(&[project_a.id.clone(), project_b.id.clone()], 4, 3).await.unwrap();
+
+    let task_a = runtime
+        .state
+        .tasks
+        .values()
+        .find(|t| t.project_id == project_a.id && t.parent_task_id.is_some())
+        .unwrap()
+        .clone();
+    assert_eq!(task_a.status, TaskStatus::Blocked);
+    assert!(task_a.blocked_reason.is_some());
+
+    let task_b = runtime
+        .state
+        .tasks
+        .values()
+        .find(|t| t.project_id == project_b.id && t.parent_task_id.is_some())
+        .unwrap()
+        .clone();
+    assert_eq!(task_b.status, TaskStatus::Blocked);
+    assert!(task_b.blocked_reason.is_some());
+
+    // Clearing path 1: a human retries a blocked task directly.
+    runtime.retry_task(&task_a.id).await.unwrap();
+    let retried = runtime.state.tasks.get(&task_a.id).unwrap();
+    assert_eq!(retried.status, TaskStatus::Ready);
+    assert_eq!(retried.blocked_reason, None);
+
+    // Clearing path 2: a human answers the inbox question the escalation
+    // raised, which both resolves the inbox item and resets the task.
+    let inbox_item =
+        runtime.state.inbox.values().find(|i| i.task_id.as_deref() == Some(task_b.id.as_str())).unwrap().clone();
+    runtime.answer_inbox(&inbox_item.id, "use this path instead").await.unwrap();
+    let answered = runtime.state.tasks.get(&task_b.id).unwrap();
+    assert_eq!(answered.status, TaskStatus::Ready);
+    assert_eq!(answered.blocked_reason, None);
 }

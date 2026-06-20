@@ -2,83 +2,39 @@ mod model;
 mod prompt;
 mod registry;
 mod review;
-mod schema;
 
 pub use model::{AgentsError, ClaudeCodeRuntime, ExecutionRequest, ExecutionResult, ExecutionStatus, ModelRuntime};
-pub use prompt::{PmPlanningPromptContext, PromptBuilder, ReviewPromptContext, WorkerPromptContext};
+pub use prompt::{PromptBuilder, WorkerPromptContext};
 pub use registry::{default_registry, RuntimeProfile, RuntimeRegistry};
-pub use review::{ReviewOutcome, ReviewService};
-pub use schema::{
-    parse_structured_output, PmPlanResponse, ReviewDecision, ReviewResponse, PM_PLANNING_JSON_SCHEMA,
-    REVIEW_JSON_SCHEMA,
-};
+pub use review::{ReviewOutcome, ReviewResult, ReviewService};
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentKind {
-    ProjectManager,
-    Backend,
-    Frontend,
-    Qa,
-    Research,
-    DevOps,
+pub enum AgentRole {
+    Lead,
+    Worker,
+    Reviewer,
 }
 
-impl AgentKind {
-    pub const WORKERS: [AgentKind; 5] = [
-        AgentKind::Backend,
-        AgentKind::Frontend,
-        AgentKind::Qa,
-        AgentKind::Research,
-        AgentKind::DevOps,
-    ];
-
+impl AgentRole {
     /// The full set of default agent templates Beethoven seeds once, globally.
-    pub const ALL: [AgentKind; 6] = [
-        AgentKind::ProjectManager,
-        AgentKind::Backend,
-        AgentKind::Frontend,
-        AgentKind::Qa,
-        AgentKind::Research,
-        AgentKind::DevOps,
-    ];
+    pub const ALL: [AgentRole; 3] = [AgentRole::Lead, AgentRole::Worker, AgentRole::Reviewer];
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            AgentKind::ProjectManager => "project_manager",
-            AgentKind::Backend => "backend",
-            AgentKind::Frontend => "frontend",
-            AgentKind::Qa => "qa",
-            AgentKind::Research => "research",
-            AgentKind::DevOps => "devops",
+            AgentRole::Lead => "lead",
+            AgentRole::Worker => "worker",
+            AgentRole::Reviewer => "reviewer",
         }
-    }
-
-    pub fn role_label(&self) -> &'static str {
-        match self {
-            AgentKind::ProjectManager => "Project Manager",
-            AgentKind::Backend => "Backend Engineer",
-            AgentKind::Frontend => "Frontend Engineer",
-            AgentKind::Qa => "QA Engineer",
-            AgentKind::Research => "Research Agent",
-            AgentKind::DevOps => "DevOps Agent",
-        }
-    }
-
-    pub fn default_prompt(&self) -> String {
-        format!("You are the {} for this project.", self.role_label())
     }
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            AgentKind::ProjectManager => "PM",
-            AgentKind::Backend => "Backend",
-            AgentKind::Frontend => "Frontend",
-            AgentKind::Qa => "QA",
-            AgentKind::Research => "Research",
-            AgentKind::DevOps => "DevOps",
+            AgentRole::Lead => "Lead",
+            AgentRole::Worker => "Worker",
+            AgentRole::Reviewer => "Reviewer",
         }
     }
 }
@@ -89,92 +45,54 @@ pub struct TaskDraft {
     pub description: String,
 }
 
-pub struct PlanningService;
-
-impl PlanningService {
-    /// Stub planner: turns bullet-list lines ("- " / "* " prefixed) in the goal
-    /// description into discrete tasks. Falls back to a single task named after
-    /// the goal when no bullet list is present.
-    pub fn plan(goal_title: &str, goal_description: &str) -> Vec<TaskDraft> {
-        let bullets: Vec<TaskDraft> = goal_description
-            .lines()
-            .map(str::trim)
-            .filter_map(|line| {
-                line.strip_prefix("- ")
-                    .or_else(|| line.strip_prefix("* "))
-                    .map(str::trim)
-                    .filter(|t| !t.is_empty())
-                    .map(|title| TaskDraft {
-                        title: title.to_string(),
-                        description: String::new(),
-                    })
-            })
-            .collect();
-
-        if bullets.is_empty() {
-            vec![TaskDraft {
-                title: format!("Implement: {goal_title}"),
-                description: String::new(),
-            }]
-        } else {
-            bullets
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct RequirementInput {
-    pub id: String,
-    pub description: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct EpicDraft {
-    pub title: String,
-}
-
 #[derive(Debug, Clone)]
 pub struct DecisionDraft {
-    pub title: String,
+    pub question: String,
     pub context: String,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct InitiativePlan {
-    pub epics: Vec<EpicDraft>,
-    pub decisions: Vec<DecisionDraft>,
+pub struct PlanOutcome {
+    pub task_drafts: Vec<TaskDraft>,
+    pub decision_drafts: Vec<DecisionDraft>,
 }
 
-pub struct InitiativePlanningService;
+pub struct PlanningService;
 
-impl InitiativePlanningService {
-    /// Stub PM planner: a requirement that poses an open question ("?") needs
-    /// a human decision rather than a work breakdown, so it becomes a
-    /// `Decision` (auto-escalated to the inbox); every other requirement
-    /// becomes one epic. Falls back to a single epic named after the
-    /// initiative when there are no requirements yet.
-    pub fn plan(initiative_title: &str, requirements: &[RequirementInput]) -> InitiativePlan {
-        let mut plan = InitiativePlan::default();
-        for requirement in requirements {
-            if requirement.description.contains('?') {
-                plan.decisions.push(DecisionDraft {
-                    title: requirement.description.clone(),
-                    context: requirement.description.clone(),
+impl PlanningService {
+    /// Stub planner, used to break down any task in the tree (root objective
+    /// or container) into children: turns bullet-list lines ("- " / "* "
+    /// prefixed) in the description into child work -- a line containing
+    /// `?` poses an open question that needs a human call rather than a work
+    /// breakdown, so it becomes a `Decision` (auto-escalated to the inbox);
+    /// every other line becomes a child task. Falls back to a single task
+    /// named after the title when no bullet list is present.
+    pub fn plan(title: &str, description: &str) -> PlanOutcome {
+        let mut outcome = PlanOutcome::default();
+        for item in description.lines().map(str::trim).filter_map(|line| {
+            line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")).map(str::trim).filter(|t| !t.is_empty())
+        }) {
+            if item.contains('?') {
+                outcome.decision_drafts.push(DecisionDraft {
+                    question: item.to_string(),
+                    context: item.to_string(),
                 });
             } else {
-                plan.epics.push(EpicDraft {
-                    title: requirement.description.clone(),
+                outcome.task_drafts.push(TaskDraft {
+                    title: item.to_string(),
+                    description: String::new(),
                 });
             }
         }
 
-        if plan.epics.is_empty() && plan.decisions.is_empty() {
-            plan.epics.push(EpicDraft {
-                title: initiative_title.to_string(),
+        if outcome.task_drafts.is_empty() && outcome.decision_drafts.is_empty() {
+            outcome.task_drafts.push(TaskDraft {
+                title: format!("Implement: {title}"),
+                description: String::new(),
             });
         }
 
-        plan
+        outcome
     }
 }
 
@@ -216,6 +134,79 @@ impl ExecutionService {
     }
 }
 
+/// A ready task as seen by `DelegationService` -- deliberately narrower than
+/// `beethoven_core::Task` so this crate never has to depend back on
+/// `beethoven-core`.
+#[derive(Debug, Clone)]
+pub struct DelegationTask {
+    pub id: String,
+    pub title: String,
+}
+
+/// Whether a non-Lead agent can be handed a new task (`Idle`/`Completed`) or
+/// has no remaining work to be reused for (`Completed`, when left over after
+/// every ready task has been delegated). Agents that are `Busy` (already
+/// `Assigned`/`Executing`) or `Created`/`Paused` are simply not considered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelegationAgentStatus {
+    Idle,
+    Completed,
+    Busy,
+}
+
+#[derive(Debug, Clone)]
+pub struct DelegationAgent {
+    pub id: String,
+    pub status: DelegationAgentStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DelegationDecision {
+    DelegateToExisting { agent_id: String, task_id: String },
+    SpawnWorker { task_id: String, role_description: String, name: String },
+    ArchiveAgent { agent_id: String },
+}
+
+pub struct DelegationService;
+
+impl DelegationService {
+    /// Stub delegator: reuse an idle or previously-completed agent if one is
+    /// available for a ready task, otherwise spawn a new Worker
+    /// named/described from the task itself; archive any `Completed` agent
+    /// left over with no ready task to reuse it for. Deterministic until a
+    /// model runtime decides this instead.
+    pub fn delegate(ready_tasks: &[DelegationTask], agents: &[DelegationAgent]) -> Vec<DelegationDecision> {
+        let mut available: Vec<&DelegationAgent> = agents
+            .iter()
+            .filter(|a| matches!(a.status, DelegationAgentStatus::Idle | DelegationAgentStatus::Completed))
+            .collect();
+
+        let mut decisions = Vec::new();
+        for task in ready_tasks {
+            if let Some(agent) = available.pop() {
+                decisions.push(DelegationDecision::DelegateToExisting {
+                    agent_id: agent.id.clone(),
+                    task_id: task.id.clone(),
+                });
+            } else {
+                decisions.push(DelegationDecision::SpawnWorker {
+                    task_id: task.id.clone(),
+                    role_description: format!("Worker agent for: {}", task.title),
+                    name: format!("{} Worker", task.title),
+                });
+            }
+        }
+
+        for agent in available {
+            if agent.status == DelegationAgentStatus::Completed {
+                decisions.push(DelegationDecision::ArchiveAgent { agent_id: agent.id.clone() });
+            }
+        }
+
+        decisions
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,16 +221,38 @@ mod tests {
 
     #[test]
     fn plan_extracts_bullet_list_lines_and_ignores_prose() {
-        let drafts = PlanningService::plan("Goal", "- one\n* two\nnot a bullet\n- three");
-        let titles: Vec<&str> = drafts.iter().map(|d| d.title.as_str()).collect();
+        let outcome = PlanningService::plan("Goal", "- one\n* two\nnot a bullet\n- three");
+        let titles: Vec<&str> = outcome.task_drafts.iter().map(|d| d.title.as_str()).collect();
         assert_eq!(titles, vec!["one", "two", "three"]);
+        assert!(outcome.decision_drafts.is_empty());
     }
 
     #[test]
     fn plan_falls_back_to_a_single_task_without_bullets() {
-        let drafts = PlanningService::plan("Goal Title", "just prose, no bullets");
-        assert_eq!(drafts.len(), 1);
-        assert_eq!(drafts[0].title, "Implement: Goal Title");
+        let outcome = PlanningService::plan("Goal Title", "just prose, no bullets");
+        assert_eq!(outcome.task_drafts.len(), 1);
+        assert_eq!(outcome.task_drafts[0].title, "Implement: Goal Title");
+        assert!(outcome.decision_drafts.is_empty());
+    }
+
+    #[test]
+    fn plan_turns_a_question_line_into_a_decision_not_a_task() {
+        let outcome = PlanningService::plan(
+            "Build Gmail Agent",
+            "- Support PDF attachments\n- What auth provider should we use?",
+        );
+        assert_eq!(outcome.task_drafts.len(), 1);
+        assert_eq!(outcome.task_drafts[0].title, "Support PDF attachments");
+        assert_eq!(outcome.decision_drafts.len(), 1);
+        assert_eq!(outcome.decision_drafts[0].question, "What auth provider should we use?");
+    }
+
+    #[test]
+    fn plan_falls_back_to_a_single_task_without_bullets_even_with_a_question_in_prose() {
+        let outcome = PlanningService::plan("Build Gmail Agent", "what should this even do?");
+        assert_eq!(outcome.task_drafts.len(), 1);
+        assert_eq!(outcome.task_drafts[0].title, "Implement: Build Gmail Agent");
+        assert!(outcome.decision_drafts.is_empty());
     }
 
     #[test]
@@ -286,37 +299,59 @@ mod tests {
         ));
     }
 
-    fn requirement(description: &str) -> RequirementInput {
-        RequirementInput {
-            id: "r1".to_string(),
-            description: description.to_string(),
+    #[test]
+    fn agent_role_as_str_and_display_name_round_trip_for_all_variants() {
+        for role in AgentRole::ALL {
+            assert!(!role.as_str().is_empty());
+            assert!(!role.display_name().is_empty());
         }
+        assert_eq!(AgentRole::Lead.as_str(), "lead");
+        assert_eq!(AgentRole::Worker.as_str(), "worker");
+        assert_eq!(AgentRole::Reviewer.as_str(), "reviewer");
+    }
+
+    fn task(id: &str, title: &str) -> DelegationTask {
+        DelegationTask { id: id.to_string(), title: title.to_string() }
+    }
+
+    fn agent(id: &str, status: DelegationAgentStatus) -> DelegationAgent {
+        DelegationAgent { id: id.to_string(), status }
     }
 
     #[test]
-    fn initiative_plan_turns_each_plain_requirement_into_one_epic() {
-        let reqs = vec![requirement("Support PDF attachments"), requirement("Route emails by company")];
-        let plan = InitiativePlanningService::plan("Build Gmail Agent", &reqs);
-        let titles: Vec<&str> = plan.epics.iter().map(|e| e.title.as_str()).collect();
-        assert_eq!(titles, vec!["Support PDF attachments", "Route emails by company"]);
-        assert!(plan.decisions.is_empty());
+    fn delegate_reuses_an_idle_agent_for_a_ready_task() {
+        let tasks = vec![task("t1", "Write docs")];
+        let agents = vec![agent("a1", DelegationAgentStatus::Idle), agent("a2", DelegationAgentStatus::Busy)];
+        let decisions = DelegationService::delegate(&tasks, &agents);
+        assert_eq!(decisions, vec![DelegationDecision::DelegateToExisting { agent_id: "a1".to_string(), task_id: "t1".to_string() }]);
     }
 
     #[test]
-    fn initiative_plan_turns_a_question_requirement_into_a_decision_not_an_epic() {
-        let reqs = vec![requirement("Support PDF attachments"), requirement("What auth provider should we use?")];
-        let plan = InitiativePlanningService::plan("Build Gmail Agent", &reqs);
-        assert_eq!(plan.epics.len(), 1);
-        assert_eq!(plan.epics[0].title, "Support PDF attachments");
-        assert_eq!(plan.decisions.len(), 1);
-        assert_eq!(plan.decisions[0].title, "What auth provider should we use?");
+    fn delegate_spawns_a_new_worker_when_no_agent_is_available() {
+        let tasks = vec![task("t1", "Write docs")];
+        let agents = vec![agent("a1", DelegationAgentStatus::Busy)];
+        let decisions = DelegationService::delegate(&tasks, &agents);
+        assert_eq!(
+            decisions,
+            vec![DelegationDecision::SpawnWorker {
+                task_id: "t1".to_string(),
+                role_description: "Worker agent for: Write docs".to_string(),
+                name: "Write docs Worker".to_string(),
+            }]
+        );
     }
 
     #[test]
-    fn initiative_plan_falls_back_to_a_single_epic_without_requirements() {
-        let plan = InitiativePlanningService::plan("Build Gmail Agent", &[]);
-        assert_eq!(plan.epics.len(), 1);
-        assert_eq!(plan.epics[0].title, "Build Gmail Agent");
-        assert!(plan.decisions.is_empty());
+    fn delegate_archives_a_completed_agent_left_with_no_ready_task_to_reuse_it_for() {
+        let agents = vec![agent("a1", DelegationAgentStatus::Completed)];
+        let decisions = DelegationService::delegate(&[], &agents);
+        assert_eq!(decisions, vec![DelegationDecision::ArchiveAgent { agent_id: "a1".to_string() }]);
+    }
+
+    #[test]
+    fn delegate_does_not_archive_an_idle_agent_left_with_no_ready_task() {
+        let agents = vec![agent("a1", DelegationAgentStatus::Idle)];
+        let decisions = DelegationService::delegate(&[], &agents);
+        assert!(decisions.is_empty());
     }
 }

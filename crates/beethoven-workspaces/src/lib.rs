@@ -146,7 +146,7 @@ impl WorkspaceManager {
     /// Sends `command` into the workspace's tmux session and waits for it to
     /// finish (sentinel-based, see [`TmuxSession::run_and_wait`]).
     pub fn run_in_session(&self, state: &WorkspaceState, command: &str, timeout: Duration) -> Result<String, WorkspacesError> {
-        TmuxSession { name: state.tmux_session.clone() }.run_and_wait(command, timeout)
+        TmuxSession { name: state.tmux_session.clone() }.run_and_wait(command, timeout, &|| {})
     }
 
     /// Restores the worktree's `.git` link if the task's model run replaced

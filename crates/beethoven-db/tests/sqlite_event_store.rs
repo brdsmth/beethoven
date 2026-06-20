@@ -8,7 +8,7 @@ async fn append_and_list_all_round_trips_in_insertion_order() {
     let store = SqliteEventStore::connect(&dir.path().join("test.db")).await.unwrap();
 
     store
-        .append(Event::for_project("p1", EventType::GoalCreated, "human", json!({"id": "g1"})))
+        .append(Event::for_project("p1", EventType::DecisionCreated, "human", json!({"id": "d1"})))
         .await
         .unwrap();
     store
@@ -19,7 +19,7 @@ async fn append_and_list_all_round_trips_in_insertion_order() {
     let events = store.list_all().await.unwrap();
 
     assert_eq!(events.len(), 2);
-    assert_eq!(events[0].event_type, EventType::GoalCreated);
+    assert_eq!(events[0].event_type, EventType::DecisionCreated);
     assert_eq!(events[0].actor_id, Some("human".to_string()));
     assert_eq!(events[0].scope, EventScope::Project("p1".to_string()));
     assert_eq!(events[1].event_type, EventType::TaskCreated);
@@ -50,7 +50,7 @@ async fn events_persist_across_a_reconnect() {
     {
         let store = SqliteEventStore::connect(&db_path).await.unwrap();
         store
-            .append(Event::for_project("p1", EventType::GoalCreated, "human", json!({"id": "g1"})))
+            .append(Event::for_project("p1", EventType::DecisionCreated, "human", json!({"id": "d1"})))
             .await
             .unwrap();
     }
@@ -59,7 +59,7 @@ async fn events_persist_across_a_reconnect() {
     let events = store.list_all().await.unwrap();
 
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].event_type, EventType::GoalCreated);
+    assert_eq!(events[0].event_type, EventType::DecisionCreated);
 }
 
 #[tokio::test]

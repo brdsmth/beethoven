@@ -1,7 +1,4 @@
-use beethoven_core::{
-    AgentStatus, DecisionStatus, GoalStatus, InboxKind, InboxStatus, InitiativeStatus, ProjectStatus, RuntimeState,
-    TaskStatus,
-};
+use beethoven_core::{AgentStatus, DecisionStatus, InboxKind, InboxStatus, ProjectStatus, RuntimeState, TaskStatus};
 use beethoven_events::{Event, EventType};
 use serde_json::json;
 
@@ -15,26 +12,41 @@ fn setup_events() -> Vec<Event> {
         Event::global(
             EventType::AgentTemplateCreated,
             "system",
-            json!({"id": "tmpl-backend", "kind": "backend", "role": "Backend Engineer", "prompt": "...", "permissions": [], "tools": []}),
+            json!({"id": "tmpl-worker", "role": "worker", "label": "Worker", "prompt": "...", "permissions": [], "tools": []}),
         ),
         Event::for_project(
             "p1",
-            EventType::AgentCreated,
+            EventType::AgentSpawned,
             "system",
-            json!({"id": "a1", "template_id": "tmpl-backend", "kind": "backend", "name": "Proj Backend"}),
+            json!({"id": "a1", "template_id": "tmpl-worker", "role": "worker", "role_description": "Backend work", "parent_agent_id": None::<String>, "name": "Proj Backend"}),
         ),
-        Event::for_project("p1", EventType::AgentStarted, "system", json!({"id": "a1"})),
         Event::for_project(
             "p1",
-            EventType::GoalCreated,
+            EventType::TaskCreated,
             "human",
-            json!({"id": "g1", "title": "Goal", "description": ""}),
+            json!({
+                "id": "root1",
+                "parent_task_id": None::<String>,
+                "title": "Root",
+                "description": "",
+                "status": TaskStatus::Ready,
+                "success_criteria": "",
+                "target_score": 70.0,
+            }),
         ),
         Event::for_project(
             "p1",
             EventType::TaskCreated,
             "pm",
-            json!({"id": "t1", "goal_id": "g1", "parent_task_id": None::<String>, "title": "Do it", "description": ""}),
+            json!({
+                "id": "t1",
+                "parent_task_id": "root1",
+                "title": "Do it",
+                "description": "",
+                "status": TaskStatus::Ready,
+                "success_criteria": "",
+                "target_score": 70.0,
+            }),
         ),
         Event::for_project(
             "p1",
@@ -47,8 +59,10 @@ fn setup_events() -> Vec<Event> {
 }
 
 #[test]
-fn full_lifecycle_completes_task_and_auto_completes_goal() {
+fn full_lifecycle_completes_a_task_and_makes_its_parent_eligible_to_complete() {
     let mut events = setup_events();
+    assert!(!RuntimeState::replay(&events).parent_task_is_complete("root1"));
+
     events.push(Event::for_project(
         "p1",
         EventType::TaskCompleted,
@@ -60,9 +74,13 @@ fn full_lifecycle_completes_task_and_auto_completes_goal() {
 
     assert_eq!(state.tasks["t1"].status, TaskStatus::Done);
     assert_eq!(state.tasks["t1"].project_id, "p1");
-    assert_eq!(state.agent_instances["a1"].status, AgentStatus::Idle);
+    assert_eq!(state.agent_instances["a1"].status, AgentStatus::Completed);
     assert_eq!(state.agent_instances["a1"].current_task_id, None);
-    assert_eq!(state.goals["g1"].status, GoalStatus::Completed);
+
+    // The reducer never auto-cascades completion up the tree on its own --
+    // that's a Runtime-level concern -- but it does report root1 as now
+    // *eligible* to complete once its only child is Done.
+    assert!(state.parent_task_is_complete("root1"));
 }
 
 #[test]
@@ -79,7 +97,10 @@ fn replay_is_deterministic() {
     let s2 = RuntimeState::replay(&events);
 
     assert_eq!(s1.tasks["t1"].status, s2.tasks["t1"].status);
-    assert_eq!(s1.goals["g1"].status, s2.goals["g1"].status);
+    assert_eq!(
+        s1.parent_task_is_complete("root1"),
+        s2.parent_task_is_complete("root1")
+    );
     assert_eq!(s1.agent_instances["a1"].status, s2.agent_instances["a1"].status);
 }
 
@@ -90,7 +111,15 @@ fn spawning_a_subtask_returns_the_parent_to_ready_and_frees_its_agent() {
         "p1",
         EventType::TaskCreated,
         "a1",
-        json!({"id": "t2", "goal_id": "g1", "parent_task_id": "t1", "title": "Subtask", "description": ""}),
+        json!({
+            "id": "t2",
+            "parent_task_id": "t1",
+            "title": "Subtask",
+            "description": "",
+            "status": TaskStatus::Ready,
+            "success_criteria": "",
+            "target_score": 70.0,
+        }),
     ));
 
     let state = RuntimeState::replay(&events);
@@ -181,10 +210,10 @@ fn pr_created_records_branch_and_url_on_the_task() {
 }
 
 #[test]
-fn two_projects_do_not_mix_tasks_goals_or_inbox() {
-    let mut events = setup_events(); // project p1, goal g1, task t1
+fn two_projects_do_not_mix_tasks_or_inbox() {
+    let mut events = setup_events(); // project p1, root task root1, task t1
 
-    // A second, independent project with its own agent instance, goal, and task.
+    // A second, independent project with its own agent instance and task.
     events.push(Event::global(
         EventType::ProjectCreated,
         "human",
@@ -192,22 +221,23 @@ fn two_projects_do_not_mix_tasks_goals_or_inbox() {
     ));
     events.push(Event::for_project(
         "p2",
-        EventType::AgentCreated,
+        EventType::AgentSpawned,
         "system",
-        json!({"id": "a2", "template_id": "tmpl-backend", "kind": "backend", "name": "Other Backend"}),
-    ));
-    events.push(Event::for_project("p2", EventType::AgentStarted, "system", json!({"id": "a2"})));
-    events.push(Event::for_project(
-        "p2",
-        EventType::GoalCreated,
-        "human",
-        json!({"id": "g2", "title": "Other Goal", "description": ""}),
+        json!({"id": "a2", "template_id": "tmpl-worker", "role": "worker", "role_description": "Backend work", "parent_agent_id": None::<String>, "name": "Other Backend"}),
     ));
     events.push(Event::for_project(
         "p2",
         EventType::TaskCreated,
         "pm",
-        json!({"id": "t2", "goal_id": "g2", "parent_task_id": None::<String>, "title": "Other task", "description": ""}),
+        json!({
+            "id": "t2",
+            "parent_task_id": None::<String>,
+            "title": "Other task",
+            "description": "",
+            "status": TaskStatus::Ready,
+            "success_criteria": "",
+            "target_score": 70.0,
+        }),
     ));
     events.push(Event::for_project(
         "p2",
@@ -220,13 +250,11 @@ fn two_projects_do_not_mix_tasks_goals_or_inbox() {
 
     assert_eq!(state.tasks["t1"].project_id, "p1");
     assert_eq!(state.tasks["t2"].project_id, "p2");
-    assert_eq!(state.goals["g1"].project_id, "p1");
-    assert_eq!(state.goals["g2"].project_id, "p2");
     assert_eq!(state.inbox["i2"].project_id, "p2");
 
     let p1_tasks: Vec<_> = state.tasks.values().filter(|t| t.project_id == "p1").collect();
     let p2_tasks: Vec<_> = state.tasks.values().filter(|t| t.project_id == "p2").collect();
-    assert_eq!(p1_tasks.len(), 1);
+    assert_eq!(p1_tasks.len(), 2); // root1 + t1
     assert_eq!(p2_tasks.len(), 1);
 
     let p1_inbox: Vec<_> = state.inbox.values().filter(|i| i.project_id == "p1").collect();
@@ -236,55 +264,44 @@ fn two_projects_do_not_mix_tasks_goals_or_inbox() {
 }
 
 #[test]
-fn initiative_planning_creates_epics_and_links_their_tasks_back_to_the_epic_not_a_goal() {
+fn a_multi_level_task_tree_links_children_via_parent_task_id_with_no_separate_container_entity() {
     let mut events = setup_events();
     events.push(Event::for_project(
         "p1",
-        EventType::InitiativeCreated,
-        "human",
-        json!({"id": "init1", "title": "Build Gmail Agent", "description": "Routes inbound email"}),
-    ));
-    events.push(Event::for_project(
-        "p1",
-        EventType::RequirementCreated,
-        "human",
-        json!({"id": "r1", "initiative_id": "init1", "description": "Support PDF attachments"}),
-    ));
-    events.push(Event::for_project(
-        "p1",
-        EventType::PlanCreated,
+        EventType::TaskCreated,
         "pm",
-        json!({"id": "plan1", "initiative_id": "init1", "summary": "1 epic(s), 0 decision(s) for Build Gmail Agent"}),
-    ));
-    events.push(Event::for_project(
-        "p1",
-        EventType::EpicCreated,
-        "pm",
-        json!({"id": "epic1", "initiative_id": "init1", "title": "Support PDF attachments"}),
+        json!({
+            "id": "mid1",
+            "parent_task_id": "root1",
+            "title": "Support PDF attachments",
+            "description": "",
+            "status": TaskStatus::Ready,
+            "success_criteria": "",
+            "target_score": 70.0,
+        }),
     ));
     events.push(Event::for_project(
         "p1",
         EventType::TaskCreated,
         "pm",
         json!({
-            "id": "t-epic",
-            "goal_id": None::<String>,
-            "epic_id": "epic1",
-            "parent_task_id": None::<String>,
+            "id": "leaf1",
+            "parent_task_id": "mid1",
             "title": "Implement: Support PDF attachments",
             "description": "",
+            "status": TaskStatus::Ready,
+            "success_criteria": "",
+            "target_score": 70.0,
         }),
     ));
-    events.push(Event::for_project("p1", EventType::InitiativePlanned, "pm", json!({"id": "init1"})));
 
     let state = RuntimeState::replay(&events);
 
-    assert_eq!(state.initiatives["init1"].status, InitiativeStatus::Planned);
-    assert_eq!(state.requirements["r1"].initiative_id, "init1");
-    assert_eq!(state.plans["plan1"].initiative_id, "init1");
-    assert_eq!(state.epics["epic1"].initiative_id, "init1");
-    assert_eq!(state.tasks["t-epic"].epic_id, Some("epic1".to_string()));
-    assert_eq!(state.tasks["t-epic"].goal_id, None);
+    assert_eq!(state.tasks["root1"].project_id, "p1");
+    assert_eq!(state.tasks["mid1"].project_id, "p1");
+    assert_eq!(state.tasks["leaf1"].project_id, "p1");
+    assert_eq!(state.tasks["mid1"].parent_task_id, Some("root1".to_string()));
+    assert_eq!(state.tasks["leaf1"].parent_task_id, Some("mid1".to_string()));
 }
 
 #[test]
@@ -292,15 +309,9 @@ fn decision_escalation_links_the_inbox_item_and_resolving_it_marks_the_decision_
     let mut events = setup_events();
     events.push(Event::for_project(
         "p1",
-        EventType::InitiativeCreated,
-        "human",
-        json!({"id": "init1", "title": "Build Gmail Agent", "description": ""}),
-    ));
-    events.push(Event::for_project(
-        "p1",
         EventType::DecisionCreated,
         "pm",
-        json!({"id": "dec1", "initiative_id": "init1", "title": "What auth provider?", "context": "What auth provider?"}),
+        json!({"id": "dec1", "task_id": "root1", "question": "What auth provider?", "context": "What auth provider?"}),
     ));
     events.push(Event::for_project(
         "p1",
@@ -311,6 +322,7 @@ fn decision_escalation_links_the_inbox_item_and_resolving_it_marks_the_decision_
 
     let state = RuntimeState::replay(&events);
     assert_eq!(state.decisions["dec1"].status, DecisionStatus::Open);
+    assert_eq!(state.decisions["dec1"].task_id, Some("root1".to_string()));
     assert_eq!(state.inbox["i-dec"].kind, InboxKind::Decision);
     assert_eq!(state.inbox["i-dec"].decision_id, Some("dec1".to_string()));
     assert_eq!(state.inbox["i-dec"].task_id, None);
@@ -379,11 +391,10 @@ fn task_reassigned_moves_ownership_to_the_new_agent() {
     let mut events = setup_events();
     events.push(Event::for_project(
         "p1",
-        EventType::AgentCreated,
+        EventType::AgentSpawned,
         "system",
-        json!({"id": "a2", "template_id": "tmpl-backend", "kind": "backend", "name": "Proj Backend 2"}),
+        json!({"id": "a2", "template_id": "tmpl-worker", "role": "worker", "role_description": "Backend work", "parent_agent_id": None::<String>, "name": "Proj Backend 2"}),
     ));
-    events.push(Event::for_project("p1", EventType::AgentStarted, "system", json!({"id": "a2"})));
     events.push(Event::for_project(
         "p1",
         EventType::TaskReassigned,

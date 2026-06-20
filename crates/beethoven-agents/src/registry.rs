@@ -40,6 +40,13 @@ impl RuntimeRegistry {
         self.profiles.insert(profile.id.clone(), profile);
     }
 
+    /// Read-only lookup of a registered profile, for display purposes (e.g.
+    /// the read-only Runtime Settings/Agent Configuration views) -- unlike
+    /// `resolve`, this never touches the adapter the profile points at.
+    pub fn profile(&self, profile_id: &str) -> Option<&RuntimeProfile> {
+        self.profiles.get(profile_id)
+    }
+
     /// Resolves a `RuntimeProfile.id` to the adapter it points at.
     pub fn resolve(&self, profile_id: &str) -> Result<Arc<dyn ModelRuntime + Send + Sync>, AgentsError> {
         let profile = self

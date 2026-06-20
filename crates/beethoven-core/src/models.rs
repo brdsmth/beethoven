@@ -1,4 +1,4 @@
-use beethoven_agents::AgentKind;
+use beethoven_agents::AgentRole;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -28,32 +28,13 @@ pub struct Project {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTemplate {
     pub id: String,
-    pub kind: AgentKind,
-    pub role: String,
+    pub role: AgentRole,
+    pub label: String,
     pub prompt: String,
     pub permissions: Vec<String>,
     pub tools: Vec<String>,
     pub runtime_profile_id: String,
     pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GoalStatus {
-    Open,
-    Planned,
-    Completed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Goal {
-    pub id: String,
-    pub project_id: String,
-    pub title: String,
-    pub description: String,
-    pub status: GoalStatus,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,12 +51,18 @@ pub enum TaskStatus {
     Cancelled,
 }
 
+/// The single planning primitive: every objective, work-stream breakdown,
+/// and unit of execution is a `Task`, related only via `parent_task_id`. A
+/// task with children is a container (never delegated/executed directly,
+/// auto-completes once every child is `Done` and every `Decision` raised
+/// against it is `Resolved` -- see `Runtime::maybe_complete_parent_task`); a
+/// task with none is a leaf, the only kind delegation ever assigns to an
+/// agent. `Draft` is for tasks proposed outside the normal planning flow
+/// (the old manual "change request") pending human approval into `Ready`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
     pub project_id: String,
-    pub goal_id: Option<String>,
-    pub epic_id: Option<String>,
     pub parent_task_id: Option<String>,
     pub title: String,
     pub description: String,
@@ -84,6 +71,9 @@ pub struct Task {
     pub branch: Option<String>,
     pub pr_url: Option<String>,
     pub attempt: u32,
+    pub blocked_reason: Option<String>,
+    pub success_criteria: String,
+    pub target_score: f32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -94,24 +84,25 @@ pub enum AgentStatus {
     Created,
     Idle,
     Assigned,
-    Planning,
     Executing,
-    Review,
     Completed,
-    Blocked,
-    Waiting,
-    Escalated,
     Paused,
+    Archived,
 }
 
 /// A project-scoped, running agent. Owns memory/task-queue/workspace
-/// isolation; instantiated from an `AgentTemplate` when its project is created.
+/// isolation. The Lead is created directly when its project is created;
+/// Worker/Reviewer agents are spawned dynamically by the Lead (or manually),
+/// with `parent_agent_id` set to the Lead's id (`None` only for the Lead
+/// itself).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInstance {
     pub id: String,
     pub project_id: String,
     pub template_id: String,
-    pub kind: AgentKind,
+    pub role: AgentRole,
+    pub role_description: String,
+    pub parent_agent_id: Option<String>,
     pub name: String,
     pub status: AgentStatus,
     pub current_task_id: Option<String>,
@@ -152,22 +143,25 @@ pub struct InboxItem {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ModelRunStatus {
+pub enum RunStatus {
     Running,
     Completed,
     Failed,
 }
 
-/// One invocation of a `ModelRuntime`. Worker runs always have a `task_id`;
-/// PM planning and review runs (Phase 1.7b) do not.
+/// One execution attempt of a `Task` -- a single invocation of a
+/// `ModelRuntime`. `attempt` mirrors `Task.attempt` at the moment the run
+/// started, so historical runs stay attributable to a specific iteration
+/// even as the task keeps retrying.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelRun {
+pub struct Run {
     pub id: String,
     pub project_id: String,
     pub agent_id: String,
-    pub task_id: Option<String>,
+    pub task_id: String,
+    pub attempt: u32,
     pub provider: String,
-    pub status: ModelRunStatus,
+    pub status: RunStatus,
     pub summary: Option<String>,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -175,37 +169,21 @@ pub struct ModelRun {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ModelArtifactKind {
+pub enum ArtifactKind {
     Prompt,
     Response,
-}
-
-/// The prompt sent to, and raw response received from, one `ModelRun` --
-/// kept distinct from `Artifact` (git diff/files-changed output), which is
-/// keyed by task rather than by model run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelArtifact {
-    pub id: String,
-    pub model_run_id: String,
-    pub kind: ModelArtifactKind,
-    pub content: String,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ArtifactKind {
     Diff,
     FilesModified,
 }
 
-/// Output captured from a task's workspace -- a git diff or a files-changed
-/// summary -- recorded for the timeline since the workspace itself is
-/// destroyed at the end of every attempt.
+/// Everything a `Run` produces -- the prompt sent, the raw response
+/// received, and the git diff/files-changed output captured once execution
+/// finishes (the workspace itself is destroyed at the end of every
+/// attempt, so this is the only durable record of what happened).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artifact {
     pub id: String,
-    pub task_id: String,
+    pub run_id: String,
     pub kind: ArtifactKind,
     pub content: String,
     pub created_at: DateTime<Utc>,
@@ -219,66 +197,19 @@ pub enum ReviewStatus {
     NeedsChanges,
 }
 
+/// The evaluation of one `Run`'s output against its task's
+/// `success_criteria`/`target_score`. `score >= target_score` is what
+/// drives the retry-vs-complete decision (see `Runtime::finish_task`) --
+/// this *is* Beethoven's loop, with no separate Loop entity required.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Review {
     pub id: String,
     pub task_id: String,
     pub reviewer_agent_id: String,
     pub status: ReviewStatus,
-    pub notes: String,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InitiativeStatus {
-    Discovery,
-    Planned,
-    Completed,
-}
-
-/// Top-level objective within a project -- the PM's unit of project
-/// management, one layer above the deterministic Goal/Task model.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Initiative {
-    pub id: String,
-    pub project_id: String,
-    pub title: String,
-    pub description: String,
-    pub status: InitiativeStatus,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-/// A business or technical requirement gathered during an initiative's
-/// discovery phase, before planning turns it into epics/tasks or a decision.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Requirement {
-    pub id: String,
-    pub project_id: String,
-    pub initiative_id: String,
-    pub description: String,
-    pub created_at: DateTime<Utc>,
-}
-
-/// The generated execution strategy produced by planning an initiative.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Plan {
-    pub id: String,
-    pub project_id: String,
-    pub initiative_id: String,
+    pub score: f32,
     pub summary: String,
-    pub created_at: DateTime<Utc>,
-}
-
-/// A large work stream under an initiative's plan; each epic deterministically
-/// produces one task today (see `beethoven_agents::InitiativePlanningService`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Epic {
-    pub id: String,
-    pub project_id: String,
-    pub initiative_id: String,
-    pub title: String,
+    pub recommendations: Vec<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -289,16 +220,20 @@ pub enum DecisionStatus {
     Resolved,
 }
 
-/// Tracks an architectural or product decision raised during planning. The
-/// PM owns escalation: every open decision is mirrored as an `InboxItem` so a
-/// human resolves it, per the Worker -> PM -> Decision -> Inbox -> Human flow.
+/// Tracks an architectural or product decision raised during planning.
+/// Humans remain the bottleneck: every open decision is mirrored as an
+/// `InboxItem` so a human resolves it, per the Worker -> Lead -> Decision ->
+/// Inbox -> Human flow. `task_id` is the task the decision blocks (a
+/// container task with an unresolved decision against it cannot
+/// auto-complete); `None` for decisions not tied to a specific task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Decision {
     pub id: String,
     pub project_id: String,
-    pub initiative_id: String,
-    pub title: String,
+    pub task_id: Option<String>,
+    pub question: String,
     pub context: String,
+    pub answer: Option<String>,
     pub status: DecisionStatus,
     pub created_at: DateTime<Utc>,
 }

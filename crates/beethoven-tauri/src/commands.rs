@@ -1,7 +1,7 @@
 use crate::derive;
 use crate::dto::*;
 use crate::state::{AppState, DaemonHandle};
-use beethoven_core::{AgentInstance, Decision, InboxItem, Project, Runtime, RuntimeState, Task};
+use beethoven_core::{AgentInstance, AgentRole, Decision, InboxItem, Project, Runtime, RuntimeState, Task, TaskPlanOutcome};
 use beethoven_events::{Event, EventStore};
 use chrono::{DateTime, Utc};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -55,9 +55,51 @@ pub async fn get_agents(state: State<'_, AppState>, project_id: String) -> Resul
 }
 
 #[tauri::command]
+pub async fn get_agent_health(state: State<'_, AppState>) -> Result<Vec<AgentHealthDto>, String> {
+    let (rs, events) = load_state(&state).await?;
+    Ok(derive::agent_health_for(&rs, &events))
+}
+
+#[tauri::command]
 pub async fn get_tasks(state: State<'_, AppState>, project_id: String) -> Result<Vec<TaskDto>, String> {
     let (rs, _events) = load_state(&state).await?;
     Ok(derive::tasks_for(&rs, &project_id))
+}
+
+#[tauri::command]
+pub async fn create_task(
+    state: State<'_, AppState>,
+    project_id: String,
+    parent_task_id: Option<String>,
+    title: String,
+    description: String,
+    success_criteria: String,
+    target_score: Option<f32>,
+    draft: bool,
+) -> Result<Task, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime
+        .create_task(&project_id, parent_task_id.as_deref(), &title, &description, &success_criteria, target_score, draft)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn plan_task(state: State<'_, AppState>, task_id: String) -> Result<TaskPlanOutcome, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.plan_task(&task_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn approve_draft_task(state: State<'_, AppState>, task_id: String) -> Result<Task, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.approve_draft_task(&task_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn reject_draft_task(state: State<'_, AppState>, task_id: String) -> Result<Task, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.reject_draft_task(&task_id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -105,20 +147,14 @@ pub async fn get_goal_header(state: State<'_, AppState>, project_id: String) -> 
 }
 
 #[tauri::command]
-pub async fn get_workflow_map(state: State<'_, AppState>, initiative_id: String) -> Result<WorkflowMapDto, String> {
+pub async fn get_workflow_map(state: State<'_, AppState>, task_id: String) -> Result<WorkflowMapDto, String> {
     let (rs, _events) = load_state(&state).await?;
-    Ok(derive::workflow_map(&rs, &initiative_id))
+    Ok(derive::workflow_map(&rs, &task_id))
 }
 
 #[tauri::command]
 pub fn get_home_dir(state: State<'_, AppState>) -> String {
     state.home.display().to_string()
-}
-
-#[tauri::command]
-pub async fn get_initiatives(state: State<'_, AppState>) -> Result<Vec<InitiativeSummaryDto>, String> {
-    let (rs, _events) = load_state(&state).await?;
-    Ok(derive::initiatives_for(&rs))
 }
 
 #[tauri::command]
@@ -137,6 +173,19 @@ pub async fn get_workspaces(state: State<'_, AppState>) -> Result<Vec<WorkspaceD
 pub async fn get_recent_diffs(state: State<'_, AppState>, limit: Option<usize>) -> Result<Vec<DiffSummaryDto>, String> {
     let (rs, _events) = load_state(&state).await?;
     Ok(derive::recent_diffs(&rs, limit.unwrap_or(50)))
+}
+
+#[tauri::command]
+pub async fn get_recent_prompts(state: State<'_, AppState>, limit: Option<usize>) -> Result<Vec<PromptSummaryDto>, String> {
+    let (rs, _events) = load_state(&state).await?;
+    Ok(derive::recent_prompts(&rs, limit.unwrap_or(50)))
+}
+
+#[tauri::command]
+pub async fn get_agent_templates(state: State<'_, AppState>) -> Result<Vec<AgentTemplateDto>, String> {
+    let (rs, _events) = load_state(&state).await?;
+    let runtime = state.runtime.lock().await;
+    Ok(derive::agent_templates_for(&rs, runtime.registry()))
 }
 
 #[tauri::command]
@@ -185,6 +234,26 @@ pub async fn resume_project(state: State<'_, AppState>, project_id: String) -> R
 pub async fn archive_project(state: State<'_, AppState>, project_id: String) -> Result<Project, String> {
     let mut runtime = with_runtime(&state).await?;
     runtime.archive_project(&project_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_project_repository_path(
+    state: State<'_, AppState>,
+    project_id: String,
+    repository_path: String,
+) -> Result<Project, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.update_repository_path(&project_id, repository_path).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_project_default_branch(
+    state: State<'_, AppState>,
+    project_id: String,
+    default_branch: String,
+) -> Result<Project, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.update_default_branch(&project_id, default_branch).await.map_err(|e| e.to_string())
 }
 
 // --- Task actions ---------------------------------------------------
@@ -243,6 +312,52 @@ pub async fn resume_agent(state: State<'_, AppState>, agent_id: String) -> Resul
     runtime.resume_agent(&agent_id).await.map_err(|e| e.to_string())
 }
 
+fn lead_id_for(runtime: &Runtime, project_id: &str) -> Result<String, String> {
+    runtime
+        .state
+        .agent_instances
+        .values()
+        .find(|a| a.project_id == project_id && a.role == AgentRole::Lead)
+        .map(|a| a.id.clone())
+        .ok_or_else(|| format!("no Lead agent found for project {project_id}"))
+}
+
+#[tauri::command]
+pub async fn spawn_worker_agent(
+    state: State<'_, AppState>,
+    project_id: String,
+    role_description: String,
+    name: String,
+) -> Result<AgentInstance, String> {
+    let mut runtime = with_runtime(&state).await?;
+    let lead_id = lead_id_for(&runtime, &project_id)?;
+    runtime
+        .spawn_agent(&project_id, &lead_id, AgentRole::Worker, &role_description, &name)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn spawn_reviewer_agent(
+    state: State<'_, AppState>,
+    project_id: String,
+    role_description: String,
+    name: String,
+) -> Result<AgentInstance, String> {
+    let mut runtime = with_runtime(&state).await?;
+    let lead_id = lead_id_for(&runtime, &project_id)?;
+    runtime
+        .spawn_agent(&project_id, &lead_id, AgentRole::Reviewer, &role_description, &name)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn archive_agent(state: State<'_, AppState>, agent_id: String) -> Result<AgentInstance, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime.archive_agent(&agent_id).await.map_err(|e| e.to_string())
+}
+
 // --- Runtime controls ---------------------------------------------------
 //
 // The desktop process's own in-process daemon loop, gated by the same
@@ -282,6 +397,9 @@ async fn run_desktop_daemon_loop(app: AppHandle, shutdown: Arc<AtomicBool>) {
                     }
                 }
                 Err(e) => eprintln!("desktop runtime loop: refresh failed: {e}"),
+            }
+            if let Err(e) = runtime.sync_agent_health_events().await {
+                eprintln!("desktop runtime loop: agent health sync failed: {e}");
             }
         }
 

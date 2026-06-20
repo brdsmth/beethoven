@@ -11,14 +11,12 @@ pub enum EventType {
 
     AgentTemplateCreated,
 
-    GoalCreated,
-    GoalUpdated,
-
-    AgentCreated,
-    AgentStarted,
-    AgentStopped,
+    AgentSpawned,
+    AgentArchived,
+    AgentDelegatedTask,
 
     TaskCreated,
+    TaskApproved,
     TaskAssigned,
     TaskStarted,
     TaskBlocked,
@@ -27,7 +25,6 @@ pub enum EventType {
     QuestionRaised,
     QuestionAnswered,
 
-    DecisionRequested,
     DecisionResolved,
 
     WorkspaceCreated,
@@ -41,9 +38,9 @@ pub enum EventType {
 
     PromptGenerated,
 
-    ModelRunStarted,
-    ModelRunCompleted,
-    ModelRunFailed,
+    RunStarted,
+    RunCompleted,
+    RunFailed,
 
     FilesModified,
     DiffCaptured,
@@ -55,23 +52,11 @@ pub enum EventType {
     PRCreated,
     PRMerged,
 
-    InitiativeCreated,
-    InitiativePlanned,
-    InitiativeCompleted,
-
-    RequirementCreated,
-    RequirementUpdated,
-
-    PlanCreated,
-    EpicCreated,
-
     DecisionCreated,
     DecisionEscalated,
 
-    PMPlanningStarted,
-    PMPlanningCompleted,
-    PMReviewStarted,
-    PMReviewCompleted,
+    TaskPlanningStarted,
+    TaskPlanningCompleted,
 
     RuntimeStarted,
     RuntimeStopped,
@@ -91,6 +76,12 @@ pub enum EventType {
 
     AgentPaused,
     AgentResumed,
+
+    AgentMarkedSlow,
+    AgentMarkedStalled,
+
+    RepositoryPathChanged,
+    DefaultBranchChanged,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -104,19 +95,17 @@ impl std::str::FromStr for EventType {
         Ok(match s {
             "ProjectCreated" => EventType::ProjectCreated,
             "AgentTemplateCreated" => EventType::AgentTemplateCreated,
-            "GoalCreated" => EventType::GoalCreated,
-            "GoalUpdated" => EventType::GoalUpdated,
-            "AgentCreated" => EventType::AgentCreated,
-            "AgentStarted" => EventType::AgentStarted,
-            "AgentStopped" => EventType::AgentStopped,
+            "AgentSpawned" => EventType::AgentSpawned,
+            "AgentArchived" => EventType::AgentArchived,
+            "AgentDelegatedTask" => EventType::AgentDelegatedTask,
             "TaskCreated" => EventType::TaskCreated,
+            "TaskApproved" => EventType::TaskApproved,
             "TaskAssigned" => EventType::TaskAssigned,
             "TaskStarted" => EventType::TaskStarted,
             "TaskBlocked" => EventType::TaskBlocked,
             "TaskCompleted" => EventType::TaskCompleted,
             "QuestionRaised" => EventType::QuestionRaised,
             "QuestionAnswered" => EventType::QuestionAnswered,
-            "DecisionRequested" => EventType::DecisionRequested,
             "DecisionResolved" => EventType::DecisionResolved,
             "WorkspaceCreated" => EventType::WorkspaceCreated,
             "WorkspaceDestroyed" => EventType::WorkspaceDestroyed,
@@ -125,9 +114,9 @@ impl std::str::FromStr for EventType {
             "TmuxSessionCreated" => EventType::TmuxSessionCreated,
             "TmuxSessionDestroyed" => EventType::TmuxSessionDestroyed,
             "PromptGenerated" => EventType::PromptGenerated,
-            "ModelRunStarted" => EventType::ModelRunStarted,
-            "ModelRunCompleted" => EventType::ModelRunCompleted,
-            "ModelRunFailed" => EventType::ModelRunFailed,
+            "RunStarted" => EventType::RunStarted,
+            "RunCompleted" => EventType::RunCompleted,
+            "RunFailed" => EventType::RunFailed,
             "FilesModified" => EventType::FilesModified,
             "DiffCaptured" => EventType::DiffCaptured,
             "ReviewStarted" => EventType::ReviewStarted,
@@ -135,19 +124,10 @@ impl std::str::FromStr for EventType {
             "ReviewRejected" => EventType::ReviewRejected,
             "PRCreated" => EventType::PRCreated,
             "PRMerged" => EventType::PRMerged,
-            "InitiativeCreated" => EventType::InitiativeCreated,
-            "InitiativePlanned" => EventType::InitiativePlanned,
-            "InitiativeCompleted" => EventType::InitiativeCompleted,
-            "RequirementCreated" => EventType::RequirementCreated,
-            "RequirementUpdated" => EventType::RequirementUpdated,
-            "PlanCreated" => EventType::PlanCreated,
-            "EpicCreated" => EventType::EpicCreated,
             "DecisionCreated" => EventType::DecisionCreated,
             "DecisionEscalated" => EventType::DecisionEscalated,
-            "PMPlanningStarted" => EventType::PMPlanningStarted,
-            "PMPlanningCompleted" => EventType::PMPlanningCompleted,
-            "PMReviewStarted" => EventType::PMReviewStarted,
-            "PMReviewCompleted" => EventType::PMReviewCompleted,
+            "TaskPlanningStarted" => EventType::TaskPlanningStarted,
+            "TaskPlanningCompleted" => EventType::TaskPlanningCompleted,
             "RuntimeStarted" => EventType::RuntimeStarted,
             "RuntimeStopped" => EventType::RuntimeStopped,
             "RuntimeRestarted" => EventType::RuntimeRestarted,
@@ -162,6 +142,10 @@ impl std::str::FromStr for EventType {
             "ReviewChangesRequested" => EventType::ReviewChangesRequested,
             "AgentPaused" => EventType::AgentPaused,
             "AgentResumed" => EventType::AgentResumed,
+            "AgentMarkedSlow" => EventType::AgentMarkedSlow,
+            "AgentMarkedStalled" => EventType::AgentMarkedStalled,
+            "RepositoryPathChanged" => EventType::RepositoryPathChanged,
+            "DefaultBranchChanged" => EventType::DefaultBranchChanged,
             other => return Err(UnknownEventType(other.to_string())),
         })
     }
@@ -172,19 +156,17 @@ impl EventType {
         match self {
             EventType::ProjectCreated => "ProjectCreated",
             EventType::AgentTemplateCreated => "AgentTemplateCreated",
-            EventType::GoalCreated => "GoalCreated",
-            EventType::GoalUpdated => "GoalUpdated",
-            EventType::AgentCreated => "AgentCreated",
-            EventType::AgentStarted => "AgentStarted",
-            EventType::AgentStopped => "AgentStopped",
+            EventType::AgentSpawned => "AgentSpawned",
+            EventType::AgentArchived => "AgentArchived",
+            EventType::AgentDelegatedTask => "AgentDelegatedTask",
             EventType::TaskCreated => "TaskCreated",
+            EventType::TaskApproved => "TaskApproved",
             EventType::TaskAssigned => "TaskAssigned",
             EventType::TaskStarted => "TaskStarted",
             EventType::TaskBlocked => "TaskBlocked",
             EventType::TaskCompleted => "TaskCompleted",
             EventType::QuestionRaised => "QuestionRaised",
             EventType::QuestionAnswered => "QuestionAnswered",
-            EventType::DecisionRequested => "DecisionRequested",
             EventType::DecisionResolved => "DecisionResolved",
             EventType::WorkspaceCreated => "WorkspaceCreated",
             EventType::WorkspaceDestroyed => "WorkspaceDestroyed",
@@ -193,9 +175,9 @@ impl EventType {
             EventType::TmuxSessionCreated => "TmuxSessionCreated",
             EventType::TmuxSessionDestroyed => "TmuxSessionDestroyed",
             EventType::PromptGenerated => "PromptGenerated",
-            EventType::ModelRunStarted => "ModelRunStarted",
-            EventType::ModelRunCompleted => "ModelRunCompleted",
-            EventType::ModelRunFailed => "ModelRunFailed",
+            EventType::RunStarted => "RunStarted",
+            EventType::RunCompleted => "RunCompleted",
+            EventType::RunFailed => "RunFailed",
             EventType::FilesModified => "FilesModified",
             EventType::DiffCaptured => "DiffCaptured",
             EventType::ReviewStarted => "ReviewStarted",
@@ -203,19 +185,10 @@ impl EventType {
             EventType::ReviewRejected => "ReviewRejected",
             EventType::PRCreated => "PRCreated",
             EventType::PRMerged => "PRMerged",
-            EventType::InitiativeCreated => "InitiativeCreated",
-            EventType::InitiativePlanned => "InitiativePlanned",
-            EventType::InitiativeCompleted => "InitiativeCompleted",
-            EventType::RequirementCreated => "RequirementCreated",
-            EventType::RequirementUpdated => "RequirementUpdated",
-            EventType::PlanCreated => "PlanCreated",
-            EventType::EpicCreated => "EpicCreated",
             EventType::DecisionCreated => "DecisionCreated",
             EventType::DecisionEscalated => "DecisionEscalated",
-            EventType::PMPlanningStarted => "PMPlanningStarted",
-            EventType::PMPlanningCompleted => "PMPlanningCompleted",
-            EventType::PMReviewStarted => "PMReviewStarted",
-            EventType::PMReviewCompleted => "PMReviewCompleted",
+            EventType::TaskPlanningStarted => "TaskPlanningStarted",
+            EventType::TaskPlanningCompleted => "TaskPlanningCompleted",
             EventType::RuntimeStarted => "RuntimeStarted",
             EventType::RuntimeStopped => "RuntimeStopped",
             EventType::RuntimeRestarted => "RuntimeRestarted",
@@ -230,6 +203,10 @@ impl EventType {
             EventType::ReviewChangesRequested => "ReviewChangesRequested",
             EventType::AgentPaused => "AgentPaused",
             EventType::AgentResumed => "AgentResumed",
+            EventType::AgentMarkedSlow => "AgentMarkedSlow",
+            EventType::AgentMarkedStalled => "AgentMarkedStalled",
+            EventType::RepositoryPathChanged => "RepositoryPathChanged",
+            EventType::DefaultBranchChanged => "DefaultBranchChanged",
         }
     }
 }
@@ -314,22 +291,20 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
-    const ALL_EVENT_TYPES: [EventType; 60] = [
+    const ALL_EVENT_TYPES: [EventType; 53] = [
         EventType::ProjectCreated,
         EventType::AgentTemplateCreated,
-        EventType::GoalCreated,
-        EventType::GoalUpdated,
-        EventType::AgentCreated,
-        EventType::AgentStarted,
-        EventType::AgentStopped,
+        EventType::AgentSpawned,
+        EventType::AgentArchived,
+        EventType::AgentDelegatedTask,
         EventType::TaskCreated,
+        EventType::TaskApproved,
         EventType::TaskAssigned,
         EventType::TaskStarted,
         EventType::TaskBlocked,
         EventType::TaskCompleted,
         EventType::QuestionRaised,
         EventType::QuestionAnswered,
-        EventType::DecisionRequested,
         EventType::DecisionResolved,
         EventType::WorkspaceCreated,
         EventType::WorkspaceDestroyed,
@@ -338,9 +313,9 @@ mod tests {
         EventType::TmuxSessionCreated,
         EventType::TmuxSessionDestroyed,
         EventType::PromptGenerated,
-        EventType::ModelRunStarted,
-        EventType::ModelRunCompleted,
-        EventType::ModelRunFailed,
+        EventType::RunStarted,
+        EventType::RunCompleted,
+        EventType::RunFailed,
         EventType::FilesModified,
         EventType::DiffCaptured,
         EventType::ReviewStarted,
@@ -348,19 +323,10 @@ mod tests {
         EventType::ReviewRejected,
         EventType::PRCreated,
         EventType::PRMerged,
-        EventType::InitiativeCreated,
-        EventType::InitiativePlanned,
-        EventType::InitiativeCompleted,
-        EventType::RequirementCreated,
-        EventType::RequirementUpdated,
-        EventType::PlanCreated,
-        EventType::EpicCreated,
         EventType::DecisionCreated,
         EventType::DecisionEscalated,
-        EventType::PMPlanningStarted,
-        EventType::PMPlanningCompleted,
-        EventType::PMReviewStarted,
-        EventType::PMReviewCompleted,
+        EventType::TaskPlanningStarted,
+        EventType::TaskPlanningCompleted,
         EventType::RuntimeStarted,
         EventType::RuntimeStopped,
         EventType::RuntimeRestarted,
@@ -375,6 +341,10 @@ mod tests {
         EventType::ReviewChangesRequested,
         EventType::AgentPaused,
         EventType::AgentResumed,
+        EventType::AgentMarkedSlow,
+        EventType::AgentMarkedStalled,
+        EventType::RepositoryPathChanged,
+        EventType::DefaultBranchChanged,
     ];
 
     #[test]
@@ -400,7 +370,7 @@ mod tests {
 
     #[test]
     fn for_project_sets_project_scope() {
-        let e = Event::for_project("p1", EventType::GoalCreated, "human", serde_json::json!({}));
+        let e = Event::for_project("p1", EventType::TaskCreated, "human", serde_json::json!({}));
         assert_eq!(e.scope.project_id(), Some("p1"));
     }
 }
