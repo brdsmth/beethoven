@@ -2,12 +2,17 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { useAction } from "../../lib/hooks";
+import { allTasks, computeProjectHealth, currentBottleneck } from "../../lib/projectHealth";
+import { displayStatus } from "../tasks/taskDisplay";
+import { DependencyGraph } from "../tasks/DependencyGraph";
 import type { Agent, ProjectDetail as ProjectDetailData, Task, TaskNode } from "../../lib/types";
 import { ActionButton } from "../ActionButton";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { Panel } from "../Panel";
 import { RespondField } from "../RespondField";
+import { Tabs } from "../Tabs";
 import { TaskDetailModal } from "../TaskDetailModal";
+import { GoalHeader } from "../mission-control/GoalHeader";
 
 const STATUS_COLOR: Record<ProjectDetailData["status"], string> = {
   active: "text-emerald-400",
@@ -15,14 +20,18 @@ const STATUS_COLOR: Record<ProjectDetailData["status"], string> = {
   archived: "text-slate-500",
 };
 
+type ProjectTab = "overview" | "task_graph" | "decisions" | "artifacts" | "runtime";
+const TABS: { id: ProjectTab; label: string }[] = [
+  { id: "overview", label: "Overview" },
+  { id: "task_graph", label: "Task Graph" },
+  { id: "decisions", label: "Decisions" },
+  { id: "artifacts", label: "Artifacts" },
+  { id: "runtime", label: "Runtime" },
+];
+
 export function ProjectDetail({ project }: { project: ProjectDetailData }) {
   const [confirmArchive, setConfirmArchive] = useState(false);
-
-  const { data: agents } = useQuery({
-    queryKey: ["agents", project.id],
-    queryFn: () => api.getAgents(project.id),
-  });
-  const idleAgents = (agents ?? []).filter((a) => a.status === "idle" && a.role !== "lead");
+  const [tab, setTab] = useState<ProjectTab>("overview");
 
   const invalidateKeys = [["projects"], ["project", project.id]];
   const pause = useAction(api.pauseProject, { successMessage: `${project.name} paused`, invalidateKeys });
@@ -50,36 +59,13 @@ export function ProjectDetail({ project }: { project: ProjectDetailData }) {
         </div>
       </div>
 
-      <Panel title="Tasks">
-        {project.tasks.length === 0 ? (
-          <div className="text-sm text-slate-500">No tasks yet.</div>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {project.tasks.map((node) => (
-              <TaskTree key={node.task.id} node={node} idleAgents={idleAgents} />
-            ))}
-          </div>
-        )}
-      </Panel>
+      <Tabs tabs={TABS} active={tab} onChange={setTab} />
 
-      <Panel title="Decisions">
-        {project.decisions.length === 0 ? (
-          <div className="text-sm text-slate-500">No decisions raised.</div>
-        ) : (
-          <ul className="flex flex-col gap-1">
-            {project.decisions.map((d) => (
-              <li key={d.id} className="text-sm text-slate-300">
-                {d.question}{" "}
-                <span className={`text-xs ${d.status === "open" ? "text-amber-400" : "text-slate-500"}`}>
-                  ({d.status})
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Panel>
-
-      <ProjectSettings project={project} />
+      {tab === "overview" && <OverviewTab project={project} />}
+      {tab === "task_graph" && <TaskGraphTab project={project} />}
+      {tab === "decisions" && <DecisionsTab project={project} />}
+      {tab === "artifacts" && <ArtifactsTab project={project} />}
+      {tab === "runtime" && <RuntimeTab project={project} />}
 
       <ConfirmDialog
         open={confirmArchive}
@@ -91,6 +77,169 @@ export function ProjectDetail({ project }: { project: ProjectDetailData }) {
         onConfirm={() => archive.mutate(project.id, { onSuccess: () => setConfirmArchive(false) })}
         onCancel={() => setConfirmArchive(false)}
       />
+    </div>
+  );
+}
+
+function OverviewTab({ project }: { project: ProjectDetailData }) {
+  const health = computeProjectHealth(project);
+  const bottleneck = currentBottleneck(project);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <GoalHeader projectId={project.id} />
+
+      <Panel title="Current Bottleneck">
+        {bottleneck ? (
+          <div>
+            <div className="text-sm font-medium text-slate-200">{bottleneck.title}</div>
+            <div className={`mt-1 text-xs font-semibold uppercase ${displayStatus(bottleneck).color}`}>
+              {displayStatus(bottleneck).label}
+            </div>
+          </div>
+        ) : (
+          <div className="text-sm text-emerald-400">Nothing is currently holding this project up.</div>
+        )}
+      </Panel>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Stat label="Running" value={health.runningTasks} />
+        <Stat label="Blocked" value={health.blockedTasks} tone={health.blockedTasks > 0 ? "warn" : "neutral"} />
+        <Stat label="Pending Decisions" value={health.decisionQueue} tone={health.decisionQueue > 0 ? "warn" : "neutral"} />
+        <Stat label="Open Objectives" value={health.openObjectives} />
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value, tone = "neutral" }: { label: string; value: number; tone?: "warn" | "neutral" }) {
+  const color = tone === "warn" && value > 0 ? "text-amber-400" : "text-slate-100";
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
+      <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
+      <div className={`text-lg font-semibold ${color}`}>{value}</div>
+    </div>
+  );
+}
+
+function TaskGraphTab({ project }: { project: ProjectDetailData }) {
+  const { data: agents } = useQuery({
+    queryKey: ["agents", project.id],
+    queryFn: () => api.getAgents(project.id),
+  });
+  const idleAgents = (agents ?? []).filter((a) => a.status === "idle" && a.role !== "lead");
+
+  return (
+    <div className="flex flex-col gap-4">
+      <DependencyGraph tasks={allTasks(project)} />
+
+      <Panel title="Tasks">
+        {project.tasks.length === 0 ? (
+          <div className="text-sm text-slate-500">No tasks yet.</div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {project.tasks.map((node) => (
+              <TaskTree key={node.task.id} node={node} idleAgents={idleAgents} />
+            ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function DecisionsTab({ project }: { project: ProjectDetailData }) {
+  return (
+    <Panel title="Decisions">
+      {project.decisions.length === 0 ? (
+        <div className="text-sm text-slate-500">No decisions raised.</div>
+      ) : (
+        <ul className="flex flex-col gap-1">
+          {project.decisions.map((d) => (
+            <li key={d.id} className="text-sm text-slate-300">
+              {d.question}{" "}
+              <span className={`text-xs ${d.status === "open" ? "text-amber-400" : "text-slate-500"}`}>
+                ({d.status})
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
+  );
+}
+
+function ArtifactsTab({ project }: { project: ProjectDetailData }) {
+  const { data: diffs } = useQuery({ queryKey: ["recentDiffs", 200], queryFn: () => api.getRecentDiffs(200) });
+  const { data: prompts } = useQuery({ queryKey: ["recentPrompts", 200], queryFn: () => api.getRecentPrompts(200) });
+
+  const projectDiffs = (diffs ?? []).filter((d) => d.project_id === project.id);
+  const projectPrompts = (prompts ?? []).filter((p) => p.project_id === project.id);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Panel title="Recent Diffs">
+        {projectDiffs.length === 0 ? (
+          <div className="text-sm text-slate-500">No diffs captured yet.</div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {projectDiffs.map((d) => (
+              <div key={d.id} className="rounded-md border border-slate-800 p-2">
+                <div className="text-xs text-slate-400">{d.task_title}</div>
+                <pre className="mt-1 max-h-64 overflow-auto rounded bg-slate-950 p-2 text-xs text-slate-400">
+                  {d.content}
+                </pre>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+
+      <Panel title="Recent Prompts">
+        {projectPrompts.length === 0 ? (
+          <div className="text-sm text-slate-500">No prompts generated yet.</div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {projectPrompts.map((p) => (
+              <div key={p.id} className="rounded-md border border-slate-800 p-2">
+                <div className="text-xs text-slate-400">{p.task_title}</div>
+                <pre className="mt-1 max-h-64 overflow-auto rounded bg-slate-950 p-2 text-xs text-slate-400">
+                  {p.content}
+                </pre>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function RuntimeTab({ project }: { project: ProjectDetailData }) {
+  const { data: active } = useQuery({ queryKey: ["activeExecution"], queryFn: api.getActiveExecution });
+  const projectActive = (active ?? []).filter((a) => a.project_id === project.id);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Panel title="Active Executions">
+        {projectActive.length === 0 ? (
+          <div className="text-sm text-slate-500">No tasks in progress.</div>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {projectActive.map((item) => (
+              <li
+                key={item.task_id}
+                className="flex items-center justify-between rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm"
+              >
+                <span className="text-slate-200">{item.task_title}</span>
+                <span className="text-xs text-slate-500">{item.agent_name}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+
+      <ProjectSettings project={project} />
     </div>
   );
 }
@@ -190,11 +339,13 @@ function TaskTree({ node, idleAgents }: { node: TaskNode; idleAgents: Agent[] })
     return <TaskRow task={node.task} idleAgents={idleAgents} />;
   }
 
+  const { label, color } = displayStatus(node.task);
+
   return (
     <div className="rounded-md border border-slate-800 p-3">
       <div className="flex items-center justify-between">
         <div className="font-medium text-slate-100">{node.task.title}</div>
-        <span className="text-xs uppercase text-slate-500">{node.task.status}</span>
+        <span className={`text-xs font-semibold uppercase ${color}`}>{label}</span>
       </div>
       {node.task.description && <p className="mt-1 text-sm text-slate-400">{node.task.description}</p>}
       <div className="mt-3 flex flex-col gap-2 pl-3">
@@ -226,13 +377,18 @@ function TaskRow({ task, idleAgents }: { task: Task; idleAgents: Agent[] }) {
 
   const canCancel = task.status !== "done" && task.status !== "cancelled";
   const canReassign = (task.status === "assigned" || task.status === "blocked") && idleAgents.length > 0;
+  const blockers = task.dependencies.filter((d) => d.status !== "done");
+  const { label, color } = displayStatus(task);
 
   return (
     <div className="flex flex-col gap-1.5 rounded-md border border-slate-800 px-3 py-2">
       <div className="flex items-center justify-between text-sm">
         <span className="text-slate-300">{task.title}</span>
-        <span className="text-xs text-slate-500">{task.status}</span>
+        <span className={`text-xs font-semibold uppercase ${color}`}>{label}</span>
       </div>
+      {blockers.length > 0 && (
+        <div className="text-xs text-amber-400">Blocked by: {blockers.map((b) => b.title).join(", ")}</div>
+      )}
       {task.status === "blocked" && task.blocked_reason && (
         <div className="text-xs text-rose-400">{task.blocked_reason}</div>
       )}
