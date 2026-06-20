@@ -38,6 +38,14 @@ export interface TaskCounts {
   cancelled: number;
 }
 
+/// A compact reference to another task -- enough to link to and label it.
+/// Backs `Task.dependencies`/`dependents`.
+export interface TaskRef {
+  id: string;
+  title: string;
+  status: TaskStatus;
+}
+
 export interface Task {
   id: string;
   project_id: string;
@@ -53,6 +61,15 @@ export interface Task {
   blocked_reason: string | null;
   success_criteria: string;
   target_score: number;
+  /// Tasks this one depends on -- it cannot become executable until every
+  /// one of these is `done`.
+  dependencies: TaskRef[];
+  /// Tasks that depend on this one.
+  dependents: TaskRef[];
+  /// Computed fresh on every read: `Ready`, a leaf, its project `Active`,
+  /// every dependency `done`, and no unresolved Decision against it
+  /// directly. Never persisted -- recompute, don't trust a stale copy.
+  is_executable: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -163,6 +180,16 @@ export interface RuntimeStatus {
   active_agent_count: number;
   active_task_count: number;
   open_inbox_count: number;
+  /// Non-Lead agents currently Assigned/Executing.
+  worker_count: number;
+  /// Tasks the scheduler would release right now across every Active
+  /// project -- `is_executable`, not merely `ready`.
+  queue_depth: number;
+  ready_task_count: number;
+  blocked_task_count: number;
+  /// Tasks whose most recent Run failed -- distinct from blocked, which
+  /// also covers a raised question or a low review score.
+  failed_task_count: number;
 }
 
 export interface ActiveExecution {
