@@ -22,7 +22,7 @@ export type InboxKind = "decision" | "approval" | "question" | "alert";
 export type InboxStatus = "open" | "resolved";
 export type DecisionStatus = "open" | "resolved";
 export type RunStatus = "running" | "completed" | "failed";
-export type ArtifactKind = "prompt" | "response" | "diff" | "files_modified";
+export type ArtifactKind = "prompt" | "response" | "diff" | "files_modified" | "planning_summary";
 export type ReviewStatus = "pending" | "approved" | "needs_changes";
 export type AgentHealthStatus = "healthy" | "slow" | "stalled";
 
@@ -44,6 +44,9 @@ export interface TaskRef {
   id: string;
   title: string;
   status: TaskStatus;
+  /// Why this dependency edge exists, traced back to a PlanningSummary.
+  /// Always null today -- the stub planner generates no dependencies yet.
+  dependency_reason: string | null;
 }
 
 export interface Task {
@@ -70,6 +73,11 @@ export interface Task {
   /// every dependency `done`, and no unresolved Decision against it
   /// directly. Never persisted -- recompute, don't trust a stale copy.
   is_executable: boolean;
+  /// The planning Run that generated this task, if any -- null for a task
+  /// a human created directly.
+  created_by_planning_run_id: string | null;
+  /// Why this task was generated, traced back to the same planning run.
+  creation_reason: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -90,6 +98,9 @@ export interface Decision {
   context: string;
   answer: string | null;
   status: DecisionStatus;
+  /// Why this decision was escalated, traced back to a PlanningSummary --
+  /// null if it wasn't planner-raised.
+  creation_reason: string | null;
   created_at: string;
 }
 
@@ -244,6 +255,9 @@ export interface DecisionSummary {
   question: string;
   context: string;
   status: DecisionStatus;
+  /// Why this decision was escalated, traced back to a PlanningSummary --
+  /// null if it wasn't planner-raised.
+  creation_reason: string | null;
   created_at: string;
 }
 
@@ -337,11 +351,31 @@ export interface AgentTemplate {
   created_at: string;
 }
 
-/// What `plan_task` returns: the children it produced (real work to do) and
-/// any decisions auto-escalated to the inbox.
+/// What `plan_task` returns: the children it produced (real work to do),
+/// any decisions auto-escalated to the inbox, and the planning run that
+/// explains why.
 export interface TaskPlanOutcome {
   tasks: Task[];
   decisions: Decision[];
+  planning_run_id: string;
+}
+
+/// One planning run (a specialized Run, not a new domain entity), joined to
+/// its PlanningSummary artifact -- the audit trail entry for one
+/// `plan_task` call. `sequence` is this run's 1-based position among its
+/// project's planning runs, oldest first ("Planning Run #N").
+export interface PlanningRun {
+  run_id: string;
+  sequence: number;
+  planned_task_id: string;
+  planned_task_title: string;
+  task_count: number;
+  dependency_count: number;
+  decision_count: number;
+  average_dependency_depth: number;
+  planning_duration_ms: number;
+  summary: string;
+  started_at: string;
 }
 
 // --- Raw mutation return shapes -------------------------------------------

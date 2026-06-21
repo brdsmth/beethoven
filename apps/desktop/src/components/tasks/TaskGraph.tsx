@@ -37,7 +37,15 @@ function TaskGraphNode({ node, onSelectTask }: { node: TaskNode; onSelectTask?: 
         <div className="flex flex-col">
           <span className="text-sm font-medium text-slate-200">{task.title}</span>
           {blockers.length > 0 && (
-            <span className="text-xs text-amber-400">Blocked by: {blockers.map((b) => b.title).join(", ")}</span>
+            <span className="text-xs text-amber-400">
+              Blocked by:{" "}
+              {blockers.map((b, idx) => (
+                <span key={b.id} title={b.dependency_reason ?? undefined}>
+                  {idx > 0 && ", "}
+                  {b.title}
+                </span>
+              ))}
+            </span>
           )}
         </div>
         <div className="flex items-center gap-3 text-xs text-slate-500">

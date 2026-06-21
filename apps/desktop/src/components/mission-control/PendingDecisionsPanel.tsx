@@ -36,6 +36,9 @@ function DecisionRow({ decision }: { decision: DecisionSummary }) {
     <li className="rounded-md border border-slate-800 p-2">
       <div className="text-sm font-medium text-slate-200">{decision.question}</div>
       {decision.task_title && <div className="mt-0.5 text-xs text-slate-500">{decision.task_title}</div>}
+      {decision.creation_reason && (
+        <div className="mt-0.5 text-xs text-slate-500">Why this was raised: {decision.creation_reason}</div>
+      )}
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <ActionButton label="Approve" onClick={() => resolve.mutate({ response: "approved" })} pending={resolve.isPending} />
         <ActionButton

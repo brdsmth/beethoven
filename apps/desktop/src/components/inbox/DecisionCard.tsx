@@ -28,6 +28,9 @@ export function DecisionCard({ item, decision }: { item: InboxItem; decision: De
       }
     >
       <p>{decision?.context ?? item.prompt}</p>
+      {decision?.creation_reason && (
+        <p className="mt-1 text-xs text-slate-500">Why this was raised: {decision.creation_reason}</p>
+      )}
     </InboxCardShell>
   );
 }

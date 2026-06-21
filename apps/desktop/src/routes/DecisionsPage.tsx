@@ -61,6 +61,9 @@ function DecisionRow({ decision }: { decision: DecisionSummary }) {
       </div>
       <p className="mt-1 text-sm text-slate-400">{decision.context}</p>
       {decision.task_title && <div className="mt-1 text-xs text-slate-500">{decision.task_title}</div>}
+      {decision.creation_reason && (
+        <div className="mt-1 text-xs text-slate-500">Why this was raised: {decision.creation_reason}</div>
+      )}
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <ActionButton
           label="Approve"

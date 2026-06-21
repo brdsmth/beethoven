@@ -15,6 +15,11 @@ export function TaskDetailPanel({ taskId }: { taskId: string }) {
     queryKey: ["taskDetail", taskId],
     queryFn: () => api.getTaskDetail(taskId),
   });
+  const { data: planningHistory } = useQuery({
+    queryKey: ["planningHistory", data?.task.project_id],
+    queryFn: () => api.getPlanningHistory(data!.task.project_id),
+    enabled: !!data,
+  });
 
   if (isLoading || !data) {
     return <div className="text-sm text-slate-500">Loading…</div>;
@@ -23,6 +28,7 @@ export function TaskDetailPanel({ taskId }: { taskId: string }) {
   const { task, runs, reviews, artifacts, timeline } = data;
   const diffs = artifacts.filter((a) => a.kind === "diff");
   const filesModified = artifacts.filter((a) => a.kind === "files_modified");
+  const planningRun = (planningHistory ?? []).find((r) => r.run_id === task.created_by_planning_run_id);
 
   return (
     <div className="flex flex-col gap-4">
@@ -34,6 +40,11 @@ export function TaskDetailPanel({ taskId }: { taskId: string }) {
         {task.description && <p className="mt-1 text-sm text-slate-400">{task.description}</p>}
         {task.status === "blocked" && task.blocked_reason && (
           <p className="mt-1 text-sm text-rose-400">{task.blocked_reason}</p>
+        )}
+        {task.creation_reason && (
+          <p className="mt-1 text-xs text-slate-500">
+            Created by: {planningRun ? `Planning Run #${planningRun.sequence}` : "Planning"} -- {task.creation_reason}
+          </p>
         )}
         <div className="mt-2 flex flex-wrap gap-4 text-xs text-slate-500">
           <span>Attempt {task.attempt}</span>

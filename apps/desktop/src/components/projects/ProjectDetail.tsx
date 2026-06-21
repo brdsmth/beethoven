@@ -5,6 +5,8 @@ import { useAction } from "../../lib/hooks";
 import { allTasks, computeProjectHealth, currentBottleneck } from "../../lib/projectHealth";
 import { displayStatus } from "../tasks/taskDisplay";
 import { DependencyGraph } from "../tasks/DependencyGraph";
+import { PlanningSummaryPanel } from "../tasks/PlanningSummaryPanel";
+import { PlanningHistoryPanel } from "../tasks/PlanningHistoryPanel";
 import type { Agent, ProjectDetail as ProjectDetailData, Task, TaskNode } from "../../lib/types";
 import { ActionButton } from "../ActionButton";
 import { ConfirmDialog } from "../ConfirmDialog";
@@ -108,6 +110,8 @@ function OverviewTab({ project }: { project: ProjectDetailData }) {
         <Stat label="Pending Decisions" value={health.decisionQueue} tone={health.decisionQueue > 0 ? "warn" : "neutral"} />
         <Stat label="Open Objectives" value={health.openObjectives} />
       </div>
+
+      <PlanningSummaryPanel projectId={project.id} />
     </div>
   );
 }
@@ -178,6 +182,8 @@ function ArtifactsTab({ project }: { project: ProjectDetailData }) {
 
   return (
     <div className="flex flex-col gap-4">
+      <PlanningHistoryPanel projectId={project.id} />
+
       <Panel title="Recent Diffs">
         {projectDiffs.length === 0 ? (
           <div className="text-sm text-slate-500">No diffs captured yet.</div>
@@ -387,7 +393,15 @@ function TaskRow({ task, idleAgents }: { task: Task; idleAgents: Agent[] }) {
         <span className={`text-xs font-semibold uppercase ${color}`}>{label}</span>
       </div>
       {blockers.length > 0 && (
-        <div className="text-xs text-amber-400">Blocked by: {blockers.map((b) => b.title).join(", ")}</div>
+        <div className="text-xs text-amber-400">
+          Blocked by:{" "}
+          {blockers.map((b, idx) => (
+            <span key={b.id} title={b.dependency_reason ?? undefined}>
+              {idx > 0 && ", "}
+              {b.title}
+            </span>
+          ))}
+        </div>
       )}
       {task.status === "blocked" && task.blocked_reason && (
         <div className="text-xs text-rose-400">{task.blocked_reason}</div>
