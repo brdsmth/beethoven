@@ -70,6 +70,9 @@ export interface Task {
   /// whose criteria came back empty.
   success_criteria_reason: string | null;
   target_score: number;
+  /// Why this specific quality bar was chosen (Phase 2.5C), traced back to
+  /// a PlanningSummary -- null for a task a human created directly.
+  target_score_reason: string | null;
   /// Tasks this one depends on -- it cannot become executable until every
   /// one of these is `done`.
   dependencies: TaskRef[];
@@ -370,6 +373,13 @@ export interface TaskPlanOutcome {
 /// its PlanningSummary artifact -- the audit trail entry for one
 /// `plan_task` call. `sequence` is this run's 1-based position among its
 /// project's planning runs, oldest first ("Planning Run #N").
+/// One quality band's count in a planning run's "Score Distribution" --
+/// always all five bands, even ones with a zero count.
+export interface ScoreBandCount {
+  band: string;
+  count: number;
+}
+
 export interface PlanningRun {
   run_id: string;
   sequence: number;
@@ -386,6 +396,11 @@ export interface PlanningRun {
   tasks_with_criteria: number;
   average_criteria_per_task: number;
   criteria_coverage_percent: number;
+  /// Phase 2.5C quality metrics, observability-only.
+  average_target_score: number;
+  highest_target_score: number;
+  lowest_target_score: number;
+  score_distribution: ScoreBandCount[];
   summary: string;
   started_at: string;
 }

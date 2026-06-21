@@ -46,9 +46,14 @@ export function TaskDetailPanel({ taskId }: { taskId: string }) {
             Created by: {planningRun ? `Planning Run #${planningRun.sequence}` : "Planning"} -- {task.creation_reason}
           </p>
         )}
+        {task.target_score_reason && (
+          <p className="mt-1 text-xs text-slate-500">
+            Target Score {task.target_score} -- {task.target_score_reason}
+          </p>
+        )}
         <div className="mt-2 flex flex-wrap gap-4 text-xs text-slate-500">
           <span>Attempt {task.attempt}</span>
-          <span>Target Score {task.target_score}</span>
+          {!task.target_score_reason && <span>Target Score {task.target_score}</span>}
           {task.assigned_agent_name && <span>Agent: {task.assigned_agent_name}</span>}
           {task.branch && <span>Branch: {task.branch}</span>}
           {task.pr_url && (

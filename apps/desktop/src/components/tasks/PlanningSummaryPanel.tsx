@@ -32,13 +32,44 @@ export function PlanningSummaryPanel({ projectId }: { projectId: string }) {
             <Stat label="Tasks With Criteria" value={`${latest.tasks_with_criteria}/${latest.task_count}`} />
             <Stat label="Criteria Coverage" value={`${Math.round(latest.criteria_coverage_percent)}%`} />
             <Stat label="Avg Criteria/Task" value={latest.average_criteria_per_task.toFixed(1)} />
+            <Stat label="Avg Target Score" value={latest.average_target_score.toFixed(1)} />
+            <Stat label="Highest Target Score" value={latest.highest_target_score} />
+            <Stat label="Lowest Target Score" value={latest.lowest_target_score} />
           </div>
+
+          <ScoreDistribution bands={latest.score_distribution} />
+
           <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 text-xs text-slate-400">
             {latest.summary}
           </pre>
         </div>
       )}
     </Panel>
+  );
+}
+
+function ScoreDistribution({ bands }: { bands: { band: string; count: number }[] }) {
+  const total = bands.reduce((sum, b) => sum + b.count, 0);
+  if (total === 0) return null;
+
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wide text-slate-500">Score Distribution</div>
+      <div className="mt-1 flex flex-col gap-1">
+        {bands.map((b) => (
+          <div key={b.band} className="flex items-center gap-2 text-xs text-slate-400">
+            <span className="w-16 shrink-0">{b.band}</span>
+            <div className="h-2 flex-1 rounded bg-slate-800">
+              <div
+                className="h-2 rounded bg-indigo-600"
+                style={{ width: total === 0 ? "0%" : `${(b.count / total) * 100}%` }}
+              />
+            </div>
+            <span className="w-6 shrink-0 text-right">{b.count}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
