@@ -17,6 +17,8 @@ pub enum AgentsError {
     UnknownProfile(String),
     #[error("unknown runtime: {0}")]
     UnknownRuntime(String),
+    #[error("planner produced no usable task or decision output")]
+    NoPlannerOutput,
 }
 
 /// Everything a `ModelRuntime` needs to run one model invocation inside a

@@ -5,7 +5,7 @@ mod review;
 mod scheduler;
 
 pub use model::{AgentsError, ClaudeCodeRuntime, ExecutionRequest, ExecutionResult, ExecutionStatus, ModelRuntime};
-pub use prompt::{PromptBuilder, WorkerPromptContext};
+pub use prompt::{PlannerPromptContext, PromptBuilder, WorkerPromptContext};
 pub use registry::{default_registry, RuntimeProfile, RuntimeRegistry};
 pub use review::{ReviewOutcome, ReviewResult, ReviewService};
 pub use scheduler::{FifoScheduler, QueuedTask, Scheduler, TaskQueue};
@@ -54,7 +54,7 @@ pub struct TaskDraft {
     pub reason: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecisionDraft {
     pub question: String,
     pub context: String,
@@ -111,6 +111,97 @@ impl PlanningService {
 
         outcome
     }
+
+    /// Phase 2.5A: turns a model's response to a `PromptBuilder::planner`
+    /// prompt into a `PlanOutcome` plus its overall reasoning. Prefers
+    /// `structured_output` (populated when the model honors
+    /// `ExecutionRequest::json_schema`); falls back to scanning
+    /// `raw_response` for a top-level `{...}` block for models that ignore
+    /// or only partially honor the schema. Distinct from `plan` above --
+    /// that deterministic stub stays in place for tests and as the
+    /// benchmark suite's fast, free baseline; this is what
+    /// `Runtime::plan_task` actually calls.
+    pub fn parse_model_response(
+        structured: Option<&serde_json::Value>,
+        raw_response: &str,
+    ) -> Result<(PlanOutcome, String), AgentsError> {
+        let value = match structured {
+            Some(v) => v.clone(),
+            None => extract_json_object(raw_response).ok_or(AgentsError::NoPlannerOutput)?,
+        };
+        let parsed: ModelPlanResponse = serde_json::from_value(value)?;
+        if parsed.tasks.is_empty() && parsed.decisions.is_empty() {
+            return Err(AgentsError::NoPlannerOutput);
+        }
+        Ok((
+            PlanOutcome {
+                task_drafts: parsed.tasks,
+                decision_drafts: parsed.decisions,
+            },
+            parsed.reasoning,
+        ))
+    }
+}
+
+/// The shape `PlanningService::parse_model_response` expects, and the JSON
+/// Schema (`PLANNER_RESPONSE_SCHEMA`) asked of the model via
+/// `ExecutionRequest::json_schema` to produce it.
+#[derive(Debug, Deserialize)]
+struct ModelPlanResponse {
+    #[serde(default)]
+    reasoning: String,
+    #[serde(default)]
+    tasks: Vec<TaskDraft>,
+    #[serde(default)]
+    decisions: Vec<DecisionDraft>,
+}
+
+/// Passed as `ExecutionRequest::json_schema` for every planning call.
+pub const PLANNER_RESPONSE_SCHEMA: &str = r#"{
+  "type": "object",
+  "properties": {
+    "reasoning": {
+      "type": "string",
+      "description": "Overall reasoning behind this task breakdown."
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "reason": { "type": "string", "description": "Why this specific task exists." }
+        },
+        "required": ["title", "description", "reason"]
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "question": { "type": "string" },
+          "context": { "type": "string" },
+          "reason": { "type": "string", "description": "Why this needs a human decision instead of a generated task." }
+        },
+        "required": ["question", "context", "reason"]
+      }
+    }
+  },
+  "required": ["reasoning", "tasks", "decisions"]
+}"#;
+
+/// Best-effort fallback for a model that didn't honor `json_schema` and
+/// embedded its JSON inside prose instead of returning it as
+/// `structured_output` directly: grabs the first top-level `{...}` block.
+fn extract_json_object(text: &str) -> Option<serde_json::Value> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    if end < start {
+        return None;
+    }
+    serde_json::from_str(&text[start..=end]).ok()
 }
 
 #[derive(Debug, Clone)]
@@ -270,6 +361,45 @@ mod tests {
         assert_eq!(outcome.decision_drafts[0].question, "What auth provider should we use?");
         assert!(!outcome.task_drafts[0].reason.is_empty());
         assert!(outcome.decision_drafts[0].reason.contains("question"));
+    }
+
+    #[test]
+    fn parse_model_response_prefers_structured_output_over_raw_text() {
+        let structured = serde_json::json!({
+            "reasoning": "Split backend, frontend, and tests apart for parallel work.",
+            "tasks": [
+                {"title": "Implement OAuth Backend", "description": "", "reason": "Backend work is independent of UI."},
+                {"title": "Implement OAuth Frontend", "description": "", "reason": "UI work is independent of backend."},
+            ],
+            "decisions": [],
+        });
+        let (outcome, reasoning) =
+            PlanningService::parse_model_response(Some(&structured), "ignored raw text").unwrap();
+        assert_eq!(outcome.task_drafts.len(), 2);
+        assert_eq!(outcome.task_drafts[0].title, "Implement OAuth Backend");
+        assert!(reasoning.contains("parallel work"));
+    }
+
+    #[test]
+    fn parse_model_response_falls_back_to_extracting_json_from_raw_text() {
+        let raw = "Sure, here is the plan:\n{\"reasoning\": \"r\", \"tasks\": [{\"title\": \"t\", \"description\": \"\", \"reason\": \"because\"}], \"decisions\": []}\nLet me know if you need changes.";
+        let (outcome, reasoning) = PlanningService::parse_model_response(None, raw).unwrap();
+        assert_eq!(outcome.task_drafts.len(), 1);
+        assert_eq!(outcome.task_drafts[0].title, "t");
+        assert_eq!(reasoning, "r");
+    }
+
+    #[test]
+    fn parse_model_response_errors_on_empty_tasks_and_decisions() {
+        let structured = serde_json::json!({"reasoning": "nothing to do", "tasks": [], "decisions": []});
+        let err = PlanningService::parse_model_response(Some(&structured), "").unwrap_err();
+        assert!(matches!(err, AgentsError::NoPlannerOutput));
+    }
+
+    #[test]
+    fn parse_model_response_errors_when_no_json_is_present_anywhere() {
+        let err = PlanningService::parse_model_response(None, "no json here at all").unwrap_err();
+        assert!(matches!(err, AgentsError::NoPlannerOutput));
     }
 
     #[test]
