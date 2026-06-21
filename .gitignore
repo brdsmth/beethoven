@@ -2,3 +2,7 @@
 **/*.rs.bk
 .DS_Store
 .gstack/
+# Scratch output from `cargo run --example planner_benchmark` -- the
+# committed planner-benchmark-baseline.json is the durable reference to
+# diff against, this is just whatever the most recent local run produced.
+crates/beethoven-agents/examples/planner-benchmark-latest.json

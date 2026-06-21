@@ -1,0 +1,293 @@
+{
+  "planner": "stub-bullet-parser",
+  "generated_at": "2026-06-20T21:51:15.116928+00:00",
+  "goals": [
+    {
+      "name": "oauth-authentication",
+      "title": "Build OAuth Authentication",
+      "description": "Add OAuth-based login to the app, supporting Google and GitHub as providers, with secure token storage and session management.",
+      "task_count": 1,
+      "decision_count": 0,
+      "fell_back_to_generic_task": true,
+      "tasks": [
+        {
+          "title": "Implement: Build OAuth Authentication",
+          "reason": "\"Build OAuth Authentication\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+        }
+      ],
+      "decisions": []
+    },
+    {
+      "name": "gmail-integration",
+      "title": "Build Gmail Integration",
+      "description": "Integrate with Gmail so users can connect their account and the app can read and send email on their behalf, respecting OAuth scopes and rate limits.",
+      "task_count": 1,
+      "decision_count": 0,
+      "fell_back_to_generic_task": true,
+      "tasks": [
+        {
+          "title": "Implement: Build Gmail Integration",
+          "reason": "\"Build Gmail Integration\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+        }
+      ],
+      "decisions": []
+    },
+    {
+      "name": "procurement-system",
+      "title": "Build Procurement System",
+      "description": "Build an internal procurement system where employees can request purchases, managers approve them, and finance can track spend against budgets.",
+      "task_count": 1,
+      "decision_count": 0,
+      "fell_back_to_generic_task": true,
+      "tasks": [
+        {
+          "title": "Implement: Build Procurement System",
+          "reason": "\"Build Procurement System\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+        }
+      ],
+      "decisions": []
+    },
+    {
+      "name": "used-sailboat-marketplace",
+      "title": "Build Used Sailboat Marketplace",
+      "description": "Build a marketplace where people can list used sailboats for sale, search and filter listings, and message sellers.",
+      "task_count": 1,
+      "decision_count": 0,
+      "fell_back_to_generic_task": true,
+      "tasks": [
+        {
+          "title": "Implement: Build Used Sailboat Marketplace",
+          "reason": "\"Build Used Sailboat Marketplace\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+        }
+      ],
+      "decisions": []
+    },
+    {
+      "name": "realtime-notifications",
+      "title": "Add Real-Time Notifications",
+      "description": "Add a notification system that alerts users in real time when something relevant happens, with both in-app and email delivery, and a way to manage notification preferences.",
+      "task_count": 1,
+      "decision_count": 0,
+      "fell_back_to_generic_task": true,
+      "tasks": [
+        {
+          "title": "Implement: Add Real-Time Notifications",
+          "reason": "\"Add Real-Time Notifications\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+        }
+      ],
+      "decisions": []
+    },
+    {
+      "name": "support-ticketing",
+      "title": "Build a Customer Support Ticketing System",
+      "description": "Build a system where customers can submit support tickets, support agents can triage and respond, and managers can see SLA compliance metrics.",
+      "task_count": 1,
+      "decision_count": 0,
+      "fell_back_to_generic_task": true,
+      "tasks": [
+        {
+          "title": "Implement: Build a Customer Support Ticketing System",
+          "reason": "\"Build a Customer Support Ticketing System\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+        }
+      ],
+      "decisions": []
+    },
+    {
+      "name": "multi-tenant-billing",
+      "title": "Add Multi-Tenant Billing",
+      "description": "Add subscription billing so each tenant organization can be charged based on usage, with invoicing, payment retries, and a self-serve billing portal.",
+      "task_count": 1,
+      "decision_count": 0,
+      "fell_back_to_generic_task": true,
+      "tasks": [
+        {
+          "title": "Implement: Add Multi-Tenant Billing",
+          "reason": "\"Add Multi-Tenant Billing\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+        }
+      ],
+      "decisions": []
+    },
+    {
+      "name": "recipe-sharing-app",
+      "title": "Build a Recipe Sharing App",
+      "description": "Build an app where users can post recipes with photos and ingredients, search by ingredient or cuisine, and save favorites.",
+      "task_count": 1,
+      "decision_count": 0,
+      "fell_back_to_generic_task": true,
+      "tasks": [
+        {
+          "title": "Implement: Build a Recipe Sharing App",
+          "reason": "\"Build a Recipe Sharing App\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+        }
+      ],
+      "decisions": []
+    },
+    {
+      "name": "two-factor-auth",
+      "title": "Add Two-Factor Authentication",
+      "description": "Add two-factor authentication using TOTP and SMS as a second factor, with backup codes and the ability for users to manage their enrolled devices.",
+      "task_count": 1,
+      "decision_count": 0,
+      "fell_back_to_generic_task": true,
+      "tasks": [
+        {
+          "title": "Implement: Add Two-Factor Authentication",
+          "reason": "\"Add Two-Factor Authentication\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+        }
+      ],
+      "decisions": []
+    },
+    {
+      "name": "job-board",
+      "title": "Build a Job Board",
+      "description": "Build a job board where companies can post job listings and candidates can search, filter, and apply, with employers able to track applicants through a hiring pipeline.",
+      "task_count": 1,
+      "decision_count": 0,
+      "fell_back_to_generic_task": true,
+      "tasks": [
+        {
+          "title": "Implement: Build a Job Board",
+          "reason": "\"Build a Job Board\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+        }
+      ],
+      "decisions": []
+    },
+    {
+      "name": "mysql-to-postgres-migration",
+      "title": "Migrate the Database from MySQL to Postgres",
+      "description": "Migrate the production database from MySQL to Postgres with zero downtime, including schema translation, data migration, and dual-write verification before cutover.",
+      "task_count": 1,
+      "decision_count": 0,
+      "fell_back_to_generic_task": true,
+      "tasks": [
+        {
+          "title": "Implement: Migrate the Database from MySQL to Postgres",
+          "reason": "\"Migrate the Database from MySQL to Postgres\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+        }
+      ],
+      "decisions": []
+    },
+    {
+      "name": "internal-analytics-dashboard",
+      "title": "Build an Internal Analytics Dashboard",
+      "description": "Build a dashboard for internal stakeholders to see key business metrics, with filtering by date range and team, and the ability to export charts.",
+      "task_count": 1,
+      "decision_count": 0,
+      "fell_back_to_generic_task": true,
+      "tasks": [
+        {
+          "title": "Implement: Build an Internal Analytics Dashboard",
+          "reason": "\"Build an Internal Analytics Dashboard\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+        }
+      ],
+      "decisions": []
+    },
+    {
+      "name": "realtime-collaborative-editing",
+      "title": "Add Real-Time Collaborative Editing",
+      "description": "Add real-time collaborative editing to documents so multiple users can edit the same document simultaneously and see each other's cursors and changes live.",
+      "task_count": 1,
+      "decision_count": 0,
+      "fell_back_to_generic_task": true,
+      "tasks": [
+        {
+          "title": "Implement: Add Real-Time Collaborative Editing",
+          "reason": "\"Add Real-Time Collaborative Editing\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+        }
+      ],
+      "decisions": []
+    },
+    {
+      "name": "ambiguous-new-market",
+      "title": "Expand Into a New Market",
+      "description": "Expand the product to support a new market.",
+      "task_count": 1,
+      "decision_count": 0,
+      "fell_back_to_generic_task": true,
+      "tasks": [
+        {
+          "title": "Implement: Expand Into a New Market",
+          "reason": "\"Expand Into a New Market\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+        }
+      ],
+      "decisions": []
+    },
+    {
+      "name": "contradictory-offline-realtime",
+      "title": "Support Full Offline Mode and Instant Real-Time Sync",
+      "description": "The app must work fully offline with no network calls at all, and it must also show real-time updates from other users instantly.",
+      "task_count": 1,
+      "decision_count": 0,
+      "fell_back_to_generic_task": true,
+      "tasks": [
+        {
+          "title": "Implement: Support Full Offline Mode and Instant Real-Time Sync",
+          "reason": "\"Support Full Offline Mode and Instant Real-Time Sync\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+        }
+      ],
+      "decisions": []
+    },
+    {
+      "name": "oauth-bulleted-happy-path",
+      "title": "Build OAuth Authentication",
+      "description": "- Add login with Google\n- Add login with GitHub\n- Store tokens securely\n- What should happen to existing email/password accounts when OAuth is added?",
+      "task_count": 3,
+      "decision_count": 1,
+      "fell_back_to_generic_task": false,
+      "tasks": [
+        {
+          "title": "Add login with Google",
+          "reason": "Listed as a bullet item in \"Build OAuth Authentication\"'s planning description."
+        },
+        {
+          "title": "Add login with GitHub",
+          "reason": "Listed as a bullet item in \"Build OAuth Authentication\"'s planning description."
+        },
+        {
+          "title": "Store tokens securely",
+          "reason": "Listed as a bullet item in \"Build OAuth Authentication\"'s planning description."
+        }
+      ],
+      "decisions": [
+        {
+          "question": "What should happen to existing email/password accounts when OAuth is added?",
+          "reason": "This bullet line under \"Build OAuth Authentication\" reads as a question (contains '?'), so it was escalated for a human decision instead of decomposed into a task."
+        }
+      ]
+    },
+    {
+      "name": "billing-bulleted-no-questions",
+      "title": "Add Multi-Tenant Billing",
+      "description": "- Add a billing plan model with monthly and annual tiers\n- Add Stripe as a payment provider\n- Add an invoice history page\n- Add automatic retry for failed payments",
+      "task_count": 4,
+      "decision_count": 0,
+      "fell_back_to_generic_task": false,
+      "tasks": [
+        {
+          "title": "Add a billing plan model with monthly and annual tiers",
+          "reason": "Listed as a bullet item in \"Add Multi-Tenant Billing\"'s planning description."
+        },
+        {
+          "title": "Add Stripe as a payment provider",
+          "reason": "Listed as a bullet item in \"Add Multi-Tenant Billing\"'s planning description."
+        },
+        {
+          "title": "Add an invoice history page",
+          "reason": "Listed as a bullet item in \"Add Multi-Tenant Billing\"'s planning description."
+        },
+        {
+          "title": "Add automatic retry for failed payments",
+          "reason": "Listed as a bullet item in \"Add Multi-Tenant Billing\"'s planning description."
+        }
+      ],
+      "decisions": []
+    }
+  ],
+  "metrics": {
+    "goal_count": 17,
+    "total_tasks": 22,
+    "total_decisions": 1,
+    "average_tasks_per_goal": 1.2941176470588236,
+    "fallback_count": 15
+  }
+}
