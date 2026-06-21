@@ -41,6 +41,13 @@ impl AgentRole {
     }
 }
 
+/// Mirrors `beethoven_core::runtime::DEFAULT_TARGET_SCORE` -- duplicated
+/// rather than shared across the crate boundary for one constant, used
+/// only where this crate needs a target score and has no model judgment
+/// to fall back on (the legacy stub planner, the execution-time subtask
+/// heuristic).
+const LEGACY_DEFAULT_TARGET_SCORE: f32 = 70.0;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskDraft {
     pub title: String,
@@ -62,6 +69,12 @@ pub struct TaskDraft {
     pub success_criteria: Vec<String>,
     #[serde(default)]
     pub success_criteria_reason: String,
+    /// The quality bar a real review must meet for this task to complete
+    /// (Phase 2.5C) -- no default: unlike an empty `success_criteria` list,
+    /// there's no meaningful "zero" target score, so a model response
+    /// missing this fails to parse rather than silently defaulting to 0.0.
+    pub target_score: f32,
+    pub target_score_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +121,10 @@ impl PlanningService {
                     success_criteria: Vec::new(),
                     success_criteria_reason: "The legacy bullet-line planner does not generate success criteria."
                         .to_string(),
+                    target_score: LEGACY_DEFAULT_TARGET_SCORE,
+                    target_score_reason: "The legacy bullet-line planner does not customize target scores; this \
+                        matches beethoven-core's default quality bar."
+                        .to_string(),
                 });
             }
         }
@@ -121,6 +138,10 @@ impl PlanningService {
                 ),
                 success_criteria: Vec::new(),
                 success_criteria_reason: "The legacy bullet-line planner does not generate success criteria."
+                    .to_string(),
+                target_score: LEGACY_DEFAULT_TARGET_SCORE,
+                target_score_reason: "The legacy bullet-line planner does not customize target scores; this \
+                    matches beethoven-core's default quality bar."
                     .to_string(),
             });
         }
@@ -196,9 +217,20 @@ pub const PLANNER_RESPONSE_SCHEMA: &str = r#"{
           "success_criteria_reason": {
             "type": "string",
             "description": "Why these specific success criteria were chosen for this task."
+          },
+          "target_score": {
+            "type": "number",
+            "description": "The quality bar (0-100) a review must meet for this task to complete. Guide: 95-100 for authentication/authorization/payment processing/financial transactions; 90-95 for core APIs/database migrations/data integrity; 80-90 for standard features/reporting/internal tools; 70-80 for documentation/non-critical refactors. Avoid scores below 70 unless explicitly justified."
+          },
+          "target_score_reason": {
+            "type": "string",
+            "description": "Why this specific quality bar was chosen for this task."
           }
         },
-        "required": ["title", "description", "reason", "success_criteria", "success_criteria_reason"]
+        "required": [
+          "title", "description", "reason", "success_criteria", "success_criteria_reason",
+          "target_score", "target_score_reason"
+        ]
       }
     },
     "decisions": {
@@ -267,6 +299,10 @@ impl ExecutionService {
                 success_criteria: Vec::new(),
                 success_criteria_reason: "This execution-time heuristic spawns a prerequisite task, not a \
                     planning pass -- it does not generate success criteria."
+                    .to_string(),
+                target_score: LEGACY_DEFAULT_TARGET_SCORE,
+                target_score_reason: "This execution-time heuristic spawns a prerequisite task, not a \
+                    planning pass -- it does not generate a target score."
                     .to_string(),
             });
         }
@@ -403,8 +439,16 @@ mod tests {
                     "reason": "Backend work is independent of UI.",
                     "success_criteria": ["Google OAuth login succeeds", "GitHub OAuth login succeeds"],
                     "success_criteria_reason": "These are the minimum outcomes for a working OAuth backend.",
+                    "target_score": 95.0,
+                    "target_score_reason": "Authentication systems require elevated quality and security standards.",
                 },
-                {"title": "Implement OAuth Frontend", "description": "", "reason": "UI work is independent of backend."},
+                {
+                    "title": "Implement OAuth Frontend",
+                    "description": "",
+                    "reason": "UI work is independent of backend.",
+                    "target_score": 80.0,
+                    "target_score_reason": "Standard feature work, no elevated risk.",
+                },
             ],
             "decisions": [],
         });
@@ -417,6 +461,8 @@ mod tests {
             vec!["Google OAuth login succeeds", "GitHub OAuth login succeeds"]
         );
         assert!(outcome.task_drafts[0].success_criteria_reason.contains("minimum outcomes"));
+        assert_eq!(outcome.task_drafts[0].target_score, 95.0);
+        assert!(outcome.task_drafts[0].target_score_reason.contains("elevated quality"));
         // A task draft that omits success_criteria entirely (a model only
         // partially honoring the schema) defaults to empty rather than
         // failing to parse the whole response.
@@ -426,11 +472,23 @@ mod tests {
 
     #[test]
     fn parse_model_response_falls_back_to_extracting_json_from_raw_text() {
-        let raw = "Sure, here is the plan:\n{\"reasoning\": \"r\", \"tasks\": [{\"title\": \"t\", \"description\": \"\", \"reason\": \"because\"}], \"decisions\": []}\nLet me know if you need changes.";
+        let raw = "Sure, here is the plan:\n{\"reasoning\": \"r\", \"tasks\": [{\"title\": \"t\", \"description\": \"\", \"reason\": \"because\", \"target_score\": 70.0, \"target_score_reason\": \"baseline\"}], \"decisions\": []}\nLet me know if you need changes.";
         let (outcome, reasoning) = PlanningService::parse_model_response(None, raw).unwrap();
         assert_eq!(outcome.task_drafts.len(), 1);
         assert_eq!(outcome.task_drafts[0].title, "t");
+        assert_eq!(outcome.task_drafts[0].target_score, 70.0);
         assert_eq!(reasoning, "r");
+    }
+
+    #[test]
+    fn parse_model_response_errors_when_a_task_is_missing_a_target_score() {
+        let structured = serde_json::json!({
+            "reasoning": "r",
+            "tasks": [{"title": "t", "description": "", "reason": "because"}],
+            "decisions": [],
+        });
+        let err = PlanningService::parse_model_response(Some(&structured), "").unwrap_err();
+        assert!(matches!(err, AgentsError::InvalidResponse(_)));
     }
 
     #[test]
