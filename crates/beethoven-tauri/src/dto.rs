@@ -103,6 +103,8 @@ pub struct PlanningRunDto {
     pub planned_task_id: String,
     pub planned_task_title: String,
     pub task_count: usize,
+    pub average_task_length: f64,
+    pub leaf_task_count: usize,
     pub dependency_count: usize,
     pub decision_count: usize,
     pub average_dependency_depth: f64,

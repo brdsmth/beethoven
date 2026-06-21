@@ -370,6 +370,8 @@ export interface PlanningRun {
   planned_task_id: string;
   planned_task_title: string;
   task_count: number;
+  average_task_length: number;
+  leaf_task_count: number;
   dependency_count: number;
   decision_count: number;
   average_dependency_depth: number;

@@ -154,6 +154,8 @@ pub fn planning_runs_for_project(state: &RuntimeState, project_id: &str) -> Vec<
             planned_task_id: summary.planned_task_id,
             planned_task_title: summary.planned_task_title,
             task_count: summary.metrics.task_count,
+            average_task_length: summary.metrics.average_task_length,
+            leaf_task_count: summary.metrics.leaf_task_count,
             dependency_count: summary.metrics.dependency_count,
             decision_count: summary.decisions.len(),
             average_dependency_depth: summary.metrics.average_dependency_depth,

@@ -24,6 +24,8 @@ export function PlanningSummaryPanel({ projectId }: { projectId: string }) {
           </div>
           <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
             <Stat label="Tasks" value={latest.task_count} />
+            <Stat label="Leaf Tasks" value={latest.leaf_task_count} />
+            <Stat label="Avg Task Length" value={`${Math.round(latest.average_task_length)} chars`} />
             <Stat label="Dependencies" value={latest.dependency_count} />
             <Stat label="Decisions" value={latest.decision_count} />
             <Stat label="Duration" value={`${latest.planning_duration_ms}ms`} />
