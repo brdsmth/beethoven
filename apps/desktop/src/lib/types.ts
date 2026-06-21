@@ -62,7 +62,13 @@ export interface Task {
   branch: string | null;
   pr_url: string | null;
   blocked_reason: string | null;
-  success_criteria: string;
+  /// Individual, independently-checkable outcomes (Phase 2.5B) -- a list,
+  /// not a blob of text.
+  success_criteria: string[];
+  /// Why these specific success criteria were chosen, traced back to a
+  /// PlanningSummary -- null for a task a human created directly, or one
+  /// whose criteria came back empty.
+  success_criteria_reason: string | null;
   target_score: number;
   /// Tasks this one depends on -- it cannot become executable until every
   /// one of these is `done`.
@@ -376,6 +382,10 @@ export interface PlanningRun {
   decision_count: number;
   average_dependency_depth: number;
   planning_duration_ms: number;
+  /// Phase 2.5B coverage metrics, observability-only.
+  tasks_with_criteria: number;
+  average_criteria_per_task: number;
+  criteria_coverage_percent: number;
   summary: string;
   started_at: string;
 }
@@ -411,7 +421,7 @@ export interface TaskRecord {
   pr_url: string | null;
   blocked_reason: string | null;
   attempt: number;
-  success_criteria: string;
+  success_criteria: string[];
   target_score: number;
   created_at: string;
   updated_at: string;

@@ -59,6 +59,20 @@ export function TaskDetailPanel({ taskId }: { taskId: string }) {
         </div>
       </div>
 
+      {task.success_criteria.length > 0 && (
+        <Panel title="Success Criteria">
+          <ul className="list-inside list-disc text-sm text-slate-300">
+            {task.success_criteria.map((criterion, idx) => <li key={idx}>{criterion}</li>)}
+          </ul>
+          {task.success_criteria_reason && (
+            <p className="mt-2 text-xs text-slate-500">
+              Reason: {task.success_criteria_reason}
+              {planningRun && ` (Planning Run #${planningRun.sequence})`}
+            </p>
+          )}
+        </Panel>
+      )}
+
       {reviews.length > 0 && (
         <Panel title="Reviews">
           <ul className="flex flex-col gap-2">

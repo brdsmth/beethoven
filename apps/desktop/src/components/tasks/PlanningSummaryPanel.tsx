@@ -29,6 +29,9 @@ export function PlanningSummaryPanel({ projectId }: { projectId: string }) {
             <Stat label="Dependencies" value={latest.dependency_count} />
             <Stat label="Decisions" value={latest.decision_count} />
             <Stat label="Duration" value={`${latest.planning_duration_ms}ms`} />
+            <Stat label="Tasks With Criteria" value={`${latest.tasks_with_criteria}/${latest.task_count}`} />
+            <Stat label="Criteria Coverage" value={`${Math.round(latest.criteria_coverage_percent)}%`} />
+            <Stat label="Avg Criteria/Task" value={latest.average_criteria_per_task.toFixed(1)} />
           </div>
           <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 text-xs text-slate-400">
             {latest.summary}
