@@ -1573,6 +1573,8 @@ impl ModelRuntime for CriteriaModelRuntime {
                     "Session creation works",
                 ],
                 "success_criteria_reason": "These are the minimum outcomes for a complete OAuth backend.",
+                "target_score": 95.0,
+                "target_score_reason": "Authentication systems require elevated quality and security standards.",
             }],
             "decisions": [],
         });
@@ -1632,4 +1634,17 @@ async fn plan_task_stores_model_generated_success_criteria_as_a_list_and_traces_
     assert_eq!(summary.metrics.average_criteria_per_task, 3.0);
     assert_eq!(summary.metrics.criteria_coverage_percent, 100.0);
     assert!(summary.summary.contains("3 criteria"));
+
+    // Phase 2.5C: the model-chosen target score is stored on the task
+    // itself (not the hardcoded 70.0 default), explained, and reflected in
+    // this pass's score metrics.
+    assert_eq!(generated.target_score, 95.0);
+    assert_eq!(explanation.target_score, 95.0);
+    assert!(explanation.target_score_reason.contains("elevated quality"));
+    assert_eq!(summary.metrics.average_target_score, 95.0);
+    assert_eq!(summary.metrics.highest_target_score, 95.0);
+    assert_eq!(summary.metrics.lowest_target_score, 95.0);
+    let band_95_100 = summary.metrics.score_distribution.iter().find(|b| b.band == "95-100").unwrap();
+    assert_eq!(band_95_100.count, 1);
+    assert!(summary.summary.contains("Score Distribution"));
 }

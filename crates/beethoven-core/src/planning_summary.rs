@@ -6,10 +6,9 @@ use serde::{Deserialize, Serialize};
 /// `target_score`/`success_criteria` are recorded here (not just on
 /// `Task`) so tracing either back to "why" is always "find the planning
 /// artifact that mentions this task," never a column on `Task` itself.
-/// `target_score` is still never customized by the planner (Phase 2.5A/B
-/// scope), so its reason stays a constant explanation; `success_criteria`
-/// is genuinely model-generated as of Phase 2.5B, so its reason is real,
-/// per-task reasoning rather than a constant.
+/// Both are genuinely model-generated as of Phase 2.5B (success criteria)
+/// and 2.5C (target score), so their reasons are real, per-task reasoning
+/// rather than a constant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannedTaskExplanation {
     pub task_id: String,
@@ -42,6 +41,17 @@ pub struct PlannedDependencyExplanation {
     pub task_id: String,
     pub depends_on_task_id: String,
     pub reason: String,
+}
+
+/// One quality band's count, for the Phase 2.5C "Score Distribution"
+/// metric -- a post-hoc bucketing of scores the planner already generated,
+/// purely for display (it never feeds back into generation). Always all
+/// five bands, even ones with a zero count, so a histogram has consistent
+/// bars across planning runs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoreBandCount {
+    pub band: String,
+    pub count: usize,
 }
 
 /// Observability-only numbers about one planning run. Per the spec:
@@ -83,6 +93,17 @@ pub struct PlanQualityMetrics {
     pub average_criteria_per_task: f64,
     #[serde(default)]
     pub criteria_coverage_percent: f64,
+    /// Phase 2.5C quality metrics, observability-only. Zero/empty when no
+    /// tasks were generated this pass (the failure-escalation path).
+    /// `#[serde(default)]`: see `average_task_length` above.
+    #[serde(default)]
+    pub average_target_score: f32,
+    #[serde(default)]
+    pub highest_target_score: f32,
+    #[serde(default)]
+    pub lowest_target_score: f32,
+    #[serde(default)]
+    pub score_distribution: Vec<ScoreBandCount>,
 }
 
 /// The structured content of a `PlanningSummary` artifact (`ArtifactKind::

@@ -9,7 +9,7 @@ pub use error::CoreError;
 pub use models::*;
 pub use planning_summary::{
     PlanQualityMetrics, PlannedDecisionExplanation, PlannedDependencyExplanation, PlannedTaskExplanation,
-    PlanningSummary,
+    PlanningSummary, ScoreBandCount,
 };
 pub use runtime::{Runtime, TaskPlanOutcome, TickReport};
 pub use state::RuntimeState;

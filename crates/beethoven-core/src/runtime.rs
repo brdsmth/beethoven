@@ -1,7 +1,7 @@
 use crate::error::CoreError;
 use crate::models::*;
 use crate::planning_summary::{
-    PlanQualityMetrics, PlannedDecisionExplanation, PlannedTaskExplanation, PlanningSummary,
+    PlanQualityMetrics, PlannedDecisionExplanation, PlannedTaskExplanation, PlanningSummary, ScoreBandCount,
 };
 use crate::state::RuntimeState;
 use beethoven_agents::{
@@ -169,6 +169,20 @@ fn render_planning_summary(
             metrics.criteria_coverage_percent,
             metrics.average_criteria_per_task
         ));
+
+        out.push_str("Target Scores (quality bar per task):\n");
+        for t in tasks {
+            out.push_str(&format!("- {}: {:.0}\n", t.title, t.target_score));
+        }
+        out.push_str(&format!(
+            "Average: {:.1}, Highest: {:.0}, Lowest: {:.0}\n",
+            metrics.average_target_score, metrics.highest_target_score, metrics.lowest_target_score
+        ));
+        out.push_str("Score Distribution:\n");
+        for band in &metrics.score_distribution {
+            out.push_str(&format!("- {}: {}\n", band.band, band.count));
+        }
+        out.push('\n');
     }
 
     let mut risk_areas: Vec<&str> = RISK_KEYWORDS
@@ -240,6 +254,36 @@ fn render_project_facts(state: &RuntimeState, project: &Project) -> String {
         task_count,
         agent_count,
     )
+}
+
+/// Which Phase 2.5C quality band (see `PromptBuilder::planner`'s guide) a
+/// generated score falls into -- a post-hoc label for display, never a
+/// classification the planner itself computes from.
+fn score_band(score: f32) -> &'static str {
+    if score >= 95.0 {
+        "95-100"
+    } else if score >= 90.0 {
+        "90-95"
+    } else if score >= 80.0 {
+        "80-90"
+    } else if score >= 70.0 {
+        "70-80"
+    } else {
+        "below-70"
+    }
+}
+
+/// Buckets this pass's generated target scores into all five quality
+/// bands, in band order, even ones with a zero count -- so a histogram has
+/// consistent bars across planning runs.
+fn score_distribution(scores: &[f32]) -> Vec<ScoreBandCount> {
+    ["95-100", "90-95", "80-90", "70-80", "below-70"]
+        .into_iter()
+        .map(|band| ScoreBandCount {
+            band: band.to_string(),
+            count: scores.iter().filter(|&&s| score_band(s) == band).count(),
+        })
+        .collect()
 }
 
 pub struct Runtime {
@@ -921,7 +965,7 @@ impl Runtime {
                     "description": draft.description,
                     "status": TaskStatus::Ready,
                     "success_criteria": draft.success_criteria.clone(),
-                    "target_score": DEFAULT_TARGET_SCORE,
+                    "target_score": draft.target_score,
                 }),
             )
             .await?;
@@ -930,10 +974,8 @@ impl Runtime {
                 task_id: created.id.clone(),
                 title: created.title.clone(),
                 reason: draft.reason,
-                target_score: DEFAULT_TARGET_SCORE,
-                target_score_reason: "Default quality bar applied -- the planning input specified no \
-                    explicit target score for this task."
-                    .to_string(),
+                target_score: draft.target_score,
+                target_score_reason: draft.target_score_reason,
                 success_criteria: draft.success_criteria,
                 success_criteria_reason: draft.success_criteria_reason,
             });
@@ -981,6 +1023,15 @@ impl Runtime {
         };
         let tasks_with_criteria = task_explanations.iter().filter(|t| !t.success_criteria.is_empty()).count();
         let total_criteria: usize = task_explanations.iter().map(|t| t.success_criteria.len()).sum();
+        let scores: Vec<f32> = tasks.iter().map(|t| t.target_score).collect();
+        let average_target_score =
+            if scores.is_empty() { 0.0 } else { scores.iter().sum::<f32>() / scores.len() as f32 };
+        // `reduce` (not `fold`) since there's no seed value that's
+        // guaranteed to lose to every real score on both ends -- an empty
+        // iterator falls back to 0.0 instead of a fold seed leaking through.
+        let highest_target_score = scores.iter().copied().reduce(f32::max).unwrap_or(0.0);
+        let lowest_target_score = scores.iter().copied().reduce(f32::min).unwrap_or(0.0);
+        let score_distribution = score_distribution(&scores);
         let metrics = PlanQualityMetrics {
             task_count: tasks.len(),
             average_task_length,
@@ -1001,6 +1052,10 @@ impl Runtime {
             } else {
                 tasks_with_criteria as f64 / tasks.len() as f64 * 100.0
             },
+            average_target_score,
+            highest_target_score,
+            lowest_target_score,
+            score_distribution,
         };
         let summary_text = render_planning_summary(task, &tasks, &decisions, &metrics, &reasoning);
         let planning_summary = PlanningSummary {
@@ -1106,6 +1161,10 @@ impl Runtime {
             tasks_with_criteria: 0,
             average_criteria_per_task: 0.0,
             criteria_coverage_percent: 0.0,
+            average_target_score: 0.0,
+            highest_target_score: 0.0,
+            lowest_target_score: 0.0,
+            score_distribution: score_distribution(&[]),
         };
         let planning_summary = PlanningSummary {
             planned_task_id: task_id.to_string(),
@@ -1496,7 +1555,7 @@ impl Runtime {
                         "description": draft.description,
                         "status": TaskStatus::Ready,
                         "success_criteria": draft.success_criteria,
-                        "target_score": DEFAULT_TARGET_SCORE,
+                        "target_score": draft.target_score,
                     }),
                 )
                 .await?;
