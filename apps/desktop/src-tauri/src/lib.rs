@@ -35,6 +35,7 @@ pub fn run() {
             beethoven_tauri::commands::get_agents,
             beethoven_tauri::commands::get_agent_health,
             beethoven_tauri::commands::get_tasks,
+            beethoven_tauri::commands::create_project,
             beethoven_tauri::commands::create_task,
             beethoven_tauri::commands::plan_task,
             beethoven_tauri::commands::approve_draft_task,

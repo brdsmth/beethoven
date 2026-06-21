@@ -67,6 +67,20 @@ pub async fn get_tasks(state: State<'_, AppState>, project_id: String) -> Result
 }
 
 #[tauri::command]
+pub async fn create_project(
+    state: State<'_, AppState>,
+    name: String,
+    repository_path: String,
+    default_branch: String,
+) -> Result<Project, String> {
+    let mut runtime = with_runtime(&state).await?;
+    runtime
+        .create_project(&name, std::path::PathBuf::from(repository_path), &default_branch)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn create_task(
     state: State<'_, AppState>,
     project_id: String,
