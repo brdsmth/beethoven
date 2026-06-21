@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
+import { pickDirectory } from "../../lib/dialog";
 import { useAction } from "../../lib/hooks";
 import { allTasks, computeProjectHealth, currentBottleneck } from "../../lib/projectHealth";
 import { displayStatus } from "../tasks/taskDisplay";
@@ -311,6 +312,16 @@ function ProjectSettings({ project }: { project: ProjectDetailData }) {
                 onChange={(e) => setRepositoryPath(e.target.value)}
                 className="flex-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-200"
               />
+              <button
+                type="button"
+                onClick={async () => {
+                  const picked = await pickDirectory("Choose Repository", repositoryPath || undefined);
+                  if (picked) setRepositoryPath(picked);
+                }}
+                className="whitespace-nowrap rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
+              >
+                Browse…
+              </button>
               <ActionButton
                 label="Save"
                 onClick={() => updatePath.mutate({ projectId: project.id, repositoryPath })}

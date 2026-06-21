@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let home = beethoven_db::resolve_home(None);
             beethoven_db::ensure_beethoven_home(&home)?;

@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { api } from "../../lib/api";
+import { pickDirectory } from "../../lib/dialog";
 import { useAction } from "../../lib/hooks";
 import type { ProjectRecord } from "../../lib/types";
 
@@ -42,12 +43,24 @@ export function NewProjectDialog({
             />
           </Field>
           <Field label="Repository Path" hint="Must already be a git repository on disk.">
-            <input
-              value={repositoryPath}
-              onChange={(e) => setRepositoryPath(e.target.value)}
-              placeholder="/Users/you/code/markdown-viewer"
-              className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-200"
-            />
+            <div className="flex items-center gap-2">
+              <input
+                value={repositoryPath}
+                onChange={(e) => setRepositoryPath(e.target.value)}
+                placeholder="/Users/you/code/markdown-viewer"
+                className="flex-1 rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-200"
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  const picked = await pickDirectory("Choose Repository", repositoryPath || undefined);
+                  if (picked) setRepositoryPath(picked);
+                }}
+                className="whitespace-nowrap rounded-md border border-slate-700 px-2 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+              >
+                Browse…
+              </button>
+            </div>
           </Field>
           <Field label="Default Branch">
             <input
