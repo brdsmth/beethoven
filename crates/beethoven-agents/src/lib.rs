@@ -52,6 +52,16 @@ pub struct TaskDraft {
     /// aspirational -- a smarter Phase 2.5+ planner fills in real reasoning
     /// through the exact same field.
     pub reason: String,
+    /// Individual, independently-checkable outcomes (Phase 2.5B) -- a list
+    /// from the start, not a blob of text, since a future review phase will
+    /// want to mark each one done/not-done on its own. Empty when the
+    /// planner didn't generate any (the legacy stub planner never does;
+    /// the model-driven planner raises a `Decision` instead of guessing
+    /// when it can't confidently determine them).
+    #[serde(default)]
+    pub success_criteria: Vec<String>,
+    #[serde(default)]
+    pub success_criteria_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +105,9 @@ impl PlanningService {
                     title: item.to_string(),
                     description: String::new(),
                     reason: format!("Listed as a bullet item in \"{title}\"'s planning description."),
+                    success_criteria: Vec::new(),
+                    success_criteria_reason: "The legacy bullet-line planner does not generate success criteria."
+                        .to_string(),
                 });
             }
         }
@@ -106,6 +119,9 @@ impl PlanningService {
                 reason: format!(
                     "\"{title}\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
                 ),
+                success_criteria: Vec::new(),
+                success_criteria_reason: "The legacy bullet-line planner does not generate success criteria."
+                    .to_string(),
             });
         }
 
@@ -171,9 +187,18 @@ pub const PLANNER_RESPONSE_SCHEMA: &str = r#"{
         "properties": {
           "title": { "type": "string" },
           "description": { "type": "string" },
-          "reason": { "type": "string", "description": "Why this specific task exists." }
+          "reason": { "type": "string", "description": "Why this specific task exists." },
+          "success_criteria": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Observable, verifiable, outcome-based criteria for this task -- not vague ones like 'write good code'. Leave empty (and raise a decision instead) rather than guessing if you cannot confidently determine them."
+          },
+          "success_criteria_reason": {
+            "type": "string",
+            "description": "Why these specific success criteria were chosen for this task."
+          }
         },
-        "required": ["title", "description", "reason"]
+        "required": ["title", "description", "reason", "success_criteria", "success_criteria_reason"]
       }
     },
     "decisions": {
@@ -239,6 +264,10 @@ impl ExecutionService {
                     "\"{}\" reads as an implementation task with no test coverage requested yet, so a test-writing prerequisite was spawned before it.",
                     context.title
                 ),
+                success_criteria: Vec::new(),
+                success_criteria_reason: "This execution-time heuristic spawns a prerequisite task, not a \
+                    planning pass -- it does not generate success criteria."
+                    .to_string(),
             });
         }
 
@@ -368,7 +397,13 @@ mod tests {
         let structured = serde_json::json!({
             "reasoning": "Split backend, frontend, and tests apart for parallel work.",
             "tasks": [
-                {"title": "Implement OAuth Backend", "description": "", "reason": "Backend work is independent of UI."},
+                {
+                    "title": "Implement OAuth Backend",
+                    "description": "",
+                    "reason": "Backend work is independent of UI.",
+                    "success_criteria": ["Google OAuth login succeeds", "GitHub OAuth login succeeds"],
+                    "success_criteria_reason": "These are the minimum outcomes for a working OAuth backend.",
+                },
                 {"title": "Implement OAuth Frontend", "description": "", "reason": "UI work is independent of backend."},
             ],
             "decisions": [],
@@ -377,6 +412,15 @@ mod tests {
             PlanningService::parse_model_response(Some(&structured), "ignored raw text").unwrap();
         assert_eq!(outcome.task_drafts.len(), 2);
         assert_eq!(outcome.task_drafts[0].title, "Implement OAuth Backend");
+        assert_eq!(
+            outcome.task_drafts[0].success_criteria,
+            vec!["Google OAuth login succeeds", "GitHub OAuth login succeeds"]
+        );
+        assert!(outcome.task_drafts[0].success_criteria_reason.contains("minimum outcomes"));
+        // A task draft that omits success_criteria entirely (a model only
+        // partially honoring the schema) defaults to empty rather than
+        // failing to parse the whole response.
+        assert!(outcome.task_drafts[1].success_criteria.is_empty());
         assert!(reasoning.contains("parallel work"));
     }
 
