@@ -45,6 +45,15 @@ fn creation_trace_for_task(state: &RuntimeState, task_id: &str) -> Option<(Strin
     })
 }
 
+/// Why this task's success criteria were chosen, traced back to the
+/// `PlanningSummary` that generated them -- `None` for a task a human
+/// created directly via `create_task`.
+fn success_criteria_reason_for_task(state: &RuntimeState, task_id: &str) -> Option<String> {
+    planning_summaries(state).find_map(|(_, summary)| {
+        summary.tasks.iter().find(|t| t.task_id == task_id).map(|t| t.success_criteria_reason.clone())
+    })
+}
+
 fn creation_trace_for_decision(state: &RuntimeState, decision_id: &str) -> Option<(String, String)> {
     planning_summaries(state).find_map(|(artifact, summary)| {
         summary
@@ -94,6 +103,7 @@ fn task_dto(state: &RuntimeState, t: &Task) -> TaskDto {
         Some((run_id, reason)) => (Some(run_id), Some(reason)),
         None => (None, None),
     };
+    let success_criteria_reason = success_criteria_reason_for_task(state, &t.id);
     TaskDto {
         id: t.id.clone(),
         project_id: t.project_id.clone(),
@@ -108,6 +118,7 @@ fn task_dto(state: &RuntimeState, t: &Task) -> TaskDto {
         pr_url: t.pr_url.clone(),
         blocked_reason: t.blocked_reason.clone(),
         success_criteria: t.success_criteria.clone(),
+        success_criteria_reason,
         target_score: t.target_score,
         dependencies,
         dependents,
@@ -160,6 +171,9 @@ pub fn planning_runs_for_project(state: &RuntimeState, project_id: &str) -> Vec<
             decision_count: summary.decisions.len(),
             average_dependency_depth: summary.metrics.average_dependency_depth,
             planning_duration_ms: summary.metrics.planning_duration_ms,
+            tasks_with_criteria: summary.metrics.tasks_with_criteria,
+            average_criteria_per_task: summary.metrics.average_criteria_per_task,
+            criteria_coverage_percent: summary.metrics.criteria_coverage_percent,
             summary: summary.summary,
             started_at,
         })
@@ -1318,6 +1332,9 @@ mod tests {
                 "average_dependency_depth": 0.0,
                 "blocked_task_count": 0,
                 "planning_duration_ms": 5,
+                "tasks_with_criteria": 0,
+                "average_criteria_per_task": 0.0,
+                "criteria_coverage_percent": 0.0,
             },
             "summary": "Planning Summary\n\nGoal:\nBuild login page\n",
             "generated_at": Utc::now().to_rfc3339(),
@@ -1354,11 +1371,37 @@ mod tests {
         let dto = task_dto(&state, state.tasks.get("t1").unwrap());
         assert_eq!(dto.created_by_planning_run_id, Some("plan-run-1".to_string()));
         assert_eq!(dto.creation_reason, Some("Listed as a bullet item.".to_string()));
+        assert_eq!(dto.success_criteria_reason, Some("No explicit success criteria were specified.".to_string()));
 
         // A task this planning run never mentions has no trace.
         let untraced = task_dto(&state, state.tasks.get("i1").unwrap());
         assert_eq!(untraced.created_by_planning_run_id, None);
         assert_eq!(untraced.creation_reason, None);
+        assert_eq!(untraced.success_criteria_reason, None);
+    }
+
+    #[test]
+    fn task_dto_reports_success_criteria_as_a_real_list_not_a_blob_of_text() {
+        let (_state, mut events) = fixture();
+        events.push(ev(
+            23,
+            EventScope::Project("p1".to_string()),
+            EventType::TaskCreated,
+            Some("a2"),
+            json!({
+                "id": "t-criteria",
+                "parent_task_id": "g1",
+                "title": "Implement OAuth Backend",
+                "description": "",
+                "status": "ready",
+                "success_criteria": ["Google OAuth login succeeds", "GitHub OAuth login succeeds"],
+                "target_score": 70.0,
+            }),
+        ));
+        let state = RuntimeState::replay(&events);
+
+        let dto = task_dto(&state, state.tasks.get("t-criteria").unwrap());
+        assert_eq!(dto.success_criteria, vec!["Google OAuth login succeeds", "GitHub OAuth login succeeds"]);
     }
 
     #[test]
@@ -1397,6 +1440,8 @@ mod tests {
         assert_eq!(runs[1].run_id, "plan-run-2");
         assert_eq!(runs[1].sequence, 2);
         assert_eq!(runs[0].task_count, 1);
+        assert_eq!(runs[0].tasks_with_criteria, 0);
+        assert_eq!(runs[0].criteria_coverage_percent, 0.0);
 
         assert!(planning_runs_for_project(&state, "missing").is_empty());
     }

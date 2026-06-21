@@ -47,7 +47,13 @@ pub struct TaskDto {
     pub branch: Option<String>,
     pub pr_url: Option<String>,
     pub blocked_reason: Option<String>,
-    pub success_criteria: String,
+    /// Individual, independently-checkable outcomes (Phase 2.5B) -- a list,
+    /// not a blob of text.
+    pub success_criteria: Vec<String>,
+    /// Why these specific success criteria were chosen, traced back to the
+    /// `PlanningSummary` that generated them -- `None` for a task a human
+    /// created directly, or one whose criteria came back empty.
+    pub success_criteria_reason: Option<String>,
     pub target_score: f32,
     /// Tasks this one depends on -- it cannot become executable until every
     /// one of these is `done`.
@@ -109,6 +115,10 @@ pub struct PlanningRunDto {
     pub decision_count: usize,
     pub average_dependency_depth: f64,
     pub planning_duration_ms: i64,
+    /// Phase 2.5B coverage metrics, observability-only.
+    pub tasks_with_criteria: usize,
+    pub average_criteria_per_task: f64,
+    pub criteria_coverage_percent: f64,
     pub summary: String,
     pub started_at: DateTime<Utc>,
 }
