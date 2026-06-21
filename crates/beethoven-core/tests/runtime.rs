@@ -3,8 +3,8 @@ use beethoven_agents::{
     AgentsError, ExecutionRequest, ExecutionResult, ExecutionStatus, ModelRuntime, RuntimeProfile, RuntimeRegistry,
 };
 use beethoven_core::{
-    AgentRole, AgentStatus, ArtifactKind, DecisionStatus, InboxKind, InboxStatus, ProjectStatus, ReviewStatus,
-    Runtime, RunStatus, TaskStatus,
+    AgentRole, AgentStatus, ArtifactKind, DecisionStatus, InboxKind, InboxStatus, PlanningSummary, ProjectStatus,
+    ReviewStatus, Runtime, RunStatus, TaskStatus,
 };
 use beethoven_events::{Event, EventScope, EventStore, EventStoreError, EventType};
 use beethoven_workspaces::{TmuxSession, WorkspaceManager, WorkspaceRequest};
@@ -1380,4 +1380,74 @@ async fn a_dependent_task_is_never_assigned_before_its_dependency_completes_and_
         .position(|e| e.event_type == EventType::TaskAssigned && task_id_of(e) == Some(tests.id.as_str()))
         .expect("tests was assigned");
     assert!(backend_completed_at < tests_assigned_at, "Tests must never be assigned before Backend completes");
+}
+
+/// Phase 2.4.5's central acceptance criteria: every task and decision
+/// `plan_task` generates is traceable to a `PlanningSummary` artifact via a
+/// planning Run, and that artifact carries a non-empty reason for each one
+/// -- not just creatable, but explainable.
+#[tokio::test]
+async fn plan_task_produces_a_traceable_planning_run_and_summary_artifact() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let root = runtime
+        .create_task(
+            &project.id,
+            None,
+            "Build OAuth",
+            "- Backend\n- Frontend\n- What auth provider should we use?",
+            "",
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+
+    let outcome = runtime.plan_task(&root.id).await.unwrap();
+    assert_eq!(outcome.tasks.len(), 2);
+    assert_eq!(outcome.decisions.len(), 1);
+
+    // The planning Run exists, completed, with provider "planner".
+    let run = runtime.state.runs.get(&outcome.planning_run_id).expect("planning run recorded");
+    assert_eq!(run.provider, "planner");
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(run.task_id, root.id);
+
+    // Its PlanningSummary artifact is the traceable audit trail.
+    let artifact = runtime
+        .state
+        .artifacts
+        .values()
+        .find(|a| a.run_id == outcome.planning_run_id && a.kind == ArtifactKind::PlanningSummary)
+        .expect("planning summary artifact recorded");
+    let summary: PlanningSummary = serde_json::from_str(&artifact.content).expect("valid PlanningSummary JSON");
+
+    assert_eq!(summary.planned_task_id, root.id);
+    assert_eq!(summary.tasks.len(), 2);
+    assert!(summary.tasks.iter().all(|t| !t.reason.is_empty()), "every generated task has a reason");
+    assert!(
+        summary.tasks.iter().all(|t| !t.target_score_reason.is_empty() && !t.success_criteria_reason.is_empty()),
+        "every generated task's score and success criteria are explained, even when defaulted"
+    );
+    assert_eq!(summary.decisions.len(), 1);
+    assert!(!summary.decisions[0].reason.is_empty(), "the escalated decision has a reason");
+    assert!(summary.dependencies.is_empty(), "the stub planner generates no dependencies yet");
+    assert_eq!(summary.metrics.task_count, 2);
+    assert_eq!(summary.metrics.blocked_task_count, 1);
+
+    // The same human-readable summary is also visible "for free" as the
+    // planning run's response, through the existing Task Detail view.
+    let response_artifact = runtime
+        .state
+        .artifacts
+        .values()
+        .find(|a| a.run_id == outcome.planning_run_id && a.kind == ArtifactKind::Response)
+        .expect("response artifact recorded");
+    assert_eq!(response_artifact.content, summary.summary);
 }

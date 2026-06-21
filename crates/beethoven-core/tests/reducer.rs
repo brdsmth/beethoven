@@ -561,3 +561,19 @@ fn creates_cycle_detects_a_transitive_cycle_but_not_an_unrelated_pair() {
     );
     assert!(!state.creates_cycle("d", "a"), "d is unrelated to the a -> b -> c chain");
 }
+
+#[test]
+fn planning_summary_generated_inserts_a_planning_summary_artifact() {
+    let mut events = setup_events();
+    events.push(Event::for_project(
+        "p1",
+        EventType::PlanningSummaryGenerated,
+        "a2",
+        json!({"run_id": "run1", "content": "{\"planned_task_id\":\"g1\"}"}),
+    ));
+
+    let state = RuntimeState::replay(&events);
+    let artifact = state.artifacts.values().find(|a| a.run_id == "run1").expect("artifact inserted");
+    assert_eq!(artifact.kind, beethoven_core::ArtifactKind::PlanningSummary);
+    assert_eq!(artifact.content, "{\"planned_task_id\":\"g1\"}");
+}

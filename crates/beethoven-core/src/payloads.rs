@@ -261,3 +261,9 @@ pub struct TaskDependencyPayload {
     pub task_id: String,
     pub depends_on_task_id: String,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlanningSummaryGeneratedPayload {
+    pub run_id: String,
+    pub content: String,
+}

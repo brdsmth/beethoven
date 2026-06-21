@@ -614,6 +614,19 @@ impl RuntimeState {
                 self.task_dependencies
                     .retain(|d| !(d.task_id == p.task_id && d.depends_on_task_id == p.depends_on_task_id));
             }
+            EventType::PlanningSummaryGenerated => {
+                let p: PlanningSummaryGeneratedPayload = decode(event);
+                self.artifacts.insert(
+                    event.id.clone(),
+                    Artifact {
+                        id: event.id.clone(),
+                        run_id: p.run_id,
+                        kind: ArtifactKind::PlanningSummary,
+                        content: p.content,
+                        created_at: ts,
+                    },
+                );
+            }
             EventType::WorkspaceCreated
             | EventType::WorkspaceDestroyed
             | EventType::PRMerged

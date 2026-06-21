@@ -45,12 +45,20 @@ impl AgentRole {
 pub struct TaskDraft {
     pub title: String,
     pub description: String,
+    /// Why this task was generated -- the planner's half of Phase 2.4.5's
+    /// observability requirement: every generated task must be explainable,
+    /// not just creatable. Mechanical and honest for today's stub planner
+    /// (it only ever extracts bullet lines or falls back to one task), not
+    /// aspirational -- a smarter Phase 2.5+ planner fills in real reasoning
+    /// through the exact same field.
+    pub reason: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct DecisionDraft {
     pub question: String,
     pub context: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -78,11 +86,15 @@ impl PlanningService {
                 outcome.decision_drafts.push(DecisionDraft {
                     question: item.to_string(),
                     context: item.to_string(),
+                    reason: format!(
+                        "This bullet line under \"{title}\" reads as a question (contains '?'), so it was escalated for a human decision instead of decomposed into a task."
+                    ),
                 });
             } else {
                 outcome.task_drafts.push(TaskDraft {
                     title: item.to_string(),
                     description: String::new(),
+                    reason: format!("Listed as a bullet item in \"{title}\"'s planning description."),
                 });
             }
         }
@@ -91,6 +103,9 @@ impl PlanningService {
             outcome.task_drafts.push(TaskDraft {
                 title: format!("Implement: {title}"),
                 description: String::new(),
+                reason: format!(
+                    "\"{title}\" had no bullet-list breakdown in its description, so a single fallback task was generated to represent the whole objective."
+                ),
             });
         }
 
@@ -129,6 +144,10 @@ impl ExecutionService {
             return ExecutionOutcome::SpawnedSubtask(TaskDraft {
                 title: format!("Write tests for {}", context.title),
                 description: String::new(),
+                reason: format!(
+                    "\"{}\" reads as an implementation task with no test coverage requested yet, so a test-writing prerequisite was spawned before it.",
+                    context.title
+                ),
             });
         }
 
@@ -227,6 +246,7 @@ mod tests {
         let titles: Vec<&str> = outcome.task_drafts.iter().map(|d| d.title.as_str()).collect();
         assert_eq!(titles, vec!["one", "two", "three"]);
         assert!(outcome.decision_drafts.is_empty());
+        assert!(outcome.task_drafts.iter().all(|d| d.reason.contains("Goal")));
     }
 
     #[test]
@@ -235,6 +255,7 @@ mod tests {
         assert_eq!(outcome.task_drafts.len(), 1);
         assert_eq!(outcome.task_drafts[0].title, "Implement: Goal Title");
         assert!(outcome.decision_drafts.is_empty());
+        assert!(outcome.task_drafts[0].reason.contains("no bullet-list breakdown"));
     }
 
     #[test]
@@ -247,6 +268,8 @@ mod tests {
         assert_eq!(outcome.task_drafts[0].title, "Support PDF attachments");
         assert_eq!(outcome.decision_drafts.len(), 1);
         assert_eq!(outcome.decision_drafts[0].question, "What auth provider should we use?");
+        assert!(!outcome.task_drafts[0].reason.is_empty());
+        assert!(outcome.decision_drafts[0].reason.contains("question"));
     }
 
     #[test]

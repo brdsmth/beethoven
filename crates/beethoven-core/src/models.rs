@@ -174,12 +174,18 @@ pub enum ArtifactKind {
     Response,
     Diff,
     FilesModified,
+    /// JSON-encoded `PlanningSummary` -- the one artifact kind whose
+    /// `content` isn't plain text, since it serves double duty as both a
+    /// human-readable summary and the machine-traceable record of why
+    /// every task/decision a planning run produced was produced.
+    PlanningSummary,
 }
 
 /// Everything a `Run` produces -- the prompt sent, the raw response
-/// received, and the git diff/files-changed output captured once execution
+/// received, the git diff/files-changed output captured once execution
 /// finishes (the workspace itself is destroyed at the end of every
-/// attempt, so this is the only durable record of what happened).
+/// attempt, so this is the only durable record of what happened), or the
+/// `PlanningSummary` a planning run (see `crate::planning_summary`) produced.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artifact {
     pub id: String,

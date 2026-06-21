@@ -1,5 +1,8 @@
 use crate::error::CoreError;
 use crate::models::*;
+use crate::planning_summary::{
+    PlanQualityMetrics, PlannedDecisionExplanation, PlannedTaskExplanation, PlanningSummary,
+};
 use crate::state::RuntimeState;
 use beethoven_agents::{
     AgentRole, AgentsError, DelegationAgent, DelegationAgentStatus, DelegationDecision, DelegationService,
@@ -81,13 +84,16 @@ enum StartOutcome {
     Resolved(TickReport),
 }
 
-/// Result of planning a task: the children it produced (real work to do)
-/// and any decisions auto-escalated to the inbox. `Serialize` so the Tauri
-/// `plan_task` command can hand it straight to the frontend.
+/// Result of planning a task: the children it produced (real work to do),
+/// any decisions auto-escalated to the inbox, and the id of the planning
+/// `Run` whose `PlanningSummary` artifact explains why each of them exists.
+/// `Serialize` so the Tauri `plan_task` command can hand it straight to the
+/// frontend.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TaskPlanOutcome {
     pub tasks: Vec<Task>,
     pub decisions: Vec<Decision>,
+    pub planning_run_id: String,
 }
 
 fn slugify(input: &str) -> String {
@@ -109,6 +115,60 @@ fn slugify(input: &str) -> String {
         slug.push_str("project");
     }
     slug
+}
+
+/// Deterministic keyword scan over generated titles/questions -- an
+/// observability annotation for the Planning Summary's "Risk Areas," not a
+/// planning-quality judgment: it only labels what was already generated,
+/// never changes it.
+const RISK_KEYWORDS: [&str; 6] = ["security", "auth", "payment", "migration", "production", "delete"];
+
+/// Plain-text rendering of one planning run -- goal, generated counts, a
+/// sequential execution order (creation order, since the stub planner
+/// never generates dependencies to reorder it by), and flagged risk areas.
+/// Lands in the planning Run's `response` field, so it displays for free
+/// through the existing Task Detail "Response" view.
+fn render_planning_summary(task: &Task, tasks: &[Task], decisions: &[Decision], metrics: &PlanQualityMetrics) -> String {
+    let mut out = String::new();
+    out.push_str("Planning Summary\n\n");
+    out.push_str(&format!("Goal:\n{}\n\n", task.title));
+    out.push_str(&format!(
+        "Generated:\n- {} Task(s)\n- {} Dependency(ies)\n- {} Decision(s)\n\n",
+        tasks.len(),
+        metrics.dependency_count,
+        decisions.len()
+    ));
+
+    if tasks.is_empty() {
+        out.push_str("Execution Order:\nNone -- no tasks were generated.\n\n");
+    } else {
+        let order: Vec<&str> = tasks.iter().map(|t| t.title.as_str()).collect();
+        out.push_str(&format!(
+            "Execution Order (creation order -- no dependencies generated yet):\n{}\n\n",
+            order.join("\n→ ")
+        ));
+    }
+
+    let mut risk_areas: Vec<&str> = RISK_KEYWORDS
+        .iter()
+        .filter(|kw| {
+            tasks.iter().any(|t| t.title.to_lowercase().contains(*kw))
+                || decisions.iter().any(|d| d.question.to_lowercase().contains(*kw))
+        })
+        .copied()
+        .collect();
+    risk_areas.sort_unstable();
+    out.push_str("Risk Areas:\n");
+    if risk_areas.is_empty() {
+        out.push_str("None flagged.\n");
+    } else {
+        for area in risk_areas {
+            out.push_str(&format!("- {area}\n"));
+        }
+    }
+
+    out.push_str(&format!("\nPlanning Duration: {}ms\n", metrics.planning_duration_ms));
+    out
 }
 
 pub struct Runtime {
@@ -550,6 +610,7 @@ impl Runtime {
         let task = self.state.tasks.get(task_id).cloned().ok_or_else(|| CoreError::TaskNotFound(task_id.to_string()))?;
         let project_id = task.project_id.clone();
         let lead_id = self.lead_instance_id(&project_id).unwrap_or_else(|| "system".to_string());
+        let started_at = Instant::now();
 
         self.emit_project(&project_id, EventType::TaskPlanningStarted, &lead_id, json!({"task_id": task_id}))
             .await?;
@@ -557,6 +618,7 @@ impl Runtime {
         let plan = PlanningService::plan(&task.title, &task.description);
 
         let mut tasks = Vec::with_capacity(plan.task_drafts.len());
+        let mut task_explanations = Vec::with_capacity(plan.task_drafts.len());
         for draft in plan.task_drafts {
             let id = Uuid::new_v4().to_string();
             self.emit_project(
@@ -574,10 +636,25 @@ impl Runtime {
                 }),
             )
             .await?;
-            tasks.push(self.state.tasks.get(&id).expect("just inserted").clone());
+            let created = self.state.tasks.get(&id).expect("just inserted").clone();
+            task_explanations.push(PlannedTaskExplanation {
+                task_id: created.id.clone(),
+                title: created.title.clone(),
+                reason: draft.reason,
+                target_score: DEFAULT_TARGET_SCORE,
+                target_score_reason: "Default quality bar applied -- the planning input specified no \
+                    explicit target score for this task."
+                    .to_string(),
+                success_criteria: String::new(),
+                success_criteria_reason: "No explicit success criteria were specified in the planning \
+                    input for this task."
+                    .to_string(),
+            });
+            tasks.push(created);
         }
 
         let mut decisions = Vec::with_capacity(plan.decision_drafts.len());
+        let mut decision_explanations = Vec::with_capacity(plan.decision_drafts.len());
         for decision_draft in plan.decision_drafts {
             let decision_id = Uuid::new_v4().to_string();
             self.emit_project(
@@ -592,7 +669,13 @@ impl Runtime {
                 }),
             )
             .await?;
-            decisions.push(self.state.decisions.get(&decision_id).expect("just inserted").clone());
+            let created = self.state.decisions.get(&decision_id).expect("just inserted").clone();
+            decision_explanations.push(PlannedDecisionExplanation {
+                decision_id: created.id.clone(),
+                question: created.question.clone(),
+                reason: decision_draft.reason,
+            });
+            decisions.push(created);
 
             let inbox_id = Uuid::new_v4().to_string();
             self.emit_project(
@@ -604,10 +687,77 @@ impl Runtime {
             .await?;
         }
 
+        let metrics = PlanQualityMetrics {
+            task_count: tasks.len(),
+            // The stub planner never infers dependencies between the tasks
+            // it generates -- that's Phase 2.5's job. Kept at zero, honestly,
+            // rather than fabricated.
+            dependency_count: 0,
+            average_dependency_depth: 0.0,
+            blocked_task_count: decisions.len(),
+            planning_duration_ms: started_at.elapsed().as_millis() as i64,
+        };
+        let summary_text = render_planning_summary(&task, &tasks, &decisions, &metrics);
+        let planning_summary = PlanningSummary {
+            planned_task_id: task_id.to_string(),
+            planned_task_title: task.title.clone(),
+            tasks: task_explanations,
+            decisions: decision_explanations,
+            dependencies: Vec::new(),
+            metrics,
+            summary: summary_text.clone(),
+            generated_at: chrono::Utc::now(),
+        };
+
+        // The Planning Run: a specialized `Run` (provider "planner"), not a
+        // new domain entity -- the same Run/Artifact machinery that already
+        // records a model execution now records a planning pass too, with
+        // the human-readable summary landing in the existing `response`
+        // field (so it's visible via the same Task Detail panel "Response"
+        // view, no new UI plumbing required) and the structured, traceable
+        // version in a sibling `PlanningSummary` artifact.
+        let run_id = Uuid::new_v4().to_string();
+        self.emit_project(
+            &project_id,
+            EventType::RunStarted,
+            &lead_id,
+            json!({
+                "id": run_id,
+                "agent_id": lead_id,
+                "project_id": project_id,
+                "task_id": task_id,
+                "attempt": task.attempt,
+                "provider": "planner",
+            }),
+        )
+        .await?;
+        self.emit_project(
+            &project_id,
+            EventType::RunCompleted,
+            &lead_id,
+            json!({
+                "id": run_id,
+                "summary": format!("Planned {} task(s), {} decision(s)", tasks.len(), decisions.len()),
+                "response": summary_text,
+                "cost_usd": None::<f64>,
+            }),
+        )
+        .await?;
+        self.emit_project(
+            &project_id,
+            EventType::PlanningSummaryGenerated,
+            &lead_id,
+            json!({
+                "run_id": run_id,
+                "content": serde_json::to_string(&planning_summary).expect("PlanningSummary always serializes"),
+            }),
+        )
+        .await?;
+
         self.emit_project(&project_id, EventType::TaskPlanningCompleted, &lead_id, json!({"task_id": task_id}))
             .await?;
 
-        Ok(TaskPlanOutcome { tasks, decisions })
+        Ok(TaskPlanOutcome { tasks, decisions, planning_run_id: run_id })
     }
 
     /// Approves a `Draft` task (the old ChangeRequest approval) into `Ready`,
@@ -1976,6 +2126,7 @@ mod tests {
 
         let ws_path = Path::new(&prepared.ws_state.git_worktree).to_path_buf();
         assert!(ws_path.exists());
+        let execution_run_id = prepared.run_id.clone();
 
         let execution = Ok(ExecutionResult {
             status: ExecutionStatus::Completed,
@@ -2001,7 +2152,13 @@ mod tests {
 
         let events = runtime.list_events().await.unwrap();
         assert!(!events.iter().any(|e| e.event_type == EventType::TaskCompleted));
-        assert!(!events.iter().any(|e| e.event_type == EventType::RunCompleted));
+        // The planning run from `plan_task` above legitimately completes --
+        // only the cancelled task's own execution run must never reach
+        // `RunCompleted`.
+        assert!(!events.iter().any(|e| {
+            e.event_type == EventType::RunCompleted
+                && e.payload.get("id").and_then(|v| v.as_str()) == Some(execution_run_id.as_str())
+        }));
     }
 
     /// Phase 2.1's acceptance criteria in one test: the scheduler (not

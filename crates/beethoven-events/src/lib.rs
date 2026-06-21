@@ -85,6 +85,8 @@ pub enum EventType {
 
     TaskDependencyCreated,
     TaskDependencyRemoved,
+
+    PlanningSummaryGenerated,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -151,6 +153,7 @@ impl std::str::FromStr for EventType {
             "DefaultBranchChanged" => EventType::DefaultBranchChanged,
             "TaskDependencyCreated" => EventType::TaskDependencyCreated,
             "TaskDependencyRemoved" => EventType::TaskDependencyRemoved,
+            "PlanningSummaryGenerated" => EventType::PlanningSummaryGenerated,
             other => return Err(UnknownEventType(other.to_string())),
         })
     }
@@ -214,6 +217,7 @@ impl EventType {
             EventType::DefaultBranchChanged => "DefaultBranchChanged",
             EventType::TaskDependencyCreated => "TaskDependencyCreated",
             EventType::TaskDependencyRemoved => "TaskDependencyRemoved",
+            EventType::PlanningSummaryGenerated => "PlanningSummaryGenerated",
         }
     }
 }
@@ -298,7 +302,7 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
-    const ALL_EVENT_TYPES: [EventType; 55] = [
+    const ALL_EVENT_TYPES: [EventType; 56] = [
         EventType::ProjectCreated,
         EventType::AgentTemplateCreated,
         EventType::AgentSpawned,
@@ -354,6 +358,7 @@ mod tests {
         EventType::DefaultBranchChanged,
         EventType::TaskDependencyCreated,
         EventType::TaskDependencyRemoved,
+        EventType::PlanningSummaryGenerated,
     ];
 
     #[test]
