@@ -62,6 +62,8 @@ export const api = {
     invoke<DecisionRecord>("resolve_decision", { decisionId, response }),
 
   // --- Project actions -------------------------------------------------
+  createProject: (name: string, repositoryPath: string, defaultBranch: string) =>
+    invoke<ProjectRecord>("create_project", { name, repositoryPath, defaultBranch }),
   pauseProject: (projectId: string) => invoke<ProjectRecord>("pause_project", { projectId }),
   resumeProject: (projectId: string) => invoke<ProjectRecord>("resume_project", { projectId }),
   archiveProject: (projectId: string) => invoke<ProjectRecord>("archive_project", { projectId }),

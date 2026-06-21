@@ -5,6 +5,7 @@ import { useAction } from "../../lib/hooks";
 import { allTasks, computeProjectHealth, currentBottleneck } from "../../lib/projectHealth";
 import { displayStatus } from "../tasks/taskDisplay";
 import { DependencyGraph } from "../tasks/DependencyGraph";
+import { NewGoalForm } from "../tasks/NewGoalForm";
 import { PlanningSummaryPanel } from "../tasks/PlanningSummaryPanel";
 import { PlanningHistoryPanel } from "../tasks/PlanningHistoryPanel";
 import type { Agent, ProjectDetail as ProjectDetailData, Task, TaskNode } from "../../lib/types";
@@ -61,6 +62,8 @@ export function ProjectDetail({ project }: { project: ProjectDetailData }) {
         </div>
       </div>
 
+      <RuntimeStartNudge />
+
       <Tabs tabs={TABS} active={tab} onChange={setTab} />
 
       {tab === "overview" && <OverviewTab project={project} />}
@@ -116,6 +119,27 @@ function OverviewTab({ project }: { project: ProjectDetailData }) {
   );
 }
 
+/// Tasks only ever get worked on while the global daemon is ticking --
+/// without it, a freshly created and planned project just sits there with
+/// Ready tasks no one picks up. Surfaced here (not just on the Runtime
+/// page) since this is exactly the moment a new project needs it.
+function RuntimeStartNudge() {
+  const { data: status } = useQuery({ queryKey: ["runtimeStatus"], queryFn: api.runtimeStatus });
+  const start = useAction<void, void>(api.runtimeStart, {
+    successMessage: "Runtime started",
+    invalidateKeys: [["runtimeStatus"]],
+  });
+
+  if (!status || status.daemon_running) return null;
+
+  return (
+    <div className="flex items-center justify-between rounded-md border border-amber-700/50 bg-amber-950/30 px-3 py-2 text-sm text-amber-300">
+      <span>The runtime isn't running -- planned tasks won't be picked up until it starts.</span>
+      <ActionButton label="Start Runtime" onClick={() => start.mutate()} pending={start.isPending} />
+    </div>
+  );
+}
+
 function Stat({ label, value, tone = "neutral" }: { label: string; value: number; tone?: "warn" | "neutral" }) {
   const color = tone === "warn" && value > 0 ? "text-amber-400" : "text-slate-100";
   return (
@@ -138,15 +162,18 @@ function TaskGraphTab({ project }: { project: ProjectDetailData }) {
       <DependencyGraph tasks={allTasks(project)} />
 
       <Panel title="Tasks">
-        {project.tasks.length === 0 ? (
-          <div className="text-sm text-slate-500">No tasks yet.</div>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {project.tasks.map((node) => (
-              <TaskTree key={node.task.id} node={node} idleAgents={idleAgents} />
-            ))}
+        <div className="flex flex-col gap-3">
+          <div>
+            <NewGoalForm projectId={project.id} />
           </div>
-        )}
+          {project.tasks.length === 0 ? (
+            <div className="text-sm text-slate-500">
+              No tasks yet -- create a goal above, then Plan it to break it down into tasks.
+            </div>
+          ) : (
+            project.tasks.map((node) => <TaskTree key={node.task.id} node={node} idleAgents={idleAgents} />)
+          )}
+        </div>
       </Panel>
     </div>
   );
@@ -369,6 +396,11 @@ function TaskRow({ task, idleAgents }: { task: Task; idleAgents: Agent[] }) {
   const [viewDetail, setViewDetail] = useState(false);
 
   const invalidateKeys = [["project", task.project_id], ["tasks", task.project_id]];
+  const plan = useAction(api.planTask, {
+    successMessage: (_taskId, outcome) =>
+      `Planned ${outcome.tasks.length} task(s), ${outcome.decisions.length} decision(s)`,
+    invalidateKeys,
+  });
   const retry = useAction(api.retryTask, { successMessage: "Task retried", invalidateKeys });
   const cancel = useAction(api.cancelTask, { successMessage: "Task cancelled", invalidateKeys });
   const reassign = useAction(
@@ -407,6 +439,14 @@ function TaskRow({ task, idleAgents }: { task: Task; idleAgents: Agent[] }) {
         <div className="text-xs text-rose-400">{task.blocked_reason}</div>
       )}
       <div className="flex flex-wrap items-center gap-2">
+        {task.status === "ready" && (
+          <ActionButton
+            label="Plan"
+            title="Break this down into tasks (and, for a model-driven planner, success criteria)."
+            onClick={() => plan.mutate(task.id)}
+            pending={plan.isPending}
+          />
+        )}
         <ActionButton label="View Diff" onClick={() => setViewDetail(true)} />
         {task.status === "blocked" && (
           <ActionButton label="Retry" onClick={() => retry.mutate(task.id)} pending={retry.isPending} />
