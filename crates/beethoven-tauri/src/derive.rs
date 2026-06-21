@@ -54,6 +54,15 @@ fn success_criteria_reason_for_task(state: &RuntimeState, task_id: &str) -> Opti
     })
 }
 
+/// Why this task's target score was chosen, traced back to the
+/// `PlanningSummary` that generated it -- `None` for a task a human
+/// created directly via `create_task`.
+fn target_score_reason_for_task(state: &RuntimeState, task_id: &str) -> Option<String> {
+    planning_summaries(state).find_map(|(_, summary)| {
+        summary.tasks.iter().find(|t| t.task_id == task_id).map(|t| t.target_score_reason.clone())
+    })
+}
+
 fn creation_trace_for_decision(state: &RuntimeState, decision_id: &str) -> Option<(String, String)> {
     planning_summaries(state).find_map(|(artifact, summary)| {
         summary
@@ -104,6 +113,7 @@ fn task_dto(state: &RuntimeState, t: &Task) -> TaskDto {
         None => (None, None),
     };
     let success_criteria_reason = success_criteria_reason_for_task(state, &t.id);
+    let target_score_reason = target_score_reason_for_task(state, &t.id);
     TaskDto {
         id: t.id.clone(),
         project_id: t.project_id.clone(),
@@ -120,6 +130,7 @@ fn task_dto(state: &RuntimeState, t: &Task) -> TaskDto {
         success_criteria: t.success_criteria.clone(),
         success_criteria_reason,
         target_score: t.target_score,
+        target_score_reason,
         dependencies,
         dependents,
         is_executable: state.is_executable(&t.id),
@@ -174,6 +185,10 @@ pub fn planning_runs_for_project(state: &RuntimeState, project_id: &str) -> Vec<
             tasks_with_criteria: summary.metrics.tasks_with_criteria,
             average_criteria_per_task: summary.metrics.average_criteria_per_task,
             criteria_coverage_percent: summary.metrics.criteria_coverage_percent,
+            average_target_score: summary.metrics.average_target_score,
+            highest_target_score: summary.metrics.highest_target_score,
+            lowest_target_score: summary.metrics.lowest_target_score,
+            score_distribution: summary.metrics.score_distribution,
             summary: summary.summary,
             started_at,
         })
@@ -1335,6 +1350,16 @@ mod tests {
                 "tasks_with_criteria": 0,
                 "average_criteria_per_task": 0.0,
                 "criteria_coverage_percent": 0.0,
+                "average_target_score": 70.0,
+                "highest_target_score": 70.0,
+                "lowest_target_score": 70.0,
+                "score_distribution": [
+                    {"band": "95-100", "count": 0},
+                    {"band": "90-95", "count": 0},
+                    {"band": "80-90", "count": 0},
+                    {"band": "70-80", "count": 1},
+                    {"band": "below-70", "count": 0},
+                ],
             },
             "summary": "Planning Summary\n\nGoal:\nBuild login page\n",
             "generated_at": Utc::now().to_rfc3339(),
@@ -1372,12 +1397,14 @@ mod tests {
         assert_eq!(dto.created_by_planning_run_id, Some("plan-run-1".to_string()));
         assert_eq!(dto.creation_reason, Some("Listed as a bullet item.".to_string()));
         assert_eq!(dto.success_criteria_reason, Some("No explicit success criteria were specified.".to_string()));
+        assert_eq!(dto.target_score_reason, Some("Default quality bar applied.".to_string()));
 
         // A task this planning run never mentions has no trace.
         let untraced = task_dto(&state, state.tasks.get("i1").unwrap());
         assert_eq!(untraced.created_by_planning_run_id, None);
         assert_eq!(untraced.creation_reason, None);
         assert_eq!(untraced.success_criteria_reason, None);
+        assert_eq!(untraced.target_score_reason, None);
     }
 
     #[test]
@@ -1442,6 +1469,11 @@ mod tests {
         assert_eq!(runs[0].task_count, 1);
         assert_eq!(runs[0].tasks_with_criteria, 0);
         assert_eq!(runs[0].criteria_coverage_percent, 0.0);
+        assert_eq!(runs[0].average_target_score, 70.0);
+        assert_eq!(runs[0].highest_target_score, 70.0);
+        assert_eq!(runs[0].lowest_target_score, 70.0);
+        let band_70_80 = runs[0].score_distribution.iter().find(|b| b.band == "70-80").unwrap();
+        assert_eq!(band_70_80.count, 1);
 
         assert!(planning_runs_for_project(&state, "missing").is_empty());
     }

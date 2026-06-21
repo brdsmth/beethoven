@@ -1,7 +1,7 @@
 use beethoven_agents::AgentRole;
 use beethoven_core::{
     AgentStatus, ArtifactKind, DecisionStatus, InboxKind, InboxStatus, ProjectStatus, ReviewStatus, RunStatus,
-    TaskStatus,
+    ScoreBandCount, TaskStatus,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -55,6 +55,10 @@ pub struct TaskDto {
     /// created directly, or one whose criteria came back empty.
     pub success_criteria_reason: Option<String>,
     pub target_score: f32,
+    /// Why this specific quality bar was chosen (Phase 2.5C), traced back
+    /// to the `PlanningSummary` that generated it -- `None` for a task a
+    /// human created directly.
+    pub target_score_reason: Option<String>,
     /// Tasks this one depends on -- it cannot become executable until every
     /// one of these is `done`.
     pub dependencies: Vec<TaskRefDto>,
@@ -119,6 +123,11 @@ pub struct PlanningRunDto {
     pub tasks_with_criteria: usize,
     pub average_criteria_per_task: f64,
     pub criteria_coverage_percent: f64,
+    /// Phase 2.5C quality metrics, observability-only.
+    pub average_target_score: f32,
+    pub highest_target_score: f32,
+    pub lowest_target_score: f32,
+    pub score_distribution: Vec<ScoreBandCount>,
     pub summary: String,
     pub started_at: DateTime<Utc>,
 }
