@@ -1547,3 +1547,89 @@ async fn plan_task_produces_a_traceable_planning_run_and_summary_artifact() {
         .expect("prompt artifact recorded");
     assert!(prompt_artifact.content.contains("Build OAuth"));
 }
+
+/// A model that always returns explicit, non-empty success criteria for
+/// the one task it generates -- standing in for a real Phase 2.5B model
+/// response, since the legacy stub planner `stub_planning_result` falls
+/// back to never generates any.
+struct CriteriaModelRuntime;
+
+impl ModelRuntime for CriteriaModelRuntime {
+    fn provider(&self) -> &'static str {
+        "criteria-stub"
+    }
+
+    fn execute(&self, request: &ExecutionRequest, _on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError> {
+        assert!(request.json_schema.is_some(), "this fake is only used for planning calls");
+        let structured = serde_json::json!({
+            "reasoning": "One backend task covers the whole OAuth objective.",
+            "tasks": [{
+                "title": "Implement OAuth Backend",
+                "description": "",
+                "reason": "Backend work for OAuth login.",
+                "success_criteria": [
+                    "Google OAuth login succeeds",
+                    "GitHub OAuth login succeeds",
+                    "Session creation works",
+                ],
+                "success_criteria_reason": "These are the minimum outcomes for a complete OAuth backend.",
+            }],
+            "decisions": [],
+        });
+        Ok(ExecutionResult {
+            status: ExecutionStatus::Completed,
+            summary: "criteria stub planning response".to_string(),
+            raw_response: structured.to_string(),
+            structured_output: Some(structured),
+            cost_usd: None,
+        })
+    }
+}
+
+/// Phase 2.5B's central acceptance criteria: the planner generates success
+/// criteria as a real list (not a blob of text), every criterion's
+/// presence is explained, and the criteria reach `Task.success_criteria`
+/// itself -- not just the planning artifact.
+#[tokio::test]
+async fn plan_task_stores_model_generated_success_criteria_as_a_list_and_traces_them() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(CriteriaModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    let root = runtime
+        .create_task(&project.id, None, "Build OAuth", "Add OAuth login.", "", None, false)
+        .await
+        .unwrap();
+
+    let outcome = runtime.plan_task(&root.id).await.unwrap();
+    assert_eq!(outcome.tasks.len(), 1);
+    let generated = &outcome.tasks[0];
+
+    // Stored as a real list on the task itself, not a single string.
+    assert_eq!(
+        generated.success_criteria,
+        vec!["Google OAuth login succeeds", "GitHub OAuth login succeeds", "Session creation works"]
+    );
+
+    let artifact = runtime
+        .state
+        .artifacts
+        .values()
+        .find(|a| a.run_id == outcome.planning_run_id && a.kind == ArtifactKind::PlanningSummary)
+        .expect("planning summary artifact recorded");
+    let summary: PlanningSummary = serde_json::from_str(&artifact.content).expect("valid PlanningSummary JSON");
+
+    let explanation = summary.tasks.iter().find(|t| t.task_id == generated.id).expect("task explained");
+    assert_eq!(explanation.success_criteria, generated.success_criteria);
+    assert!(explanation.success_criteria_reason.contains("minimum outcomes"));
+
+    // Coverage metrics reflect the one fully-covered task.
+    assert_eq!(summary.metrics.tasks_with_criteria, 1);
+    assert_eq!(summary.metrics.average_criteria_per_task, 3.0);
+    assert_eq!(summary.metrics.criteria_coverage_percent, 100.0);
+    assert!(summary.summary.contains("3 criteria"));
+}

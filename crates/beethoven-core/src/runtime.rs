@@ -157,6 +157,20 @@ fn render_planning_summary(
         ));
     }
 
+    if !tasks.is_empty() {
+        out.push_str("Success Criteria (count per task):\n");
+        for t in tasks {
+            out.push_str(&format!("- {}: {} criteria\n", t.title, t.success_criteria.len()));
+        }
+        out.push_str(&format!(
+            "Coverage: {}/{} tasks ({:.0}%), {:.1} criteria/task average\n\n",
+            metrics.tasks_with_criteria,
+            tasks.len(),
+            metrics.criteria_coverage_percent,
+            metrics.average_criteria_per_task
+        ));
+    }
+
     let mut risk_areas: Vec<&str> = RISK_KEYWORDS
         .iter()
         .filter(|kw| {
@@ -625,6 +639,11 @@ impl Runtime {
     /// (the old Epic/subtask). `draft: true` creates it in `TaskStatus::Draft`
     /// instead of `Ready` -- proposed work pending human approval (the old
     /// ChangeRequest), invisible to delegation until `approve_draft_task`.
+    /// `success_criteria` stays a single string at this human-facing surface
+    /// for CLI/Tauri ergonomics -- one criterion per non-empty line, an
+    /// optional leading `- `/`* ` stripped -- and is split into the real
+    /// `Vec<String>` storage shape via `parse_success_criteria_text` before
+    /// it's stored.
     pub async fn create_task(
         &mut self,
         project_id: &str,
@@ -650,7 +669,7 @@ impl Runtime {
                 "title": title,
                 "description": description,
                 "status": if draft { TaskStatus::Draft } else { TaskStatus::Ready },
-                "success_criteria": success_criteria,
+                "success_criteria": parse_success_criteria_text(success_criteria),
                 "target_score": target_score.unwrap_or(DEFAULT_TARGET_SCORE),
             }),
         )
@@ -901,7 +920,7 @@ impl Runtime {
                     "title": draft.title,
                     "description": draft.description,
                     "status": TaskStatus::Ready,
-                    "success_criteria": "",
+                    "success_criteria": draft.success_criteria.clone(),
                     "target_score": DEFAULT_TARGET_SCORE,
                 }),
             )
@@ -915,10 +934,8 @@ impl Runtime {
                 target_score_reason: "Default quality bar applied -- the planning input specified no \
                     explicit target score for this task."
                     .to_string(),
-                success_criteria: String::new(),
-                success_criteria_reason: "No explicit success criteria were specified in the planning \
-                    input for this task."
-                    .to_string(),
+                success_criteria: draft.success_criteria,
+                success_criteria_reason: draft.success_criteria_reason,
             });
             tasks.push(created);
         }
@@ -962,6 +979,8 @@ impl Runtime {
         } else {
             tasks.iter().map(|t| (t.title.len() + t.description.len()) as f64).sum::<f64>() / tasks.len() as f64
         };
+        let tasks_with_criteria = task_explanations.iter().filter(|t| !t.success_criteria.is_empty()).count();
+        let total_criteria: usize = task_explanations.iter().map(|t| t.success_criteria.len()).sum();
         let metrics = PlanQualityMetrics {
             task_count: tasks.len(),
             average_task_length,
@@ -975,6 +994,13 @@ impl Runtime {
             average_dependency_depth: 0.0,
             blocked_task_count: decisions.len(),
             planning_duration_ms: started_at.elapsed().as_millis() as i64,
+            tasks_with_criteria,
+            average_criteria_per_task: if tasks.is_empty() { 0.0 } else { total_criteria as f64 / tasks.len() as f64 },
+            criteria_coverage_percent: if tasks.is_empty() {
+                0.0
+            } else {
+                tasks_with_criteria as f64 / tasks.len() as f64 * 100.0
+            },
         };
         let summary_text = render_planning_summary(task, &tasks, &decisions, &metrics, &reasoning);
         let planning_summary = PlanningSummary {
@@ -1077,6 +1103,9 @@ impl Runtime {
             average_dependency_depth: 0.0,
             blocked_task_count: 1,
             planning_duration_ms: started_at.elapsed().as_millis() as i64,
+            tasks_with_criteria: 0,
+            average_criteria_per_task: 0.0,
+            criteria_coverage_percent: 0.0,
         };
         let planning_summary = PlanningSummary {
             planned_task_id: task_id.to_string(),
@@ -1466,7 +1495,7 @@ impl Runtime {
                         "title": draft.title,
                         "description": draft.description,
                         "status": TaskStatus::Ready,
-                        "success_criteria": "",
+                        "success_criteria": draft.success_criteria,
                         "target_score": DEFAULT_TARGET_SCORE,
                     }),
                 )

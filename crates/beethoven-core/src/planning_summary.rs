@@ -1,13 +1,15 @@
+use crate::models::deserialize_success_criteria;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Why one generated task exists, and the quality bar applied to it.
 /// `target_score`/`success_criteria` are recorded here (not just on
-/// `Task`) precisely because today's planner never customizes them --
-/// every generated task gets the same default, so the honest "reason" is
-/// "no override was requested," not a per-task judgment call. When a
-/// smarter planner (Phase 2.5+) starts customizing these, the same fields
-/// carry real reasoning with no shape change.
+/// `Task`) so tracing either back to "why" is always "find the planning
+/// artifact that mentions this task," never a column on `Task` itself.
+/// `target_score` is still never customized by the planner (Phase 2.5A/B
+/// scope), so its reason stays a constant explanation; `success_criteria`
+/// is genuinely model-generated as of Phase 2.5B, so its reason is real,
+/// per-task reasoning rather than a constant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannedTaskExplanation {
     pub task_id: String,
@@ -15,7 +17,12 @@ pub struct PlannedTaskExplanation {
     pub reason: String,
     pub target_score: f32,
     pub target_score_reason: String,
-    pub success_criteria: String,
+    /// `#[serde(deserialize_with = ...)]`: a pre-existing artifact recorded
+    /// this as a single (always-empty) string before Phase 2.5B turned it
+    /// into a real list -- accept either shape so it still replays.
+    #[serde(default, deserialize_with = "deserialize_success_criteria")]
+    pub success_criteria: Vec<String>,
+    #[serde(default)]
     pub success_criteria_reason: String,
 }
 
@@ -66,6 +73,16 @@ pub struct PlanQualityMetrics {
     /// "blocked": work that needs a human call before it can proceed.
     pub blocked_task_count: usize,
     pub planning_duration_ms: i64,
+    /// Phase 2.5B coverage metrics, observability-only (never gate runtime
+    /// behavior): how many of this pass's tasks got at least one criterion,
+    /// how many criteria per task on average, and coverage as a percentage.
+    /// `#[serde(default)]`: see `average_task_length` above.
+    #[serde(default)]
+    pub tasks_with_criteria: usize,
+    #[serde(default)]
+    pub average_criteria_per_task: f64,
+    #[serde(default)]
+    pub criteria_coverage_percent: f64,
 }
 
 /// The structured content of a `PlanningSummary` artifact (`ArtifactKind::
