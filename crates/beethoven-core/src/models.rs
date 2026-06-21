@@ -72,10 +72,48 @@ pub struct Task {
     pub pr_url: Option<String>,
     pub attempt: u32,
     pub blocked_reason: Option<String>,
-    pub success_criteria: String,
+    /// Individual, independently-checkable outcomes (Phase 2.5B), not a
+    /// single blob of text -- so a future review phase can mark each one
+    /// done/not-done on its own rather than needing a second migration.
+    pub success_criteria: Vec<String>,
     pub target_score: f32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Splits raw human-entered text (the CLI/Tauri `create_task` surface,
+/// which still takes a single string for ergonomics) into individual
+/// criteria: one per non-empty line, with an optional leading `- `/`* `
+/// bullet marker stripped. `""` yields an empty list, not `[""]`.
+pub fn parse_success_criteria_text(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .map(|line| line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")).unwrap_or(line))
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Accepts either a JSON array of strings (the current shape) or a single
+/// JSON string (every `success_criteria` ever persisted before Phase
+/// 2.5B introduced the list) so a pre-existing `TaskCreated`/
+/// `PlanningSummaryGenerated` event still replays instead of failing to
+/// deserialize. A legacy string is split the same way fresh human input is.
+pub fn deserialize_success_criteria<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Repr {
+        List(Vec<String>),
+        Legacy(String),
+    }
+    Ok(match Repr::deserialize(deserializer)? {
+        Repr::List(items) => items,
+        Repr::Legacy(text) => parse_success_criteria_text(&text),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,4 +292,45 @@ pub struct Decision {
 pub struct TaskDependency {
     pub task_id: String,
     pub depends_on_task_id: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_success_criteria_text_splits_lines_and_strips_bullet_markers() {
+        let parsed = parse_success_criteria_text("- Google OAuth works\n* GitHub OAuth works\nPlain line\n\n");
+        assert_eq!(parsed, vec!["Google OAuth works", "GitHub OAuth works", "Plain line"]);
+    }
+
+    #[test]
+    fn parse_success_criteria_text_returns_empty_for_blank_input() {
+        assert!(parse_success_criteria_text("").is_empty());
+        assert!(parse_success_criteria_text("   \n  \n").is_empty());
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Wrapper {
+        #[serde(deserialize_with = "deserialize_success_criteria")]
+        success_criteria: Vec<String>,
+    }
+
+    #[test]
+    fn deserialize_success_criteria_accepts_a_real_list() {
+        let w: Wrapper = serde_json::from_str(r#"{"success_criteria": ["a", "b"]}"#).unwrap();
+        assert_eq!(w.success_criteria, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn deserialize_success_criteria_splits_a_legacy_string_for_backward_compatible_replay() {
+        let w: Wrapper = serde_json::from_str(r#"{"success_criteria": "- a\n- b"}"#).unwrap();
+        assert_eq!(w.success_criteria, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn deserialize_success_criteria_treats_a_legacy_empty_string_as_an_empty_list() {
+        let w: Wrapper = serde_json::from_str(r#"{"success_criteria": ""}"#).unwrap();
+        assert!(w.success_criteria.is_empty());
+    }
 }

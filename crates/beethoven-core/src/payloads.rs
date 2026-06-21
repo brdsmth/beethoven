@@ -1,4 +1,4 @@
-use crate::models::TaskStatus;
+use crate::models::{deserialize_success_criteria, TaskStatus};
 use beethoven_agents::AgentRole;
 use serde::{Deserialize, Serialize};
 
@@ -50,7 +50,8 @@ pub struct TaskCreatedPayload {
     pub title: String,
     pub description: String,
     pub status: TaskStatus,
-    pub success_criteria: String,
+    #[serde(deserialize_with = "deserialize_success_criteria")]
+    pub success_criteria: Vec<String>,
     pub target_score: f32,
 }
 
