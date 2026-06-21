@@ -115,6 +115,8 @@ enum TaskAction {
         parent: Option<String>,
         #[arg(long)]
         project: Option<String>,
+        /// One criterion per "- item" line (a leading "- "/"* " is
+        /// optional); stored as a real list, not a single blob of text.
         #[arg(long)]
         success_criteria: Option<String>,
         #[arg(long)]
@@ -649,7 +651,14 @@ fn print_task(runtime: &Runtime, task_id: &str) -> Result<()> {
     println!("Description: {}", task.description);
     println!("Status: {:?}", task.status);
     println!("Attempt: {}", task.attempt);
-    println!("Success criteria: {}", task.success_criteria);
+    if task.success_criteria.is_empty() {
+        println!("Success criteria: (none)");
+    } else {
+        println!("Success criteria:");
+        for criterion in &task.success_criteria {
+            println!("  - {criterion}");
+        }
+    }
     println!("Target score: {}", task.target_score);
     if let Some(parent_id) = &task.parent_task_id {
         println!("Parent: {parent_id}");
