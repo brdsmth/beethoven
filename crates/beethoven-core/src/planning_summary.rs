@@ -42,6 +42,24 @@ pub struct PlannedDependencyExplanation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanQualityMetrics {
     pub task_count: usize,
+    /// Average combined title+description length (characters) across this
+    /// pass's generated tasks -- a crude granularity signal: tasks with an
+    /// empty description (the legacy stub planner's output, and a model
+    /// response that under-specified) pull this down. `#[serde(default)]`:
+    /// added in Phase 2.5A, after `PlanningSummaryGenerated` events already
+    /// existed in the event log -- a pre-existing artifact must still
+    /// replay, so an old payload without this field defaults rather than
+    /// failing to parse.
+    #[serde(default)]
+    pub average_task_length: f64,
+    /// Of the tasks this pass generated, how many have no children of
+    /// their own. Phase 2.5A only ever generates one level of decomposition
+    /// (no recursive breakdown), so this always equals `task_count` today --
+    /// computed honestly rather than hardcoded so it stays correct the
+    /// moment a future phase changes that. `#[serde(default)]`: see
+    /// `average_task_length` above.
+    #[serde(default)]
+    pub leaf_task_count: usize,
     pub dependency_count: usize,
     pub average_dependency_depth: f64,
     /// Decisions escalated by this run -- the planning-time equivalent of
@@ -64,6 +82,21 @@ pub struct PlanningSummary {
     pub decisions: Vec<PlannedDecisionExplanation>,
     pub dependencies: Vec<PlannedDependencyExplanation>,
     pub metrics: PlanQualityMetrics,
+    /// The model's own stated reasoning for this breakdown as a whole,
+    /// distinct from each task's individual `reason` above -- Phase 2.5A's
+    /// "Task Generation Reasoning," a debugging tool for judging *why* a
+    /// shape was chosen, not just what it produced. Empty for the legacy
+    /// stub planner (nothing to report) or a planning run that failed
+    /// before a model response was parsed.
+    ///
+    /// The planner's prompt and raw response are deliberately *not*
+    /// duplicated here: emitting real `PromptGenerated`/`RunCompleted`
+    /// events for the planning Run already records them as ordinary
+    /// `ArtifactKind::Prompt`/`Response` artifacts, visible through the
+    /// same Task Detail views a worker Run's prompt/response already use.
+    /// `#[serde(default)]`: see `PlanQualityMetrics::average_task_length`.
+    #[serde(default)]
+    pub task_generation_reasoning: String,
     /// The doc's "Planning Summary": goal, generated counts, execution
     /// order, risk areas -- rendered as plain text so it displays for free
     /// anywhere an `Artifact`'s `content` is already shown as text.

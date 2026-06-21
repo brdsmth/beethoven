@@ -47,6 +47,41 @@ impl EventStore for InMemoryStore {
     }
 }
 
+/// Every fake `ModelRuntime` below is shared by both `plan_task` and the
+/// worker execution path -- there is only one registered runtime per
+/// registry. A planning call is distinguished from a worker call by
+/// `request.json_schema` (only `Runtime::plan_task` ever sets it); for that
+/// case, every fake delegates here instead of doing its own (worker-only)
+/// thing, so tests written against the legacy deterministic planner's exact
+/// output (titles, fallback behavior, decisions from `?` lines) keep
+/// passing unchanged: `PlanningService::plan` itself didn't go away, it
+/// just moved from being called directly by `Runtime::plan_task` to being
+/// the thing these test doubles use to fabricate a plausible model
+/// response.
+fn stub_planning_result(prompt_path: &Path) -> ExecutionResult {
+    let prompt = std::fs::read_to_string(prompt_path).expect("prompt file exists");
+    let title = extract_between(&prompt, "Task Title:\n", "\n\n");
+    let description = extract_between(&prompt, "-----BEGIN DESCRIPTION-----\n", "\n-----END DESCRIPTION-----");
+    let outcome = beethoven_agents::PlanningService::plan(title, description);
+    let structured = serde_json::json!({
+        "reasoning": "stub planning reasoning for tests",
+        "tasks": outcome.task_drafts,
+        "decisions": outcome.decision_drafts,
+    });
+    ExecutionResult {
+        status: ExecutionStatus::Completed,
+        summary: "stub planning response".to_string(),
+        raw_response: structured.to_string(),
+        structured_output: Some(structured),
+        cost_usd: None,
+    }
+}
+
+fn extract_between<'a>(text: &'a str, start: &str, end: &str) -> &'a str {
+    let after_start = &text[text.find(start).expect("start marker present in prompt") + start.len()..];
+    &after_start[..after_start.find(end).expect("end marker present in prompt")]
+}
+
 /// Replaces a real model call with a real tmux round trip: appends the
 /// rendered prompt to NOTES.md inside the worktree, so tests still exercise
 /// genuine on-disk work without invoking `claude`.
@@ -58,6 +93,9 @@ impl ModelRuntime for StubModelRuntime {
     }
 
     fn execute(&self, request: &ExecutionRequest, on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError> {
+        if request.json_schema.is_some() {
+            return Ok(stub_planning_result(request.prompt_path));
+        }
         let session = TmuxSession { name: request.workspace.tmux_session.clone() };
         let command = format!("cat '{}' >> NOTES.md", request.prompt_path.display());
         let output = session.run_and_wait(&command, Duration::from_secs(10), on_tick)?;
@@ -84,6 +122,9 @@ impl ModelRuntime for SlowModelRuntime {
     }
 
     fn execute(&self, request: &ExecutionRequest, on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError> {
+        if request.json_schema.is_some() {
+            return Ok(stub_planning_result(request.prompt_path));
+        }
         let start = Instant::now();
         std::thread::sleep(Duration::from_millis(300));
         let session = TmuxSession { name: request.workspace.tmux_session.clone() };
@@ -115,6 +156,9 @@ impl ModelRuntime for GitClobberingModelRuntime {
     }
 
     fn execute(&self, request: &ExecutionRequest, _on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError> {
+        if request.json_schema.is_some() {
+            return Ok(stub_planning_result(request.prompt_path));
+        }
         let worktree = Path::new(&request.workspace.git_worktree);
         std::fs::write(worktree.join("NOTES.md"), "real work the model actually did\n").unwrap();
         std::fs::remove_file(worktree.join(".git")).unwrap();
@@ -143,7 +187,10 @@ impl ModelRuntime for NoOpModelRuntime {
         "noop-stub"
     }
 
-    fn execute(&self, _request: &ExecutionRequest, _on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError> {
+    fn execute(&self, request: &ExecutionRequest, _on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError> {
+        if request.json_schema.is_some() {
+            return Ok(stub_planning_result(request.prompt_path));
+        }
         Ok(ExecutionResult {
             status: ExecutionStatus::Completed,
             summary: "noop stub: made no changes".to_string(),
@@ -715,15 +762,23 @@ async fn a_workspace_creation_failure_escalates_just_that_project_not_the_whole_
         .await
         .unwrap();
 
-    // A repository path that was never `git init`-ed: `git worktree add`
-    // will fail for every task in this project.
+    // Planning now also needs a real workspace (Phase 2.5A calls a real
+    // model), so the repo must be valid through planning and only break
+    // afterwards -- otherwise planning itself would be the first thing to
+    // fail, never reaching `tick_projects` at all. Repointed to a path that
+    // was never `git init`-ed right before the tick: `git worktree add`
+    // will fail for the child task's execution specifically.
+    init_repo(&dir.path().join("initially-fine"));
     let broken = runtime
-        .create_project("Broken", dir.path().join("does-not-exist"), "main")
+        .create_project("Broken", dir.path().join("initially-fine"), "main")
         .await
         .unwrap();
     let broken_root =
         runtime.create_task(&broken.id, None, "Docs", "- Write the changelog", "", None, false).await.unwrap();
     runtime.plan_task(&broken_root.id).await.unwrap();
+    runtime.pause_project(&broken.id).await.unwrap();
+    runtime.update_repository_path(&broken.id, dir.path().join("does-not-exist").to_string_lossy().into_owned()).await.unwrap();
+    runtime.resume_project(&broken.id).await.unwrap();
 
     init_repo(&dir.path().join("good-repo"));
     let healthy = runtime.create_project("Healthy", dir.path().join("good-repo"), "main").await.unwrap();
@@ -1235,18 +1290,33 @@ async fn task_blocked_sets_blocked_reason_and_clearing_it_via_retry_or_question_
         .await
         .unwrap();
 
-    // Two broken projects so each gets its own escalated, Blocked task --
-    // `git worktree add` fails immediately for a repo that was never
-    // `git init`-ed, blocking the task on the very first tick.
-    let project_a = runtime.create_project("Retry", dir.path().join("missing-repo-a"), "main").await.unwrap();
+    // Two projects, each planned against a real repo (planning now also
+    // needs a real workspace) and then repointed to a repo that was never
+    // `git init`-ed -- `git worktree add` fails immediately for the
+    // already-planned child task's execution, blocking it on the first tick.
+    init_repo(&dir.path().join("repo-a"));
+    let project_a = runtime.create_project("Retry", dir.path().join("repo-a"), "main").await.unwrap();
     let root_a =
         runtime.create_task(&project_a.id, None, "Docs", "- Write the changelog", "", None, false).await.unwrap();
     runtime.plan_task(&root_a.id).await.unwrap();
+    runtime.pause_project(&project_a.id).await.unwrap();
+    runtime
+        .update_repository_path(&project_a.id, dir.path().join("missing-repo-a").to_string_lossy().into_owned())
+        .await
+        .unwrap();
+    runtime.resume_project(&project_a.id).await.unwrap();
 
-    let project_b = runtime.create_project("Answer", dir.path().join("missing-repo-b"), "main").await.unwrap();
+    init_repo(&dir.path().join("repo-b"));
+    let project_b = runtime.create_project("Answer", dir.path().join("repo-b"), "main").await.unwrap();
     let root_b =
         runtime.create_task(&project_b.id, None, "Docs", "- Write the changelog", "", None, false).await.unwrap();
     runtime.plan_task(&root_b.id).await.unwrap();
+    runtime.pause_project(&project_b.id).await.unwrap();
+    runtime
+        .update_repository_path(&project_b.id, dir.path().join("missing-repo-b").to_string_lossy().into_owned())
+        .await
+        .unwrap();
+    runtime.resume_project(&project_b.id).await.unwrap();
 
     runtime.tick_projects(&[project_a.id.clone(), project_b.id.clone()], 4, 3).await.unwrap();
 
@@ -1413,9 +1483,15 @@ async fn plan_task_produces_a_traceable_planning_run_and_summary_artifact() {
     assert_eq!(outcome.tasks.len(), 2);
     assert_eq!(outcome.decisions.len(), 1);
 
-    // The planning Run exists, completed, with provider "planner".
+    // The planning Run exists, completed, with the real model runtime's
+    // provider name (Phase 2.5A: planning is a real model call now, so its
+    // Run's provider reflects whichever runtime actually ran it -- same
+    // convention a worker Run already uses -- rather than a hardcoded
+    // "planner" label. Nothing identifies "is this a planning run" by
+    // provider string; that's always done via the sibling PlanningSummary
+    // artifact below.
     let run = runtime.state.runs.get(&outcome.planning_run_id).expect("planning run recorded");
-    assert_eq!(run.provider, "planner");
+    assert_eq!(run.provider, "stub");
     assert_eq!(run.status, RunStatus::Completed);
     assert_eq!(run.task_id, root.id);
 
@@ -1441,13 +1517,33 @@ async fn plan_task_produces_a_traceable_planning_run_and_summary_artifact() {
     assert_eq!(summary.metrics.task_count, 2);
     assert_eq!(summary.metrics.blocked_task_count, 1);
 
-    // The same human-readable summary is also visible "for free" as the
-    // planning run's response, through the existing Task Detail view.
+    // The model's raw response (Phase 2.5A's "Planner Response" debugging
+    // tool) is visible "for free" as the planning run's response artifact,
+    // through the existing Task Detail view -- distinct from
+    // `summary.summary` above, which is the rendered human-readable text a
+    // person actually reads.
     let response_artifact = runtime
         .state
         .artifacts
         .values()
         .find(|a| a.run_id == outcome.planning_run_id && a.kind == ArtifactKind::Response)
         .expect("response artifact recorded");
-    assert_eq!(response_artifact.content, summary.summary);
+    let raw: serde_json::Value = serde_json::from_str(&response_artifact.content).expect("raw model response is JSON");
+    assert!(raw.get("tasks").is_some(), "the raw planner response, not the rendered summary, is recorded");
+    assert_ne!(response_artifact.content, summary.summary);
+
+    // The model's overall reasoning is also captured, distinct from each
+    // task's individual reason, and folded into the rendered summary too.
+    assert_eq!(summary.task_generation_reasoning, "stub planning reasoning for tests");
+    assert!(summary.summary.contains("stub planning reasoning for tests"));
+
+    // The planner's prompt is likewise visible "for free" as a Prompt
+    // artifact on the same Run.
+    let prompt_artifact = runtime
+        .state
+        .artifacts
+        .values()
+        .find(|a| a.run_id == outcome.planning_run_id && a.kind == ArtifactKind::Prompt)
+        .expect("prompt artifact recorded");
+    assert!(prompt_artifact.content.contains("Build OAuth"));
 }

@@ -7,8 +7,9 @@ use crate::state::RuntimeState;
 use beethoven_agents::{
     AgentRole, AgentsError, DelegationAgent, DelegationAgentStatus, DelegationDecision, DelegationService,
     DelegationTask, ExecutionOutcome, ExecutionRequest, ExecutionResult, ExecutionService, ExecutionStatus,
-    FifoScheduler, ModelRuntime, PlanningService, PromptBuilder, QueuedTask, ReviewOutcome, ReviewService,
-    RuntimeRegistry, Scheduler, TaskExecutionContext, TaskQueue, WorkerPromptContext,
+    FifoScheduler, ModelRuntime, PlanOutcome, PlannerPromptContext, PlanningService, PromptBuilder, QueuedTask,
+    ReviewOutcome, ReviewService, RuntimeRegistry, Scheduler, TaskExecutionContext, TaskQueue, WorkerPromptContext,
+    PLANNER_RESPONSE_SCHEMA,
 };
 use beethoven_events::{Event, EventStore, EventType};
 use beethoven_workspaces::{tmux_session_name, WorkspaceManager, WorkspaceRequest, WorkspaceState};
@@ -124,11 +125,18 @@ fn slugify(input: &str) -> String {
 const RISK_KEYWORDS: [&str; 6] = ["security", "auth", "payment", "migration", "production", "delete"];
 
 /// Plain-text rendering of one planning run -- goal, generated counts, a
-/// sequential execution order (creation order, since the stub planner
-/// never generates dependencies to reorder it by), and flagged risk areas.
-/// Lands in the planning Run's `response` field, so it displays for free
-/// through the existing Task Detail "Response" view.
-fn render_planning_summary(task: &Task, tasks: &[Task], decisions: &[Decision], metrics: &PlanQualityMetrics) -> String {
+/// sequential execution order (creation order, since the planner never
+/// generates dependencies to reorder it by), flagged risk areas, and (for a
+/// model-driven run) the model's own stated reasoning. Lands in the
+/// planning Run's `response` field, so it displays for free through the
+/// existing Task Detail "Response" view.
+fn render_planning_summary(
+    task: &Task,
+    tasks: &[Task],
+    decisions: &[Decision],
+    metrics: &PlanQualityMetrics,
+    reasoning: &str,
+) -> String {
     let mut out = String::new();
     out.push_str("Planning Summary\n\n");
     out.push_str(&format!("Goal:\n{}\n\n", task.title));
@@ -167,8 +175,57 @@ fn render_planning_summary(task: &Task, tasks: &[Task], decisions: &[Decision], 
         }
     }
 
+    if !reasoning.is_empty() {
+        out.push_str(&format!("\nReasoning:\n{reasoning}\n"));
+    }
+
     out.push_str(&format!("\nPlanning Duration: {}ms\n", metrics.planning_duration_ms));
     out
+}
+
+/// The planner's "Existing Task Tree" input: every task already in the
+/// project, indented by depth under its parent, oldest-first -- so the
+/// model can see what's already been planned and avoid regenerating it.
+fn render_task_tree(state: &RuntimeState, project_id: &str) -> String {
+    let mut by_parent: HashMap<Option<String>, Vec<&Task>> = HashMap::new();
+    for t in state.tasks.values().filter(|t| t.project_id == project_id) {
+        by_parent.entry(t.parent_task_id.clone()).or_default().push(t);
+    }
+    if by_parent.is_empty() {
+        return "(no tasks exist yet in this project)".to_string();
+    }
+    for siblings in by_parent.values_mut() {
+        siblings.sort_by_key(|t| t.created_at);
+    }
+
+    fn walk(by_parent: &HashMap<Option<String>, Vec<&Task>>, parent: Option<&str>, depth: usize, out: &mut String) {
+        let Some(children) = by_parent.get(&parent.map(str::to_string)) else {
+            return;
+        };
+        for child in children {
+            out.push_str(&"  ".repeat(depth));
+            out.push_str(&format!("- {} [{:?}]\n", child.title, child.status));
+            walk(by_parent, Some(child.id.as_str()), depth + 1, out);
+        }
+    }
+
+    let mut out = String::new();
+    walk(&by_parent, None, 0, &mut out);
+    out
+}
+
+/// The planner's "Current Project Facts" input: a short, factual snapshot
+/// of the project it's working within.
+fn render_project_facts(state: &RuntimeState, project: &Project) -> String {
+    let task_count = state.tasks.values().filter(|t| t.project_id == project.id).count();
+    let agent_count = state.agent_instances.values().filter(|a| a.project_id == project.id).count();
+    format!(
+        "Repository: {}\nDefault branch: {}\nExisting tasks in project: {}\nActive agents in project: {}",
+        project.repository_path.display(),
+        project.default_branch,
+        task_count,
+        agent_count,
+    )
 }
 
 pub struct Runtime {
@@ -601,30 +658,243 @@ impl Runtime {
         Ok(self.state.tasks.get(&id).expect("just inserted").clone())
     }
 
-    /// Breaks a task down into children (the old Goal/Initiative planning
-    /// step, unified): bullet-list lines become child tasks, lines ending in
-    /// `?` become `Decision`s auto-escalated to the inbox. Works at any
-    /// level of the tree -- a freshly-created root task and a task several
-    /// levels deep are planned identically.
+    /// Breaks a task down into children via a real model call (Phase 2.5A):
+    /// stands up a real workspace exactly like a worker task would (the
+    /// only path this codebase has for invoking a model), prompts it with
+    /// the goal plus the project's existing task tree/facts, and turns its
+    /// structured response into child `Task`s and any `Decision`s it
+    /// raised. Works at any level of the tree -- a freshly-created root
+    /// task and a task several levels deep are planned identically.
+    /// Dependencies, success criteria, and target scores are untouched --
+    /// Phase 2.5A's planner only ever produces `{title, description,
+    /// reason}` per task, same as the legacy stub planner did.
     pub async fn plan_task(&mut self, task_id: &str) -> Result<TaskPlanOutcome, CoreError> {
         let task = self.state.tasks.get(task_id).cloned().ok_or_else(|| CoreError::TaskNotFound(task_id.to_string()))?;
         let project_id = task.project_id.clone();
+        let project = self.require_project(&project_id)?;
         let lead_id = self.lead_instance_id(&project_id).unwrap_or_else(|| "system".to_string());
         let started_at = Instant::now();
 
         self.emit_project(&project_id, EventType::TaskPlanningStarted, &lead_id, json!({"task_id": task_id}))
             .await?;
 
-        let plan = PlanningService::plan(&task.title, &task.description);
+        let runtime_profile_id = self
+            .state
+            .agent_instances
+            .get(&lead_id)
+            .and_then(|agent| self.state.agent_templates.get(&agent.template_id))
+            .map(|template| template.runtime_profile_id.clone())
+            .unwrap_or_else(|| "claude-default".to_string());
+        let model_runtime = self
+            .registry
+            .resolve(&runtime_profile_id)
+            .map_err(|e| CoreError::InvalidState(e.to_string()))?;
 
+        // Standing up a real git worktree/branch/tmux session purely to run
+        // a planning prompt is the same cost every worker task already
+        // pays for every attempt -- there is no second, lighter-weight way
+        // to invoke a model in this codebase, and reusing this machinery
+        // (rather than adding one) keeps planning Runs and worker Runs
+        // identical in shape.
+        let workspaces = self.workspace_manager_for(&project.slug);
+        let repository_path = project.repository_path.to_string_lossy().into_owned();
+        let branch = beethoven_git::branch_name(&format!("plan-{}", task.title));
+        let ws_state = match workspaces.create(&WorkspaceRequest {
+            project_slug: &project.slug,
+            agent_label: "planner",
+            task_id,
+            repository_path: &repository_path,
+            default_branch: &project.default_branch,
+            branch: &branch,
+        }) {
+            Ok(ws) => ws,
+            Err(e) => {
+                // Unlike a worker task's workspace failure, no run has been
+                // minted yet -- this is an infra failure (git/tmux/io), not
+                // a planning judgment one, so it escalates the same way
+                // `escalate_start_failure` does rather than via a Decision.
+                let _ = std::fs::remove_dir_all(workspaces.path_for(task_id));
+                return self.escalate_planning_infra_failure(&project_id, task_id, &lead_id, &e.to_string()).await;
+            }
+        };
+        self.emit_project(
+            &project_id,
+            EventType::WorkspaceCreated,
+            &lead_id,
+            json!({"task_id": task_id, "path": ws_state.git_worktree}),
+        )
+        .await?;
+        self.emit_project(
+            &project_id,
+            EventType::WorktreeCreated,
+            &lead_id,
+            json!({"task_id": task_id, "path": ws_state.git_worktree}),
+        )
+        .await?;
+        self.emit_project(
+            &project_id,
+            EventType::BranchCreated,
+            &lead_id,
+            json!({"task_id": task_id, "branch": ws_state.branch}),
+        )
+        .await?;
+        self.emit_project(
+            &project_id,
+            EventType::TmuxSessionCreated,
+            &lead_id,
+            json!({"task_id": task_id, "session_name": ws_state.tmux_session}),
+        )
+        .await?;
+
+        let existing_task_tree = render_task_tree(&self.state, &project_id);
+        let project_facts = render_project_facts(&self.state, &project);
+        let prompt = PromptBuilder::planner(&PlannerPromptContext {
+            project_name: &project.name,
+            task_title: &task.title,
+            task_description: &task.description,
+            existing_task_tree: &existing_task_tree,
+            project_facts: &project_facts,
+        });
+        let prompt_path = workspaces.path_for(task_id).join("prompts").join("plan_prompt.md");
+        if let Err(e) = std::fs::write(&prompt_path, &prompt) {
+            self.teardown_workspace(&project_id, task_id, &lead_id, &workspaces, &ws_state).await?;
+            return self.escalate_planning_infra_failure(&project_id, task_id, &lead_id, &e.to_string()).await;
+        }
+
+        let run_id = Uuid::new_v4().to_string();
+        self.emit_project(
+            &project_id,
+            EventType::PromptGenerated,
+            &lead_id,
+            json!({"run_id": run_id, "task_id": task_id, "prompt": prompt}),
+        )
+        .await?;
+        self.emit_project(
+            &project_id,
+            EventType::RunStarted,
+            &lead_id,
+            json!({
+                "id": run_id,
+                "agent_id": lead_id,
+                "project_id": project_id,
+                "task_id": task_id,
+                "attempt": task.attempt,
+                "provider": model_runtime.provider(),
+            }),
+        )
+        .await?;
+
+        // The actual model call is the one part of planning worth running
+        // off the async runtime's worker thread -- same reasoning as the
+        // worker execution path's `spawn_blocking`, just for a single call
+        // instead of a batch (planning isn't part of the concurrent
+        // multi-task tick). Everything the blocking closure touches is
+        // cloned into owned locals first since none of it can borrow from
+        // `self` or a stack frame across the `'static` boundary.
+        let artifacts_dir = workspaces.path_for(task_id).join("artifacts");
+        let blocking_runtime = Arc::clone(&model_runtime);
+        let blocking_project_id = project_id.clone();
+        let blocking_agent_id = lead_id.clone();
+        let blocking_task_id = task_id.to_string();
+        let blocking_prompt_path = prompt_path.clone();
+        let blocking_artifacts_dir = artifacts_dir.clone();
+        let blocking_ws_state = ws_state.clone();
+        let execution = match tokio::task::spawn_blocking(move || {
+            let request = ExecutionRequest {
+                project_id: &blocking_project_id,
+                agent_id: &blocking_agent_id,
+                task_id: Some(&blocking_task_id),
+                prompt_path: &blocking_prompt_path,
+                artifacts_dir: &blocking_artifacts_dir,
+                workspace: &blocking_ws_state,
+                json_schema: Some(PLANNER_RESPONSE_SCHEMA),
+            };
+            blocking_runtime.execute(&request, &|| {})
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(join_err) => {
+                Err(AgentsError::ProcessFailed(format!("planning execution panicked or was cancelled: {join_err}")))
+            }
+        };
+
+        self.teardown_workspace(&project_id, task_id, &lead_id, &workspaces, &ws_state).await?;
+
+        match execution {
+            Err(e) => {
+                self.emit_project(&project_id, EventType::RunFailed, &lead_id, json!({"id": run_id, "error": e.to_string()}))
+                    .await?;
+                self.escalate_planning_model_failure(
+                    &project_id,
+                    task_id,
+                    &task.title,
+                    &lead_id,
+                    &run_id,
+                    started_at,
+                    &e.to_string(),
+                )
+                .await
+            }
+            Ok(result) => {
+                self.emit_project(
+                    &project_id,
+                    EventType::RunCompleted,
+                    &lead_id,
+                    json!({
+                        "id": run_id,
+                        "summary": result.summary,
+                        "response": result.raw_response,
+                        "cost_usd": result.cost_usd,
+                    }),
+                )
+                .await?;
+
+                match PlanningService::parse_model_response(result.structured_output.as_ref(), &result.raw_response) {
+                    Err(e) => {
+                        self.escalate_planning_model_failure(
+                            &project_id,
+                            task_id,
+                            &task.title,
+                            &lead_id,
+                            &run_id,
+                            started_at,
+                            &format!("model response could not be parsed into task drafts: {e}"),
+                        )
+                        .await
+                    }
+                    Ok((plan, reasoning)) => {
+                        self.apply_plan(&project_id, task_id, &task, &lead_id, &run_id, started_at, plan, reasoning).await
+                    }
+                }
+            }
+        }
+    }
+
+    /// The success path of `plan_task`: turns a parsed `PlanOutcome` into
+    /// real child `Task`s/`Decision`s, computes this pass's quality
+    /// metrics, and records the `PlanningSummary` artifact that traces
+    /// every one of them back to the model's stated reasoning.
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_plan(
+        &mut self,
+        project_id: &str,
+        task_id: &str,
+        task: &Task,
+        lead_id: &str,
+        run_id: &str,
+        started_at: Instant,
+        plan: PlanOutcome,
+        reasoning: String,
+    ) -> Result<TaskPlanOutcome, CoreError> {
         let mut tasks = Vec::with_capacity(plan.task_drafts.len());
         let mut task_explanations = Vec::with_capacity(plan.task_drafts.len());
         for draft in plan.task_drafts {
             let id = Uuid::new_v4().to_string();
             self.emit_project(
-                &project_id,
+                project_id,
                 EventType::TaskCreated,
-                &lead_id,
+                lead_id,
                 json!({
                     "id": id,
                     "parent_task_id": task_id,
@@ -658,9 +928,9 @@ impl Runtime {
         for decision_draft in plan.decision_drafts {
             let decision_id = Uuid::new_v4().to_string();
             self.emit_project(
-                &project_id,
+                project_id,
                 EventType::DecisionCreated,
-                &lead_id,
+                lead_id,
                 json!({
                     "id": decision_id,
                     "task_id": task_id,
@@ -679,25 +949,34 @@ impl Runtime {
 
             let inbox_id = Uuid::new_v4().to_string();
             self.emit_project(
-                &project_id,
+                project_id,
                 EventType::DecisionEscalated,
-                &lead_id,
+                lead_id,
                 json!({"decision_id": decision_id, "inbox_id": inbox_id, "prompt": decision_draft.context}),
             )
             .await?;
         }
 
+        let average_task_length = if tasks.is_empty() {
+            0.0
+        } else {
+            tasks.iter().map(|t| (t.title.len() + t.description.len()) as f64).sum::<f64>() / tasks.len() as f64
+        };
         let metrics = PlanQualityMetrics {
             task_count: tasks.len(),
-            // The stub planner never infers dependencies between the tasks
-            // it generates -- that's Phase 2.5's job. Kept at zero, honestly,
-            // rather than fabricated.
+            average_task_length,
+            // Phase 2.5A only generates one level of decomposition, so
+            // every task this pass produced is, by construction, a leaf.
+            leaf_task_count: tasks.len(),
+            // Phase 2.5A's planner never infers dependencies between the
+            // tasks it generates -- that's a later phase's job. Kept at
+            // zero, honestly, rather than fabricated.
             dependency_count: 0,
             average_dependency_depth: 0.0,
             blocked_task_count: decisions.len(),
             planning_duration_ms: started_at.elapsed().as_millis() as i64,
         };
-        let summary_text = render_planning_summary(&task, &tasks, &decisions, &metrics);
+        let summary_text = render_planning_summary(task, &tasks, &decisions, &metrics, &reasoning);
         let planning_summary = PlanningSummary {
             planned_task_id: task_id.to_string(),
             planned_task_title: task.title.clone(),
@@ -705,48 +984,14 @@ impl Runtime {
             decisions: decision_explanations,
             dependencies: Vec::new(),
             metrics,
-            summary: summary_text.clone(),
+            task_generation_reasoning: reasoning,
+            summary: summary_text,
             generated_at: chrono::Utc::now(),
         };
-
-        // The Planning Run: a specialized `Run` (provider "planner"), not a
-        // new domain entity -- the same Run/Artifact machinery that already
-        // records a model execution now records a planning pass too, with
-        // the human-readable summary landing in the existing `response`
-        // field (so it's visible via the same Task Detail panel "Response"
-        // view, no new UI plumbing required) and the structured, traceable
-        // version in a sibling `PlanningSummary` artifact.
-        let run_id = Uuid::new_v4().to_string();
         self.emit_project(
-            &project_id,
-            EventType::RunStarted,
-            &lead_id,
-            json!({
-                "id": run_id,
-                "agent_id": lead_id,
-                "project_id": project_id,
-                "task_id": task_id,
-                "attempt": task.attempt,
-                "provider": "planner",
-            }),
-        )
-        .await?;
-        self.emit_project(
-            &project_id,
-            EventType::RunCompleted,
-            &lead_id,
-            json!({
-                "id": run_id,
-                "summary": format!("Planned {} task(s), {} decision(s)", tasks.len(), decisions.len()),
-                "response": summary_text,
-                "cost_usd": None::<f64>,
-            }),
-        )
-        .await?;
-        self.emit_project(
-            &project_id,
+            project_id,
             EventType::PlanningSummaryGenerated,
-            &lead_id,
+            lead_id,
             json!({
                 "run_id": run_id,
                 "content": serde_json::to_string(&planning_summary).expect("PlanningSummary always serializes"),
@@ -754,10 +999,114 @@ impl Runtime {
         )
         .await?;
 
-        self.emit_project(&project_id, EventType::TaskPlanningCompleted, &lead_id, json!({"task_id": task_id}))
+        self.emit_project(project_id, EventType::TaskPlanningCompleted, lead_id, json!({"task_id": task_id}))
             .await?;
 
-        Ok(TaskPlanOutcome { tasks, decisions, planning_run_id: run_id })
+        Ok(TaskPlanOutcome { tasks, decisions, planning_run_id: run_id.to_string() })
+    }
+
+    /// A workspace/git/tmux/io failure while setting up a planning run --
+    /// mirrors `escalate_start_failure`'s worker-task convention exactly,
+    /// since this is the same class of infra failure, not a planning
+    /// judgment call. No `Run` is minted (nothing ever got far enough to
+    /// invoke a model), so the outcome is empty rather than carrying a
+    /// failure `Decision`.
+    async fn escalate_planning_infra_failure(
+        &mut self,
+        project_id: &str,
+        task_id: &str,
+        lead_id: &str,
+        reason: &str,
+    ) -> Result<TaskPlanOutcome, CoreError> {
+        self.emit_project(project_id, EventType::TaskBlocked, lead_id, json!({"task_id": task_id, "reason": reason}))
+            .await?;
+        let inbox_id = Uuid::new_v4().to_string();
+        self.emit_project(
+            project_id,
+            EventType::QuestionRaised,
+            lead_id,
+            json!({"inbox_id": inbox_id, "task_id": task_id, "agent_id": lead_id, "prompt": reason}),
+        )
+        .await?;
+        Ok(TaskPlanOutcome { tasks: Vec::new(), decisions: Vec::new(), planning_run_id: String::new() })
+    }
+
+    /// The planner's own "Failure Cases" path: the model call itself failed,
+    /// or it returned output that couldn't be parsed into task/decision
+    /// drafts. Per the spec, this routes to a `Decision` in the inbox --
+    /// the same mechanism an ambiguous/contradictory *goal* already uses
+    /// (the model raises that as a `decisions` entry in its own response,
+    /// handled by `apply_plan` like any other), just escalated by Beethoven
+    /// itself instead of the model when there's no usable response to read
+    /// decisions out of at all.
+    #[allow(clippy::too_many_arguments)]
+    async fn escalate_planning_model_failure(
+        &mut self,
+        project_id: &str,
+        task_id: &str,
+        task_title: &str,
+        lead_id: &str,
+        run_id: &str,
+        started_at: Instant,
+        reason: &str,
+    ) -> Result<TaskPlanOutcome, CoreError> {
+        let decision_id = Uuid::new_v4().to_string();
+        let question = format!("Planning failed for \"{task_title}\" -- please review and plan it manually.");
+        self.emit_project(
+            project_id,
+            EventType::DecisionCreated,
+            lead_id,
+            json!({"id": decision_id, "task_id": task_id, "question": question, "context": reason}),
+        )
+        .await?;
+        let decision = self.state.decisions.get(&decision_id).expect("just inserted").clone();
+        let inbox_id = Uuid::new_v4().to_string();
+        self.emit_project(
+            project_id,
+            EventType::DecisionEscalated,
+            lead_id,
+            json!({"decision_id": decision_id, "inbox_id": inbox_id, "prompt": reason}),
+        )
+        .await?;
+
+        let metrics = PlanQualityMetrics {
+            task_count: 0,
+            average_task_length: 0.0,
+            leaf_task_count: 0,
+            dependency_count: 0,
+            average_dependency_depth: 0.0,
+            blocked_task_count: 1,
+            planning_duration_ms: started_at.elapsed().as_millis() as i64,
+        };
+        let planning_summary = PlanningSummary {
+            planned_task_id: task_id.to_string(),
+            planned_task_title: task_title.to_string(),
+            tasks: Vec::new(),
+            decisions: vec![PlannedDecisionExplanation {
+                decision_id: decision.id.clone(),
+                question: decision.question.clone(),
+                reason: reason.to_string(),
+            }],
+            dependencies: Vec::new(),
+            metrics,
+            task_generation_reasoning: String::new(),
+            summary: format!("Planning Summary\n\nGoal:\n{task_title}\n\nPlanning failed:\n{reason}\n"),
+            generated_at: chrono::Utc::now(),
+        };
+        self.emit_project(
+            project_id,
+            EventType::PlanningSummaryGenerated,
+            lead_id,
+            json!({
+                "run_id": run_id,
+                "content": serde_json::to_string(&planning_summary).expect("PlanningSummary always serializes"),
+            }),
+        )
+        .await?;
+        self.emit_project(project_id, EventType::TaskPlanningCompleted, lead_id, json!({"task_id": task_id}))
+            .await?;
+
+        Ok(TaskPlanOutcome { tasks: Vec::new(), decisions: vec![decision], planning_run_id: run_id.to_string() })
     }
 
     /// Approves a `Draft` task (the old ChangeRequest approval) into `Ready`,
@@ -2067,8 +2416,14 @@ mod tests {
         }
     }
 
-    /// Never actually invoked in this test -- the model "execution" is faked
-    /// directly via a hand-built `ExecutionResult` passed to `finish_task`.
+    /// The worker execution this test drives directly via a hand-built
+    /// `ExecutionResult` passed to `finish_task` -- so `execute` must never
+    /// be invoked for that. `plan_task` (Phase 2.5A) does call a real model
+    /// now, though, so the one planning call this test's setup makes is
+    /// handled the same way `tests/runtime.rs`'s fakes handle it: extract
+    /// the original title/description back out of the rendered prompt and
+    /// run them through the legacy deterministic planner to fabricate a
+    /// plausible response.
     struct UnusedModelRuntime;
 
     impl ModelRuntime for UnusedModelRuntime {
@@ -2076,9 +2431,33 @@ mod tests {
             "unused-stub"
         }
 
-        fn execute(&self, _request: &ExecutionRequest, _on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError> {
-            panic!("this test drives finish_task directly and should never invoke the model runtime");
+        fn execute(&self, request: &ExecutionRequest, _on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError> {
+            if request.json_schema.is_some() {
+                let prompt = std::fs::read_to_string(request.prompt_path).expect("prompt file exists");
+                let title = extract_between(&prompt, "Task Title:\n", "\n\n");
+                let description =
+                    extract_between(&prompt, "-----BEGIN DESCRIPTION-----\n", "\n-----END DESCRIPTION-----");
+                let outcome = PlanningService::plan(title, description);
+                let structured = serde_json::json!({
+                    "reasoning": "unused-stub planning reasoning for tests",
+                    "tasks": outcome.task_drafts,
+                    "decisions": outcome.decision_drafts,
+                });
+                return Ok(ExecutionResult {
+                    status: ExecutionStatus::Completed,
+                    summary: "stub planning response".to_string(),
+                    raw_response: structured.to_string(),
+                    structured_output: Some(structured),
+                    cost_usd: None,
+                });
+            }
+            panic!("this test drives finish_task directly and should never invoke the model runtime for execution");
         }
+    }
+
+    fn extract_between<'a>(text: &'a str, start: &str, end: &str) -> &'a str {
+        let after_start = &text[text.find(start).expect("start marker present in prompt") + start.len()..];
+        &after_start[..after_start.find(end).expect("end marker present in prompt")]
     }
 
     fn registry_with(runtime: impl ModelRuntime + Send + Sync + 'static) -> RuntimeRegistry {
