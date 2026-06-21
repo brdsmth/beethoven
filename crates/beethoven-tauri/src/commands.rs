@@ -164,6 +164,15 @@ pub async fn get_decisions(state: State<'_, AppState>) -> Result<Vec<DecisionSum
 }
 
 #[tauri::command]
+pub async fn get_planning_history(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<PlanningRunDto>, String> {
+    let (rs, _events) = load_state(&state).await?;
+    Ok(derive::planning_runs_for_project(&rs, &project_id))
+}
+
+#[tauri::command]
 pub async fn get_workspaces(state: State<'_, AppState>) -> Result<Vec<WorkspaceDto>, String> {
     let (rs, _events) = load_state(&state).await?;
     Ok(derive::workspaces_for(&rs, &beethoven_db::projects_root(&state.home)))

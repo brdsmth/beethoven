@@ -2,7 +2,7 @@ use crate::dto::*;
 use beethoven_agents::RuntimeRegistry;
 use beethoven_core::{
     AgentInstance, AgentRole, AgentStatus, AgentTemplate, Artifact, ArtifactKind, Decision, DecisionStatus,
-    InboxItem, InboxStatus, Project, RunStatus, RuntimeState, Task, TaskStatus,
+    InboxItem, InboxStatus, PlanningSummary, Project, RunStatus, RuntimeState, Task, TaskStatus,
 };
 use beethoven_events::{Event, EventType};
 use beethoven_workspaces::{tmux_session_name, WorkspaceManager};
@@ -24,9 +24,52 @@ fn last_heartbeats(events: &[Event]) -> HashMap<String, DateTime<Utc>> {
     map
 }
 
-fn task_ref_dto(state: &RuntimeState, task_id: &str) -> Option<TaskRefDto> {
+/// Every `PlanningSummary` artifact in `state`, parsed. Malformed content
+/// (shouldn't happen -- `Runtime::plan_task` is the only writer) is skipped
+/// rather than panicking a read path.
+fn planning_summaries(state: &RuntimeState) -> impl Iterator<Item = (&Artifact, PlanningSummary)> {
+    state
+        .artifacts
+        .values()
+        .filter(|a| a.kind == ArtifactKind::PlanningSummary)
+        .filter_map(|a| serde_json::from_str::<PlanningSummary>(&a.content).ok().map(|s| (a, s)))
+}
+
+/// Traces `task_id` back to the planning run that generated it, if any --
+/// Phase 2.4.5's central lookup: "why does this task exist" is always
+/// "find the `PlanningSummary` that mentions it," never a column on `Task`
+/// itself.
+fn creation_trace_for_task(state: &RuntimeState, task_id: &str) -> Option<(String, String)> {
+    planning_summaries(state).find_map(|(artifact, summary)| {
+        summary.tasks.iter().find(|t| t.task_id == task_id).map(|t| (artifact.run_id.clone(), t.reason.clone()))
+    })
+}
+
+fn creation_trace_for_decision(state: &RuntimeState, decision_id: &str) -> Option<(String, String)> {
+    planning_summaries(state).find_map(|(artifact, summary)| {
+        summary
+            .decisions
+            .iter()
+            .find(|d| d.decision_id == decision_id)
+            .map(|d| (artifact.run_id.clone(), d.reason.clone()))
+    })
+}
+
+/// Why one dependency edge exists -- always `None` today since the stub
+/// planner never generates dependencies, but the lookup is real.
+fn dependency_reason(state: &RuntimeState, task_id: &str, depends_on_task_id: &str) -> Option<String> {
+    planning_summaries(state).find_map(|(_, summary)| {
+        summary
+            .dependencies
+            .iter()
+            .find(|d| d.task_id == task_id && d.depends_on_task_id == depends_on_task_id)
+            .map(|d| d.reason.clone())
+    })
+}
+
+fn task_ref_dto(state: &RuntimeState, task_id: &str, dependency_reason_value: Option<String>) -> Option<TaskRefDto> {
     let t = state.tasks.get(task_id)?;
-    Some(TaskRefDto { id: t.id.clone(), title: t.title.clone(), status: t.status })
+    Some(TaskRefDto { id: t.id.clone(), title: t.title.clone(), status: t.status, dependency_reason: dependency_reason_value })
 }
 
 fn task_dto(state: &RuntimeState, t: &Task) -> TaskDto {
@@ -34,9 +77,23 @@ fn task_dto(state: &RuntimeState, t: &Task) -> TaskDto {
     let dependencies = state
         .dependencies(&t.id)
         .iter()
-        .filter_map(|d| task_ref_dto(state, &d.depends_on_task_id))
+        .filter_map(|d| {
+            let reason = dependency_reason(state, &t.id, &d.depends_on_task_id);
+            task_ref_dto(state, &d.depends_on_task_id, reason)
+        })
         .collect();
-    let dependents = state.dependents(&t.id).iter().filter_map(|d| task_ref_dto(state, &d.task_id)).collect();
+    let dependents = state
+        .dependents(&t.id)
+        .iter()
+        .filter_map(|d| {
+            let reason = dependency_reason(state, &d.task_id, &t.id);
+            task_ref_dto(state, &d.task_id, reason)
+        })
+        .collect();
+    let (created_by_planning_run_id, creation_reason) = match creation_trace_for_task(state, &t.id) {
+        Some((run_id, reason)) => (Some(run_id), Some(reason)),
+        None => (None, None),
+    };
     TaskDto {
         id: t.id.clone(),
         project_id: t.project_id.clone(),
@@ -55,12 +112,15 @@ fn task_dto(state: &RuntimeState, t: &Task) -> TaskDto {
         dependencies,
         dependents,
         is_executable: state.is_executable(&t.id),
+        created_by_planning_run_id,
+        creation_reason,
         created_at: t.created_at,
         updated_at: t.updated_at,
     }
 }
 
-fn decision_dto(d: &Decision) -> DecisionDto {
+fn decision_dto(state: &RuntimeState, d: &Decision) -> DecisionDto {
+    let creation_reason = creation_trace_for_decision(state, &d.id).map(|(_, reason)| reason);
     DecisionDto {
         id: d.id.clone(),
         project_id: d.project_id.clone(),
@@ -69,8 +129,39 @@ fn decision_dto(d: &Decision) -> DecisionDto {
         context: d.context.clone(),
         answer: d.answer.clone(),
         status: d.status,
+        creation_reason,
         created_at: d.created_at,
     }
+}
+
+/// Every planning run for one project, oldest first, joined to its
+/// `PlanningSummary` artifact -- `sequence` is the 1-based "Planning Run
+/// #N" position within that ordering.
+pub fn planning_runs_for_project(state: &RuntimeState, project_id: &str) -> Vec<PlanningRunDto> {
+    let mut runs: Vec<_> = planning_summaries(state)
+        .filter_map(|(artifact, summary)| {
+            let run = state.runs.values().find(|r| r.id == artifact.run_id && r.project_id == project_id)?;
+            Some((run.started_at, artifact.run_id.clone(), summary))
+        })
+        .collect();
+    runs.sort_by_key(|(started_at, ..)| *started_at);
+
+    runs.into_iter()
+        .enumerate()
+        .map(|(idx, (started_at, run_id, summary))| PlanningRunDto {
+            run_id,
+            sequence: idx + 1,
+            planned_task_id: summary.planned_task_id,
+            planned_task_title: summary.planned_task_title,
+            task_count: summary.metrics.task_count,
+            dependency_count: summary.metrics.dependency_count,
+            decision_count: summary.decisions.len(),
+            average_dependency_depth: summary.metrics.average_dependency_depth,
+            planning_duration_ms: summary.metrics.planning_duration_ms,
+            summary: summary.summary,
+            started_at,
+        })
+        .collect()
 }
 
 fn project_summary(state: &RuntimeState, p: &Project) -> ProjectSummaryDto {
@@ -135,7 +226,7 @@ pub fn project_detail(state: &RuntimeState, project_id: &str) -> Option<ProjectD
 
     let mut decisions: Vec<&Decision> = state.decisions.values().filter(|d| d.project_id == project_id).collect();
     decisions.sort_by_key(|d| d.created_at);
-    let decisions = decisions.into_iter().map(decision_dto).collect();
+    let decisions = decisions.into_iter().map(|d| decision_dto(state, d)).collect();
 
     Some(ProjectDetailDto {
         id: p.id.clone(),
@@ -533,6 +624,7 @@ pub fn decisions_for(state: &RuntimeState) -> Vec<DecisionSummaryDto> {
         .filter_map(|d| {
             let project = state.projects.get(&d.project_id)?;
             let task_title = d.task_id.as_ref().and_then(|tid| state.tasks.get(tid)).map(|t| t.title.clone());
+            let creation_reason = creation_trace_for_decision(state, &d.id).map(|(_, reason)| reason);
             Some(DecisionSummaryDto {
                 id: d.id.clone(),
                 project_id: project.id.clone(),
@@ -542,6 +634,7 @@ pub fn decisions_for(state: &RuntimeState) -> Vec<DecisionSummaryDto> {
                 question: d.question.clone(),
                 context: d.context.clone(),
                 status: d.status,
+                creation_reason,
                 created_at: d.created_at,
             })
         })
@@ -686,7 +779,7 @@ pub fn task_detail(state: &RuntimeState, events: &[Event], task_id: &str) -> Opt
                 match artifact.kind {
                     ArtifactKind::Prompt => prompt = Some(artifact.content.clone()),
                     ArtifactKind::Response => response = Some(artifact.content.clone()),
-                    ArtifactKind::Diff | ArtifactKind::FilesModified => {}
+                    ArtifactKind::Diff | ArtifactKind::FilesModified | ArtifactKind::PlanningSummary => {}
                 }
             }
             RunDto {
@@ -1198,5 +1291,111 @@ mod tests {
         assert_eq!(detail.timeline[0].event_type, "DiffCaptured"); // newest first
 
         assert!(task_detail(&state, &events, "missing").is_none());
+    }
+
+    fn planning_summary_content(task_id: &str, task_reason: &str) -> String {
+        json!({
+            "planned_task_id": "g1",
+            "planned_task_title": "Build login page",
+            "tasks": [
+                {
+                    "task_id": task_id,
+                    "title": "Generated child",
+                    "reason": task_reason,
+                    "target_score": 70.0,
+                    "target_score_reason": "Default quality bar applied.",
+                    "success_criteria": "",
+                    "success_criteria_reason": "No explicit success criteria were specified.",
+                }
+            ],
+            "decisions": [],
+            "dependencies": [],
+            "metrics": {
+                "task_count": 1,
+                "dependency_count": 0,
+                "average_dependency_depth": 0.0,
+                "blocked_task_count": 0,
+                "planning_duration_ms": 5,
+            },
+            "summary": "Planning Summary\n\nGoal:\nBuild login page\n",
+            "generated_at": Utc::now().to_rfc3339(),
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn task_dto_traces_a_planner_generated_task_back_to_its_planning_run() {
+        let (_state, mut events) = fixture();
+        events.push(ev(
+            23,
+            EventScope::Project("p1".to_string()),
+            EventType::RunStarted,
+            Some("a2"),
+            json!({"id": "plan-run-1", "agent_id": "a2", "project_id": "p1", "task_id": "g1", "attempt": 1, "provider": "planner"}),
+        ));
+        events.push(ev(
+            24,
+            EventScope::Project("p1".to_string()),
+            EventType::RunCompleted,
+            Some("a2"),
+            json!({"id": "plan-run-1", "summary": "Planned 1 task(s)", "response": "Planning Summary", "cost_usd": null}),
+        ));
+        events.push(ev(
+            25,
+            EventScope::Project("p1".to_string()),
+            EventType::PlanningSummaryGenerated,
+            Some("a2"),
+            json!({"run_id": "plan-run-1", "content": planning_summary_content("t1", "Listed as a bullet item.")}),
+        ));
+        let state = RuntimeState::replay(&events);
+
+        let dto = task_dto(&state, state.tasks.get("t1").unwrap());
+        assert_eq!(dto.created_by_planning_run_id, Some("plan-run-1".to_string()));
+        assert_eq!(dto.creation_reason, Some("Listed as a bullet item.".to_string()));
+
+        // A task this planning run never mentions has no trace.
+        let untraced = task_dto(&state, state.tasks.get("i1").unwrap());
+        assert_eq!(untraced.created_by_planning_run_id, None);
+        assert_eq!(untraced.creation_reason, None);
+    }
+
+    #[test]
+    fn planning_runs_for_project_lists_runs_oldest_first_with_sequence_numbers() {
+        let (_state, mut events) = fixture();
+        for (idx, (run_id, task_id)) in [("plan-run-1", "t1"), ("plan-run-2", "t2")].into_iter().enumerate() {
+            let seq = 23 + (idx as i64) * 3;
+            events.push(ev(
+                seq,
+                EventScope::Project("p1".to_string()),
+                EventType::RunStarted,
+                Some("a2"),
+                json!({"id": run_id, "agent_id": "a2", "project_id": "p1", "task_id": "g1", "attempt": 1, "provider": "planner"}),
+            ));
+            events.push(ev(
+                seq + 1,
+                EventScope::Project("p1".to_string()),
+                EventType::RunCompleted,
+                Some("a2"),
+                json!({"id": run_id, "summary": "Planned", "response": "Planning Summary", "cost_usd": null}),
+            ));
+            events.push(ev(
+                seq + 2,
+                EventScope::Project("p1".to_string()),
+                EventType::PlanningSummaryGenerated,
+                Some("a2"),
+                json!({"run_id": run_id, "content": planning_summary_content(task_id, "reason")}),
+            ));
+        }
+        let state = RuntimeState::replay(&events);
+
+        let runs = planning_runs_for_project(&state, "p1");
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].run_id, "plan-run-1");
+        assert_eq!(runs[0].sequence, 1);
+        assert_eq!(runs[1].run_id, "plan-run-2");
+        assert_eq!(runs[1].sequence, 2);
+        assert_eq!(runs[0].task_count, 1);
+
+        assert!(planning_runs_for_project(&state, "missing").is_empty());
     }
 }

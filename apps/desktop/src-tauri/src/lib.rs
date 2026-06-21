@@ -67,6 +67,7 @@ pub fn run() {
             beethoven_tauri::commands::runtime_stop,
             beethoven_tauri::commands::runtime_restart,
             beethoven_tauri::commands::get_decisions,
+            beethoven_tauri::commands::get_planning_history,
             beethoven_tauri::commands::get_workspaces,
             beethoven_tauri::commands::get_recent_diffs,
             beethoven_tauri::commands::get_recent_prompts,

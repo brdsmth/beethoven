@@ -27,6 +27,10 @@ pub struct TaskRefDto {
     pub id: String,
     pub title: String,
     pub status: TaskStatus,
+    /// Why this dependency edge exists, traced back to the `PlanningSummary`
+    /// that generated it. Always `None` today -- the stub planner never
+    /// generates dependencies -- but the lookup exists for when one does.
+    pub dependency_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -54,6 +58,12 @@ pub struct TaskDto {
     /// a leaf, its project `Active`, every dependency `Done`, and no
     /// unresolved `Decision` against it directly. Never persisted.
     pub is_executable: bool,
+    /// The planning Run that generated this task, if any -- `None` for a
+    /// task a human created directly via `create_task`.
+    pub created_by_planning_run_id: Option<String>,
+    /// Why this task was generated, traced back to the same `PlanningSummary`
+    /// as `created_by_planning_run_id`.
+    pub creation_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -76,7 +86,29 @@ pub struct DecisionDto {
     pub context: String,
     pub answer: Option<String>,
     pub status: DecisionStatus,
+    /// Why this decision was escalated, traced back to the `PlanningSummary`
+    /// that raised it -- `None` if it wasn't planner-raised.
+    pub creation_reason: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+/// One planning run (a specialized `Run`, not a new domain entity), joined
+/// to its `PlanningSummary` artifact -- the audit trail entry for one
+/// `plan_task` call. `sequence` is this run's 1-based position among its
+/// project's planning runs, oldest first ("Planning Run #N").
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanningRunDto {
+    pub run_id: String,
+    pub sequence: usize,
+    pub planned_task_id: String,
+    pub planned_task_title: String,
+    pub task_count: usize,
+    pub dependency_count: usize,
+    pub decision_count: usize,
+    pub average_dependency_depth: f64,
+    pub planning_duration_ms: i64,
+    pub summary: String,
+    pub started_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -248,6 +280,9 @@ pub struct DecisionSummaryDto {
     pub question: String,
     pub context: String,
     pub status: DecisionStatus,
+    /// Why this decision was escalated, traced back to the `PlanningSummary`
+    /// that raised it -- `None` if it wasn't planner-raised.
+    pub creation_reason: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
