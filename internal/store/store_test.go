@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,6 +21,50 @@ func open(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+func TestOpenRefusesForeignDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "t.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE events (seq INTEGER PRIMARY KEY, payload TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path, []byte(strings.Repeat("k", 32)))
+	if err == nil {
+		s.Close()
+		t.Fatal("opened a database beethoven did not create")
+	}
+	if !strings.Contains(err.Error(), "not a beethoven database") {
+		t.Fatalf("err = %v", err)
+	}
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "delete" {
+		t.Errorf("journal mode = %q: the refused database was changed", mode)
+	}
+}
+
+func TestReopenKeepsWAL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "t.db")
+	for range 2 { // create, then reopen
+		s, err := Open(path, []byte(strings.Repeat("k", 32)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var mode string
+		err = s.r.QueryRow(`PRAGMA journal_mode`).Scan(&mode)
+		s.Close()
+		if err != nil || mode != "wal" {
+			t.Fatalf("journal mode = %q, %v; want wal", mode, err)
+		}
+	}
 }
 
 func session(t *testing.T, s *Store) Session {
