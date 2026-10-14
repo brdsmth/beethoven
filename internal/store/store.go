@@ -1,0 +1,549 @@
+// Package store persists sessions, the prompt queue, the per-session event
+// log, automations and secrets in one SQLite file.
+package store
+
+import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"embed"
+	"encoding/base32"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"sort"
+	"strings"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+//go:embed migrations/*.sql
+var migrations embed.FS
+
+var ErrNotFound = errors.New("not found")
+
+// Store wraps two pools over the same file: a single-connection writer, which
+// serializes writes (and so makes event sequence assignment atomic), and a
+// read pool that WAL mode lets run alongside it.
+type Store struct {
+	w, r *sql.DB
+	key  []byte
+}
+
+func Open(path string, secretKey []byte) (*Store, error) {
+	if len(secretKey) != 32 {
+		return nil, errors.New("store: secret key must be 32 bytes")
+	}
+	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
+	w, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	w.SetMaxOpenConns(1)
+	if err := migrate(w); err != nil {
+		w.Close()
+		return nil, err
+	}
+	r, err := sql.Open("sqlite", dsn+"&_pragma=query_only(1)")
+	if err != nil {
+		w.Close()
+		return nil, err
+	}
+	r.SetMaxOpenConns(8)
+	return &Store{w: w, r: r, key: secretKey}, nil
+}
+
+func (s *Store) Close() error { return errors.Join(s.r.Close(), s.w.Close()) }
+
+// migrate applies migrations/NNN_*.sql in order, tracking progress in
+// PRAGMA user_version so each runs once.
+func migrate(db *sql.DB) error {
+	names, err := fs.Glob(migrations, "migrations/*.sql")
+	if err != nil {
+		return err
+	}
+	sort.Strings(names)
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return err
+	}
+	for i, name := range names {
+		if i < version {
+			continue
+		}
+		body, _ := migrations.ReadFile(name)
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(string(body)); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("store: migration %s: %w", name, err)
+		}
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, i+1)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// NewID returns a short random lowercase identifier.
+func NewID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b))[:12]
+}
+
+type Author struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+// RepoRef is a repository in a workspace. Each is cloned to
+// /workspace/<name>; the first in a list is the primary.
+type RepoRef struct {
+	Repo       string `json:"repo"`        // owner/name
+	BaseBranch string `json:"base_branch"` // "" = the repository's default branch
+	PRURL      string `json:"pr_url,omitempty"`
+}
+
+// Dir is the repository's checkout directory under /workspace.
+func (r RepoRef) Dir() string {
+	_, name, _ := strings.Cut(r.Repo, "/")
+	return name
+}
+
+// RepoNames lists the repositories, primary first.
+func RepoNames(refs []RepoRef) []string {
+	out := make([]string, len(refs))
+	for i, r := range refs {
+		out[i] = r.Repo
+	}
+	return out
+}
+
+func encodeRepos(refs []RepoRef) string {
+	if refs == nil {
+		refs = []RepoRef{}
+	}
+	b, _ := json.Marshal(refs)
+	return string(b)
+}
+
+func decodeRepos(s string) []RepoRef {
+	refs := []RepoRef{}
+	json.Unmarshal([]byte(s), &refs)
+	return refs
+}
+
+// ---------------------------------------------------------------- sessions
+
+type Session struct {
+	ID            string    `json:"id"`
+	Title         string    `json:"title"`
+	Repos         []RepoRef `json:"repos"`
+	EnvironmentID string    `json:"environment_id,omitempty"` // provenance; the environment may since have changed or gone
+	Branch        string    `json:"branch"`
+	Model         string    `json:"model"`
+	Effort        string    `json:"effort"`
+	ParentID     string    `json:"parent_id,omitempty"`
+	Depth        int       `json:"depth"`
+	Source       string    `json:"source"`
+	Key          string    `json:"key,omitempty"`
+	AutomationID string    `json:"automation_id,omitempty"`
+	Author       Author    `json:"author"`
+	Status       string    `json:"status"`
+	Sandbox      string    `json:"sandbox"`
+	SandboxID    string    `json:"-"`
+	AgentSession string    `json:"-"`
+	CostUSD      float64   `json:"cost_usd"`
+	Archived     bool      `json:"archived"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// Primary is the session's first repository, if any.
+func (x Session) Primary() (RepoRef, bool) {
+	if len(x.Repos) == 0 {
+		return RepoRef{}, false
+	}
+	return x.Repos[0], true
+}
+
+const sessionCols = `id, title, repos, environment_id, branch, model, effort, COALESCE(parent_id,''), depth,
+	source, COALESCE(key,''), COALESCE(automation_id,''), author_name, author_email, status, sandbox,
+	sandbox_id, agent_session, cost_usd, archived, created_at, updated_at`
+
+func scanSession(row scanner) (Session, error) {
+	var x Session
+	var repos string
+	var created, updated int64
+	err := row.Scan(&x.ID, &x.Title, &repos, &x.EnvironmentID, &x.Branch, &x.Model, &x.Effort, &x.ParentID,
+		&x.Depth, &x.Source, &x.Key, &x.AutomationID, &x.Author.Name, &x.Author.Email, &x.Status, &x.Sandbox,
+		&x.SandboxID, &x.AgentSession, &x.CostUSD, &x.Archived, &created, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return x, ErrNotFound
+	}
+	x.Repos = decodeRepos(repos)
+	x.CreatedAt, x.UpdatedAt = fromMS(created), fromMS(updated)
+	return x, err
+}
+
+func (s *Store) CreateSession(ctx context.Context, x *Session) error {
+	now := time.Now()
+	x.CreatedAt, x.UpdatedAt = now, now
+	if x.Repos == nil {
+		x.Repos = []RepoRef{}
+	}
+	_, err := s.w.ExecContext(ctx, `INSERT INTO sessions (id, title, repos, environment_id, branch, model,
+		effort, parent_id, depth, source, key, automation_id, author_name, author_email, status, sandbox,
+		sandbox_id, agent_session, cost_usd, archived, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		x.ID, x.Title, encodeRepos(x.Repos), x.EnvironmentID, x.Branch, x.Model, x.Effort, null(x.ParentID),
+		x.Depth, x.Source, null(x.Key), null(x.AutomationID), x.Author.Name, x.Author.Email, x.Status, x.Sandbox,
+		x.SandboxID, x.AgentSession, x.CostUSD, x.Archived, ms(now), ms(now))
+	return err
+}
+
+// SaveSession writes the mutable columns of x.
+func (s *Store) SaveSession(ctx context.Context, x *Session) error {
+	x.UpdatedAt = time.Now()
+	_, err := s.w.ExecContext(ctx, `UPDATE sessions SET title=?, repos=?, branch=?, model=?, effort=?, status=?,
+		sandbox=?, sandbox_id=?, agent_session=?, cost_usd=?, archived=?, updated_at=? WHERE id=?`,
+		x.Title, encodeRepos(x.Repos), x.Branch, x.Model, x.Effort, x.Status, x.Sandbox, x.SandboxID,
+		x.AgentSession, x.CostUSD, x.Archived, ms(x.UpdatedAt), x.ID)
+	return err
+}
+
+func (s *Store) Session(ctx context.Context, id string) (Session, error) {
+	return scanSession(s.r.QueryRowContext(ctx, `SELECT `+sessionCols+` FROM sessions WHERE id=?`, id))
+}
+
+func (s *Store) SessionByKey(ctx context.Context, key string) (Session, error) {
+	return scanSession(s.r.QueryRowContext(ctx, `SELECT `+sessionCols+` FROM sessions WHERE key=?`, key))
+}
+
+type SessionFilter struct {
+	ParentID string   // only children of this session
+	Archived *bool    // nil = both
+	Sandbox  []string // only sessions whose sandbox is in one of these states
+	Limit    int
+}
+
+func (s *Store) Sessions(ctx context.Context, f SessionFilter) ([]Session, error) {
+	q := `SELECT ` + sessionCols + ` FROM sessions WHERE 1=1`
+	var args []any
+	if f.Archived != nil {
+		q += ` AND archived=?`
+		args = append(args, *f.Archived)
+	}
+	if f.ParentID != "" {
+		q += ` AND parent_id=?`
+		args = append(args, f.ParentID)
+	}
+	if len(f.Sandbox) > 0 {
+		q += ` AND sandbox IN (?` + strings.Repeat(",?", len(f.Sandbox)-1) + `)`
+		for _, v := range f.Sandbox {
+			args = append(args, v)
+		}
+	}
+	if f.Limit <= 0 {
+		f.Limit = 200
+	}
+	q += ` ORDER BY updated_at DESC LIMIT ?`
+	args = append(args, f.Limit)
+	return query(ctx, s.r, scanSession, q, args...)
+}
+
+func (s *Store) DeleteSession(ctx context.Context, id string) error {
+	_, err := s.w.ExecContext(ctx, `DELETE FROM sessions WHERE id=?`, id)
+	return err
+}
+
+// ----------------------------------------------------------------- prompts
+
+const (
+	Queued    = "queued"
+	Running   = "running"
+	Done      = "done"
+	Failed    = "failed"
+	Cancelled = "cancelled"
+)
+
+type Prompt struct {
+	ID           string     `json:"id"`
+	SessionID    string     `json:"session_id"`
+	Content      string     `json:"content"`
+	Model        string     `json:"model,omitempty"`
+	Effort       string     `json:"effort,omitempty"`
+	Author       Author     `json:"author"`
+	Source       string     `json:"source"`
+	AutomationID string     `json:"automation_id,omitempty"`
+	DedupKey     string     `json:"-"`
+	Status       string     `json:"status"`
+	Error        string     `json:"error,omitempty"`
+	Result       string     `json:"result,omitempty"`
+	CostUSD      float64    `json:"cost_usd"`
+	CreatedAt    time.Time  `json:"created_at"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+}
+
+const promptCols = `id, session_id, content, model, effort, author_name, author_email, source,
+	COALESCE(automation_id,''), COALESCE(dedup_key,''), status, error, result, cost_usd, created_at, started_at,
+	finished_at`
+
+func scanPrompt(row scanner) (Prompt, error) {
+	var p Prompt
+	var created int64
+	var started, finished sql.NullInt64
+	err := row.Scan(&p.ID, &p.SessionID, &p.Content, &p.Model, &p.Effort, &p.Author.Name, &p.Author.Email, &p.Source,
+		&p.AutomationID, &p.DedupKey, &p.Status, &p.Error, &p.Result, &p.CostUSD, &created, &started, &finished)
+	if errors.Is(err, sql.ErrNoRows) {
+		return p, ErrNotFound
+	}
+	p.CreatedAt = fromMS(created)
+	p.StartedAt, p.FinishedAt = optMS(started), optMS(finished)
+	return p, err
+}
+
+// CreatePrompt queues p. If p.DedupKey matches an existing prompt, p is
+// replaced by that prompt and created is false.
+func (s *Store) CreatePrompt(ctx context.Context, p *Prompt) (created bool, err error) {
+	p.Status, p.CreatedAt = Queued, time.Now()
+	res, err := s.w.ExecContext(ctx, `INSERT INTO prompts (id, session_id, content, model, effort, author_name,
+		author_email, source, automation_id, dedup_key, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(dedup_key) DO NOTHING`,
+		p.ID, p.SessionID, p.Content, p.Model, p.Effort, p.Author.Name, p.Author.Email, p.Source, null(p.AutomationID),
+		null(p.DedupKey), p.Status, ms(p.CreatedAt))
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		*p, err = scanPrompt(s.w.QueryRowContext(ctx, `SELECT `+promptCols+` FROM prompts WHERE dedup_key=?`, p.DedupKey))
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Store) Prompt(ctx context.Context, id string) (Prompt, error) {
+	return scanPrompt(s.r.QueryRowContext(ctx, `SELECT `+promptCols+` FROM prompts WHERE id=?`, id))
+}
+
+func (s *Store) PromptByDedupKey(ctx context.Context, key string) (Prompt, error) {
+	return scanPrompt(s.r.QueryRowContext(ctx, `SELECT `+promptCols+` FROM prompts WHERE dedup_key=?`, key))
+}
+
+func (s *Store) Prompts(ctx context.Context, sessionID string) ([]Prompt, error) {
+	return query(ctx, s.r, scanPrompt, `SELECT `+promptCols+` FROM prompts WHERE session_id=?
+		ORDER BY created_at, rowid`, sessionID)
+}
+
+// ClaimNext marks the oldest queued prompt of a session running and returns it.
+func (s *Store) ClaimNext(ctx context.Context, sessionID string) (Prompt, error) {
+	return scanPrompt(s.w.QueryRowContext(ctx, `UPDATE prompts SET status='running', started_at=?
+		WHERE id = (SELECT id FROM prompts WHERE session_id=? AND status='queued' ORDER BY created_at, rowid LIMIT 1)
+		RETURNING `+promptCols, ms(time.Now()), sessionID))
+}
+
+func (s *Store) FinishPrompt(ctx context.Context, p *Prompt) error {
+	now := time.Now()
+	p.FinishedAt = &now
+	_, err := s.w.ExecContext(ctx, `UPDATE prompts SET status=?, error=?, result=?, cost_usd=?, finished_at=?
+		WHERE id=?`, p.Status, p.Error, p.Result, p.CostUSD, ms(now), p.ID)
+	return err
+}
+
+// CancelQueued cancels one queued prompt, or every queued prompt of the
+// session when promptID is empty, and returns what it cancelled.
+func (s *Store) CancelQueued(ctx context.Context, sessionID, promptID string) ([]Prompt, error) {
+	return query(ctx, s.w, scanPrompt, `UPDATE prompts SET status='cancelled', finished_at=?
+		WHERE session_id=? AND status='queued' AND (?='' OR id=?) RETURNING `+promptCols,
+		ms(time.Now()), sessionID, promptID, promptID)
+}
+
+// RecoverRunning fails prompts left running by a previous process.
+func (s *Store) RecoverRunning(ctx context.Context, reason string) ([]Prompt, error) {
+	return query(ctx, s.w, scanPrompt, `UPDATE prompts SET status='failed', error=?, finished_at=?
+		WHERE status='running' RETURNING `+promptCols, reason, ms(time.Now()))
+}
+
+// QueuedSessions lists sessions with prompts waiting to run.
+func (s *Store) QueuedSessions(ctx context.Context) ([]string, error) {
+	return query(ctx, s.r, func(r scanner) (id string, err error) { return id, r.Scan(&id) }, `SELECT DISTINCT session_id FROM prompts WHERE status='queued'`)
+}
+
+func (s *Store) AutomationRuns(ctx context.Context, automationID string, limit int) ([]Prompt, error) {
+	return query(ctx, s.r, scanPrompt, `SELECT `+promptCols+` FROM prompts WHERE automation_id=?
+		ORDER BY created_at DESC LIMIT ?`, automationID, limit)
+}
+
+func (s *Store) AutomationBusy(ctx context.Context, automationID string) (bool, error) {
+	var n int
+	err := s.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM prompts WHERE automation_id=? AND status IN ('queued','running')`,
+		automationID).Scan(&n)
+	return n > 0, err
+}
+
+// ------------------------------------------------------------------ events
+
+type Event struct {
+	Session string          `json:"session"`
+	Seq     int64           `json:"seq,omitempty"` // 0 = ephemeral, never stored
+	Type    string          `json:"type"`
+	Prompt  string          `json:"prompt,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
+	At      time.Time       `json:"at"`
+}
+
+// AppendEvent stores e and assigns its sequence number.
+func (s *Store) AppendEvent(ctx context.Context, e *Event) error {
+	return s.w.QueryRowContext(ctx, `INSERT INTO events (session_id, seq, type, prompt_id, data, at)
+		VALUES (?, (SELECT COALESCE(MAX(seq),0)+1 FROM events WHERE session_id=?), ?, ?, ?, ?) RETURNING seq`,
+		e.Session, e.Session, e.Type, e.Prompt, string(e.Data), ms(e.At)).Scan(&e.Seq)
+}
+
+func (s *Store) Events(ctx context.Context, sessionID string, after int64, limit int) ([]Event, error) {
+	return query(ctx, s.r, func(r scanner) (e Event, err error) {
+		var data string
+		var at int64
+		err = r.Scan(&e.Session, &e.Seq, &e.Type, &e.Prompt, &data, &at)
+		e.Data, e.At = json.RawMessage(data), fromMS(at)
+		return e, err
+	}, `SELECT session_id, seq, type, prompt_id, data, at FROM events
+		WHERE session_id=? AND seq>? ORDER BY seq LIMIT ?`, sessionID, after, limit)
+}
+
+// ------------------------------------------------------------- automations
+
+type Automation struct {
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	Repos         []RepoRef  `json:"repos"`
+	EnvironmentID string     `json:"environment_id,omitempty"`
+	Prompt        string     `json:"prompt"`
+	Model         string     `json:"model"`
+	Effort        string     `json:"effort"`
+	Schedule      string     `json:"schedule"`
+	Reuse      bool       `json:"reuse"`
+	Enabled    bool       `json:"enabled"`
+	Failures   int        `json:"failures"`
+	NextRunAt  *time.Time `json:"next_run_at,omitempty"`
+	HookHash   string     `json:"-"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
+const automationCols = `id, name, repos, environment_id, prompt, model, effort, schedule, reuse, enabled,
+	failures, next_run_at, hook_hash, created_at`
+
+func scanAutomation(row scanner) (Automation, error) {
+	var a Automation
+	var repos string
+	var next sql.NullInt64
+	var created int64
+	err := row.Scan(&a.ID, &a.Name, &repos, &a.EnvironmentID, &a.Prompt, &a.Model, &a.Effort, &a.Schedule,
+		&a.Reuse, &a.Enabled, &a.Failures, &next, &a.HookHash, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return a, ErrNotFound
+	}
+	a.Repos = decodeRepos(repos)
+	a.NextRunAt, a.CreatedAt = optMS(next), fromMS(created)
+	return a, err
+}
+
+func (s *Store) CreateAutomation(ctx context.Context, a *Automation) error {
+	a.CreatedAt = time.Now()
+	_, err := s.w.ExecContext(ctx, `INSERT INTO automations (`+automationCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		a.ID, a.Name, encodeRepos(a.Repos), a.EnvironmentID, a.Prompt, a.Model, a.Effort, a.Schedule, a.Reuse,
+		a.Enabled, a.Failures, optToMS(a.NextRunAt), a.HookHash, ms(a.CreatedAt))
+	return err
+}
+
+func (s *Store) SaveAutomation(ctx context.Context, a *Automation) error {
+	_, err := s.w.ExecContext(ctx, `UPDATE automations SET name=?, repos=?, environment_id=?, prompt=?, model=?,
+		effort=?, schedule=?, reuse=?, enabled=?, failures=?, next_run_at=? WHERE id=?`,
+		a.Name, encodeRepos(a.Repos), a.EnvironmentID, a.Prompt, a.Model, a.Effort, a.Schedule, a.Reuse,
+		a.Enabled, a.Failures, optToMS(a.NextRunAt), a.ID)
+	return err
+}
+
+func (s *Store) Automation(ctx context.Context, id string) (Automation, error) {
+	return scanAutomation(s.r.QueryRowContext(ctx, `SELECT `+automationCols+` FROM automations WHERE id=?`, id))
+}
+
+func (s *Store) Automations(ctx context.Context) ([]Automation, error) {
+	return query(ctx, s.r, scanAutomation, `SELECT `+automationCols+` FROM automations ORDER BY created_at DESC`)
+}
+
+func (s *Store) DeleteAutomation(ctx context.Context, id string) error {
+	_, err := s.w.ExecContext(ctx, `DELETE FROM automations WHERE id=?`, id)
+	return err
+}
+
+func (s *Store) DueAutomations(ctx context.Context, now time.Time) ([]Automation, error) {
+	return query(ctx, s.r, scanAutomation, `SELECT `+automationCols+` FROM automations
+		WHERE enabled=1 AND schedule!='' AND next_run_at<=?`, ms(now))
+}
+
+// AdvanceSchedule moves next_run_at from prev to next. It reports false if
+// another tick already advanced it, so each due time fires once.
+func (s *Store) AdvanceSchedule(ctx context.Context, id string, prev, next time.Time) (bool, error) {
+	res, err := s.w.ExecContext(ctx, `UPDATE automations SET next_run_at=? WHERE id=? AND next_run_at=?`,
+		ms(next), id, ms(prev))
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// ------------------------------------------------------------------ helpers
+
+type scanner interface{ Scan(...any) error }
+
+// query runs q on db and scans every row with scan.
+func query[T any](ctx context.Context, db *sql.DB, scan func(scanner) (T, error), q string, args ...any) ([]T, error) {
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []T
+	for rows.Next() {
+		v, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func null(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func ms(t time.Time) int64     { return t.UnixMilli() }
+func fromMS(v int64) time.Time { return time.UnixMilli(v) }
+func optToMS(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return ms(*t)
+}
+func optMS(v sql.NullInt64) *time.Time {
+	if !v.Valid {
+		return nil
+	}
+	t := fromMS(v.Int64)
+	return &t
+}
