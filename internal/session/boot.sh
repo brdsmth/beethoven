@@ -1,0 +1,66 @@
+# Prepares /workspace inside a sandbox. Runs on every sandbox start.
+# Lines starting with "::phase" and "::warn" are read by the server.
+#
+# Env:
+#   REPOS         one line per repository: "<dir> <clone url> <base branch or ->", primary first
+#   WORK_BRANCH   the session's branch, created in every repository
+#   WORKDIR       where the agent works, and where environment scripts run
+#   GH_TOKEN      clone credential; never written to disk or shown to scripts
+#   ENV_SETUP     environment setup script: once per sandbox, and again when it changes (ENV_SETUP_ID)
+#   ENV_START     environment start script: on every start
+set -eu
+phase() { echo "::phase $*"; }
+git_auth() {
+  git -c credential.helper= \
+      -c 'credential.helper=!f() { test "$1" = get && echo username=x-access-token && echo "password=${GH_TOKEN:-}"; }; f' "$@"
+}
+dirs() { printf '%s\n' "${REPOS:-}" | while read -r dir _; do [ -n "$dir" ] && echo "$dir"; done; }
+done_dir="$HOME/.beethoven" # markers for setup that already ran in this sandbox
+mkdir -p "$done_dir"
+
+mkdir -p /workspace
+cd /workspace
+if [ -z "${REPOS:-}" ] && [ ! -d .git ]; then
+  git init -q -b "$WORK_BRANCH" # a scratch workspace
+fi
+printf '%s\n' "${REPOS:-}" | while read -r dir url base; do
+  [ -n "$dir" ] || continue
+  if [ ! -d "$dir/.git" ]; then
+    phase clone "$dir"
+    rm -rf "$dir" # leftovers of an interrupted clone
+    if [ "$base" = "-" ]; then
+      git_auth clone --filter=blob:none "$url" "$dir"
+    else
+      git_auth clone --filter=blob:none --branch "$base" "$url" "$dir"
+    fi
+    git -C "$dir" checkout -q -b "$WORK_BRANCH"
+  else
+    phase fetch "$dir"
+    git_auth -C "$dir" fetch --quiet origin || echo "::warn git fetch failed for $dir; continuing with the existing checkout"
+  fi
+done
+unset GH_TOKEN
+
+# Repository hooks: .beethoven/setup.sh provisions once per sandbox and may
+# fail with a warning; .beethoven/start.sh runs on every start and must pass.
+for dir in $(dirs); do
+  if [ -f "$dir/.beethoven/setup.sh" ] && [ ! -f "$done_dir/setup-$dir" ]; then
+    phase setup "$dir"
+    if (cd "$dir" && sh .beethoven/setup.sh); then touch "$done_dir/setup-$dir"; else echo "::warn $dir/.beethoven/setup.sh failed"; fi
+  fi
+done
+if [ -n "${ENV_SETUP:-}" ] && [ ! -f "$done_dir/env-setup-${ENV_SETUP_ID:-}" ]; then
+  phase setup
+  if (cd "$WORKDIR" && sh -ec "$ENV_SETUP"); then touch "$done_dir/env-setup-${ENV_SETUP_ID:-}"; else echo "::warn the environment's setup script failed"; fi
+fi
+for dir in $(dirs); do
+  if [ -f "$dir/.beethoven/start.sh" ]; then
+    phase start "$dir"
+    (cd "$dir" && sh .beethoven/start.sh)
+  fi
+done
+if [ -n "${ENV_START:-}" ]; then
+  phase start
+  (cd "$WORKDIR" && sh -ec "$ENV_START")
+fi
+phase ready

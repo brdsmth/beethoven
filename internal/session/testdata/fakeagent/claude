@@ -1,0 +1,56 @@
+#!/bin/sh
+# A stand-in for Claude Code that speaks its stream-json protocol without a
+# model, for tests and UI development. Keywords in the prompt drive it:
+#   FAIL      finish the turn with an error
+#   SLEEP n   run a tool call that sleeps n seconds
+#   COMMIT    write a file and commit it
+set -eu
+resume=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --resume) resume="$2"; shift 2 ;;
+    --model|--append-system-prompt|--mcp-config|--output-format) shift 2 ;;
+    *) shift ;;
+  esac
+done
+prompt=$(cat)
+store="$HOME/.fake-sessions"
+mkdir -p "$store"
+if [ -n "$resume" ] && [ ! -f "$store/$resume" ]; then
+  echo "No conversation found with session ID: $resume" >&2
+  exit 1
+fi
+sid=${resume:-$(cat /proc/sys/kernel/random/uuid)}
+echo "$prompt" | head -n1 >> "$store/$sid"
+turn=$(wc -l < "$store/$sid" | tr -d ' ')
+first=$(echo "$prompt" | head -n1 | cut -c1-80)
+
+out() { printf '%s\n' "$1"; }
+delta() { out "$(jq -cn --arg t "$1" '{type:"stream_event",parent_tool_use_id:null,event:{type:"content_block_delta",index:0,delta:{type:"text_delta",text:$t}}}')"; }
+text() { out "$(jq -cn --arg s "$sid" --arg t "$1" '{type:"assistant",session_id:$s,parent_tool_use_id:null,message:{content:[{type:"text",text:$t}]}}')"; }
+tool() { # id name command
+  out "$(jq -cn --arg s "$sid" --arg id "$1" --arg n "$2" --arg c "$3" '{type:"assistant",session_id:$s,parent_tool_use_id:null,message:{content:[{type:"tool_use",id:$id,name:$n,input:{command:$c}}]}}')"
+  set +e; res=$(sh -c "$3" 2>&1); code=$?; set -e
+  err=false; [ $code -ne 0 ] && err=true
+  out "$(jq -cn --arg s "$sid" --arg id "$1" --arg r "$res" --argjson e $err '{type:"user",session_id:$s,parent_tool_use_id:null,message:{content:[{type:"tool_result",tool_use_id:$id,content:$r,is_error:$e}]}}')"
+}
+
+out "$(jq -cn --arg s "$sid" '{type:"system",subtype:"init",session_id:$s,model:"fake"}')"
+delta "Working on turn $turn: "; sleep 0.2; delta "$first"; sleep 0.2
+text "Working on turn $turn: $first"
+tool "t$turn-1" Bash "git status --short --branch"
+
+case "$prompt" in *SLEEP*)
+  n=$(echo "$prompt" | sed -n 's/.*SLEEP \([0-9]*\).*/\1/p')
+  tool "t$turn-2" Bash "sleep ${n:-30}"
+esac
+case "$prompt" in *COMMIT*)
+  tool "t$turn-3" Bash "echo '$first' > fake-$turn.txt && git add fake-$turn.txt && git commit -q -m 'fake turn $turn' && git log --oneline -1"
+esac
+case "$prompt" in *FAIL*)
+  out "$(jq -cn --arg s "$sid" '{type:"result",subtype:"error_during_execution",is_error:true,result:"simulated failure",session_id:$s,total_cost_usd:0.001,num_turns:1}')"
+  exit 1
+esac
+
+text "Done with turn $turn."
+out "$(jq -cn --arg s "$sid" --arg t "Done with turn $turn." --argjson n "$turn" '{type:"result",subtype:"success",is_error:false,result:$t,session_id:$s,total_cost_usd:0.01,num_turns:$n}')"
