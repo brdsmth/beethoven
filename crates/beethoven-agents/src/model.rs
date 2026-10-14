@@ -1,7 +1,8 @@
 use beethoven_workspaces::{TmuxSession, WorkspaceState};
 use serde::Deserialize;
 use std::path::Path;
-use std::time::Duration;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentsError {
@@ -19,6 +20,8 @@ pub enum AgentsError {
     UnknownRuntime(String),
     #[error("planner produced no usable task or decision output")]
     NoPlannerOutput,
+    #[error("chat call produced no usable answer")]
+    NoChatOutput,
 }
 
 /// Everything a `ModelRuntime` needs to run one model invocation inside a
@@ -58,6 +61,14 @@ pub struct ExecutionResult {
 pub trait ModelRuntime {
     fn provider(&self) -> &'static str;
     fn execute(&self, request: &ExecutionRequest, on_tick: &dyn Fn()) -> Result<ExecutionResult, AgentsError>;
+
+    /// A one-shot call with no task workspace behind it at all -- no git
+    /// worktree, no tmux session. `cwd` is just where the prompt/response
+    /// files for this one call live; callers must point it at an isolated,
+    /// inert scratch directory they own (never a real repository), since
+    /// unlike `execute` there is no disposable worktree containing whatever
+    /// a `--dangerously-skip-permissions` invocation might do there.
+    fn ask(&self, prompt: &str, cwd: &Path, json_schema: Option<&str>) -> Result<ExecutionResult, AgentsError>;
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,14 +115,38 @@ fn build_claude_command(
 /// unreliable for large JSON payloads.
 pub struct ClaudeCodeRuntime {
     pub timeout: Duration,
+    /// Timeout for `ask`'s workspace-free calls -- much shorter than
+    /// `timeout`, since a chat answer involves no code-writing and
+    /// shouldn't leave a human waiting anywhere near as long as a real
+    /// task execution is allowed to run.
+    pub chat_timeout: Duration,
 }
 
 impl Default for ClaudeCodeRuntime {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(900),
+            chat_timeout: Duration::from_secs(120),
         }
     }
+}
+
+/// Shared by `execute` (tmux-backed) and `ask` (workspace-free): both just
+/// need to turn `claude`'s JSON envelope into an `ExecutionResult`.
+fn parse_envelope_response(raw_response: String) -> Result<ExecutionResult, AgentsError> {
+    let envelope: ClaudeEnvelope = serde_json::from_str(&raw_response)?;
+    let summary = envelope.result.unwrap_or_default();
+    Ok(ExecutionResult {
+        status: if envelope.is_error {
+            ExecutionStatus::Failed
+        } else {
+            ExecutionStatus::Completed
+        },
+        summary,
+        raw_response,
+        structured_output: envelope.structured_output,
+        cost_usd: envelope.total_cost_usd,
+    })
 }
 
 impl ModelRuntime for ClaudeCodeRuntime {
@@ -149,20 +184,58 @@ impl ModelRuntime for ClaudeCodeRuntime {
         }
 
         let raw_response = std::fs::read_to_string(&response_path)?;
-        let envelope: ClaudeEnvelope = serde_json::from_str(&raw_response)?;
-        let summary = envelope.result.unwrap_or_default();
+        parse_envelope_response(raw_response)
+    }
 
-        Ok(ExecutionResult {
-            status: if envelope.is_error {
-                ExecutionStatus::Failed
-            } else {
-                ExecutionStatus::Completed
-            },
-            summary,
-            raw_response,
-            structured_output: envelope.structured_output,
-            cost_usd: envelope.total_cost_usd,
-        })
+    /// No worktree, no tmux: writes the prompt straight into `cwd`, runs
+    /// `claude` as a plain child process with stdout/stderr/exit-code
+    /// redirected to files in the same directory (same shell command
+    /// `execute` uses, just invoked directly instead of inside a tmux
+    /// pane), and polls the child for completion instead of polling a tmux
+    /// pane for a sentinel.
+    fn ask(&self, prompt: &str, cwd: &Path, json_schema: Option<&str>) -> Result<ExecutionResult, AgentsError> {
+        let prompt_path = cwd.join("prompt.md");
+        let response_path = cwd.join("response.json");
+        let stderr_path = cwd.join("stderr.log");
+        let exit_code_path = cwd.join("exit_code");
+        std::fs::write(&prompt_path, prompt)?;
+
+        let command = build_claude_command(&prompt_path, &response_path, &stderr_path, &exit_code_path, json_schema);
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .spawn()?;
+
+        let start = Instant::now();
+        loop {
+            if child.try_wait()?.is_some() {
+                break;
+            }
+            if start.elapsed() > self.chat_timeout {
+                let _ = child.kill();
+                return Err(AgentsError::ProcessFailed(format!(
+                    "chat call timed out after {:?}",
+                    self.chat_timeout
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        let exit_code: i32 = std::fs::read_to_string(&exit_code_path)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(-1);
+        if exit_code != 0 {
+            let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+            return Err(AgentsError::ProcessFailed(format!(
+                "claude exited with status {exit_code}: {stderr}"
+            )));
+        }
+
+        let raw_response = std::fs::read_to_string(&response_path)?;
+        parse_envelope_response(raw_response)
     }
 }
 

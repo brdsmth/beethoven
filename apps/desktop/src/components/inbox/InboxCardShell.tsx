@@ -15,12 +15,16 @@ export function InboxCardShell({
   kind,
   title,
   createdAt,
+  projectSlug,
   children,
   actions,
 }: {
   kind: "decision" | "question" | "approval" | "alert";
   title: string;
   createdAt: string;
+  /// Inbox is cross-project -- shown next to the timestamp so it's clear
+  /// at a glance which project raised this item.
+  projectSlug?: string;
   children: ReactNode;
   actions: ReactNode;
 }) {
@@ -28,7 +32,10 @@ export function InboxCardShell({
     <div className={`rounded-lg border border-slate-800 border-l-4 bg-slate-900/40 p-4 ${KIND_COLOR[kind]}`}>
       <div className="flex items-center justify-between">
         <div className="text-xs uppercase tracking-wide text-slate-500">{kind}</div>
-        <div className="text-xs text-slate-500">{new Date(createdAt).toLocaleString()}</div>
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          {projectSlug && <span>{projectSlug}</span>}
+          <span>{new Date(createdAt).toLocaleString()}</span>
+        </div>
       </div>
       <div className="mt-1 font-medium text-slate-100">{title}</div>
       <div className="mt-2 text-sm text-slate-300">{children}</div>

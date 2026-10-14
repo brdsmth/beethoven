@@ -1,12 +1,12 @@
 import { api } from "../../lib/api";
 import { useAction } from "../../lib/hooks";
-import type { Decision, InboxItem } from "../../lib/types";
+import type { DecisionSummary, InboxItem } from "../../lib/types";
 import { ActionButton, InboxCardShell, RespondField } from "./InboxCardShell";
 
-export function DecisionCard({ item, decision }: { item: InboxItem; decision: Decision | undefined }) {
+export function DecisionCard({ item, decision }: { item: InboxItem; decision: DecisionSummary | undefined }) {
   const respond = useAction((response: string) => api.answerInboxItem(item.id, response), {
     successMessage: "Decision resolved",
-    invalidateKeys: [["inbox", item.project_id], ["project", item.project_id], ["decisions"]],
+    invalidateKeys: [["inbox"], ["project", item.project_id], ["decisions"]],
   });
 
   return (
@@ -14,6 +14,7 @@ export function DecisionCard({ item, decision }: { item: InboxItem; decision: De
       kind="decision"
       title={decision?.question ?? item.decision_question ?? "Decision"}
       createdAt={item.created_at}
+      projectSlug={item.project_slug}
       actions={
         <>
           <ActionButton label="Approve" onClick={() => respond.mutate("approved")} pending={respond.isPending} />

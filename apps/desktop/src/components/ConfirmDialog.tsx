@@ -37,10 +37,10 @@ export function ConfirmDialog({
           <button
             onClick={onConfirm}
             disabled={pending}
-            className={`rounded-md px-3 py-1.5 text-xs font-medium disabled:opacity-50 ${
+            className={`rounded-md border px-3 py-1.5 text-xs font-medium disabled:opacity-50 ${
               danger
-                ? "bg-rose-600 text-white hover:bg-rose-500"
-                : "bg-indigo-600 text-white hover:bg-indigo-500"
+                ? "bg-rose-600 text-white border-rose-600 hover:bg-rose-500"
+                : "border-amber-700/50 text-amber-300 hover:bg-amber-950/30"
             }`}
           >
             {pending ? "Working…" : confirmLabel}

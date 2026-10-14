@@ -6,7 +6,7 @@ import { ActionButton, InboxCardShell } from "./InboxCardShell";
 export function ApprovalCard({ item }: { item: InboxItem }) {
   const respond = useAction((response: string) => api.answerInboxItem(item.id, response), {
     successMessage: "Response sent",
-    invalidateKeys: [["inbox", item.project_id], ["project", item.project_id]],
+    invalidateKeys: [["inbox"], ["project", item.project_id]],
   });
 
   return (
@@ -14,6 +14,7 @@ export function ApprovalCard({ item }: { item: InboxItem }) {
       kind="approval"
       title={item.prompt}
       createdAt={item.created_at}
+      projectSlug={item.project_slug}
       actions={
         <>
           <ActionButton label="Approve" onClick={() => respond.mutate("approved")} pending={respond.isPending} />

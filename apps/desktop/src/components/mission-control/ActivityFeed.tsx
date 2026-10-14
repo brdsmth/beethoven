@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
-import { formatRelativeTime, humanizeEventType } from "../../lib/format";
+import { eventDetail, formatRelativeTime, humanizeEventType } from "../../lib/format";
 import { Panel } from "../Panel";
 
 export function ActivityFeed() {
@@ -13,12 +13,18 @@ export function ActivityFeed() {
         <div className="text-sm text-slate-500">No events yet.</div>
       ) : (
         <ul className="flex flex-col gap-1.5">
-          {events.map((e) => (
-            <li key={e.id} className="flex items-center justify-between text-sm">
-              <span className="text-slate-200">{humanizeEventType(e.event_type)}</span>
-              <span className="text-xs text-slate-500">{formatRelativeTime(e.timestamp)}</span>
-            </li>
-          ))}
+          {events.map((e) => {
+            const detail = eventDetail(e.payload);
+            return (
+              <li key={e.id} className="flex items-center justify-between gap-3 text-sm">
+                <div className="flex min-w-0 flex-col">
+                  <span className="text-slate-200">{humanizeEventType(e.event_type)}</span>
+                  {detail && <span className="truncate text-xs text-slate-500">{detail}</span>}
+                </div>
+                <span className="shrink-0 text-xs text-slate-500">{formatRelativeTime(e.timestamp)}</span>
+              </li>
+            );
+          })}
         </ul>
       )}
     </Panel>

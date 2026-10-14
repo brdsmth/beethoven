@@ -2,19 +2,17 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAction } from "../../lib/hooks";
+import { PROJECT_STATUS_TEXT_COLOR } from "../../lib/projectDisplay";
 import type { ProjectSummary } from "../../lib/types";
 import { ActionButton } from "../ActionButton";
 import { ConfirmDialog } from "../ConfirmDialog";
-
-const STATUS_COLOR: Record<ProjectSummary["status"], string> = {
-  active: "text-emerald-400",
-  paused: "text-amber-400",
-  archived: "text-slate-500",
-};
+import { EmptyState } from "../EmptyState";
 
 export function ProjectList({ projects }: { projects: ProjectSummary[] }) {
   if (projects.length === 0) {
-    return <div className="text-sm text-slate-500">No projects yet.</div>;
+    // The "New Project" button is already visible right above this list on
+    // ProjectsPage, so no separate action link is needed here.
+    return <EmptyState message="No projects yet -- use New Project above to create one." />;
   }
 
   return (
@@ -54,7 +52,7 @@ function ProjectRow({ project }: { project: ProjectSummary }) {
         <div className="flex items-center gap-4 text-sm text-slate-400">
           <span>{project.task_counts.in_progress} in progress</span>
           <span>{project.open_inbox_count} inbox</span>
-          <span className={STATUS_COLOR[project.status]}>{project.status}</span>
+          <span className={PROJECT_STATUS_TEXT_COLOR[project.status]}>{project.status}</span>
         </div>
       </Link>
 

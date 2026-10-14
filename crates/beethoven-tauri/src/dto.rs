@@ -1,7 +1,7 @@
 use beethoven_agents::AgentRole;
 use beethoven_core::{
     AgentStatus, ArtifactKind, DecisionStatus, InboxKind, InboxStatus, ProjectStatus, ReviewStatus, RunStatus,
-    ScoreBandCount, TaskStatus,
+    ScoreBandCount, StopAllOutcome, SuggestedAction, TaskStatus,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -204,6 +204,10 @@ pub struct AgentHealthDto {
 pub struct InboxItemDto {
     pub id: String,
     pub project_id: String,
+    /// Which project this item belongs to, by name -- only meaningful once
+    /// the inbox is viewed cross-project; harmless (if unused) when a
+    /// caller already knows the project from context.
+    pub project_slug: String,
     pub kind: InboxKind,
     pub status: InboxStatus,
     pub prompt: String,
@@ -251,6 +255,50 @@ pub struct RuntimeStatusDto {
     /// which also covers tasks blocked by a raised question or a low
     /// review score, not just an outright run failure.
     pub failed_task_count: usize,
+    /// Agents the DB says are `Assigned`/`Executing` *and* whose expected
+    /// tmux session is actually alive right now -- live-reconciled against
+    /// `TmuxSession::list_active()`, not just replayed event state. This is
+    /// the number to trust; `active_agent_count` alone is not.
+    pub verified_agent_count: usize,
+    /// Expected sessions (DB says running) with no matching real tmux
+    /// session -- the DB thinks an agent is running but it isn't.
+    pub ghost_session_count: usize,
+    /// Real `beethoven_*` tmux sessions with no matching tracked task --
+    /// a true orphan the DB has no record of.
+    pub orphaned_session_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StopAllReportDto {
+    pub interrupted_count: usize,
+    pub orphans_swept: usize,
+    pub errors: Vec<String>,
+}
+
+impl From<StopAllOutcome> for StopAllReportDto {
+    fn from(outcome: StopAllOutcome) -> Self {
+        Self {
+            interrupted_count: outcome.interrupted.len(),
+            orphans_swept: outcome.orphans_swept.len(),
+            errors: outcome.errors,
+        }
+    }
+}
+
+/// One Project Chat turn -- `suggested_actions` reuses `SuggestedAction`
+/// directly (no DTO-specific reshaping needed: every field is already a
+/// raw id the frontend looks title context up for itself from already-
+/// loaded project data, the same way `TaskRefDto`'s id-bearing fields work).
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectChatTurnDto {
+    pub id: String,
+    pub project_id: String,
+    pub question: String,
+    pub answer: String,
+    pub focus_task_id: Option<String>,
+    pub focus_task_title: Option<String>,
+    pub suggested_actions: Vec<SuggestedAction>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize)]

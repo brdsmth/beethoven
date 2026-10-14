@@ -1,23 +1,34 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useElapsedLabel } from "../../lib/hooks";
 import { Panel } from "../Panel";
 import type { ActiveExecution as ActiveExecutionItem } from "../../lib/types";
 
-export function ActiveExecution({ projectId, title = "Running Work" }: { projectId?: string; title?: string }) {
+const CAP = 10;
+
+export function ActiveExecution() {
   const { data } = useQuery({ queryKey: ["activeExecution"], queryFn: api.getActiveExecution });
-  const items = (data ?? []).filter((item) => !projectId || item.project_id === projectId);
+  const items = data ?? [];
+  const visible = items.slice(0, CAP);
 
   return (
-    <Panel title={title}>
+    <Panel title="Running Agents">
       {items.length === 0 ? (
         <div className="text-sm text-slate-500">No tasks in progress.</div>
       ) : (
-        <ul className="flex flex-col gap-2">
-          {items.map((item) => (
-            <ActiveExecutionRow key={item.task_id} item={item} />
-          ))}
-        </ul>
+        <div className="flex flex-col gap-2">
+          <ul className="flex flex-col gap-2">
+            {visible.map((item) => (
+              <ActiveExecutionRow key={item.task_id} item={item} />
+            ))}
+          </ul>
+          {items.length > CAP && (
+            <Link to="/projects" className="text-xs text-slate-500 hover:text-slate-300">
+              view all {items.length} running agents →
+            </Link>
+          )}
+        </div>
       )}
     </Panel>
   );
@@ -34,7 +45,7 @@ function ActiveExecutionRow({ item }: { item: ActiveExecutionItem }) {
         </div>
       </div>
       <div className="text-right">
-        <div className="text-xs font-semibold text-emerald-400">Running</div>
+        <div className="text-xs font-semibold text-indigo-300">Running</div>
         <div className="text-xs text-slate-500">{elapsed}</div>
       </div>
     </li>

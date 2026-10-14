@@ -84,6 +84,12 @@ pub struct TaskRecoveredPayload {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct TaskInterruptedPayload {
+    pub task_id: String,
+    pub agent_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TaskCompletedPayload {
     pub task_id: String,
 }
@@ -267,4 +273,13 @@ pub struct TaskDependencyPayload {
 pub struct PlanningSummaryGeneratedPayload {
     pub run_id: String,
     pub content: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProjectChatTurnRecordedPayload {
+    pub id: String,
+    pub question: String,
+    pub answer: String,
+    pub focus_task_id: Option<String>,
+    pub suggested_actions: Vec<crate::project_chat::SuggestedAction>,
 }

@@ -15,6 +15,7 @@ pub struct RuntimeState {
     pub reviews: HashMap<String, Review>,
     pub decisions: HashMap<String, Decision>,
     pub task_dependencies: Vec<TaskDependency>,
+    pub chat_turns: HashMap<String, crate::project_chat::ProjectChatTurn>,
 }
 
 fn decode<T: serde::de::DeserializeOwned>(event: &Event) -> T {
@@ -556,6 +557,20 @@ impl RuntimeState {
                     t.updated_at = ts;
                 }
             }
+            EventType::TaskInterrupted => {
+                let p: TaskInterruptedPayload = decode(event);
+                if let Some(t) = self.tasks.get_mut(&p.task_id) {
+                    t.status = TaskStatus::Ready;
+                    t.assigned_agent_id = None;
+                    t.blocked_reason = None;
+                    t.updated_at = ts;
+                }
+                if let Some(a) = self.agent_instances.get_mut(&p.agent_id) {
+                    a.status = AgentStatus::Idle;
+                    a.current_task_id = None;
+                    a.updated_at = ts;
+                }
+            }
             EventType::ReviewChangesRequested => {
                 let p: ReviewChangesRequestedPayload = decode(event);
                 let agent_id = self.tasks.get(&p.task_id).and_then(|t| t.assigned_agent_id.clone());
@@ -623,6 +638,22 @@ impl RuntimeState {
                         run_id: p.run_id,
                         kind: ArtifactKind::PlanningSummary,
                         content: p.content,
+                        created_at: ts,
+                    },
+                );
+            }
+            EventType::ProjectChatTurnRecorded => {
+                let project_id = project_id_of(event);
+                let p: ProjectChatTurnRecordedPayload = decode(event);
+                self.chat_turns.insert(
+                    p.id.clone(),
+                    crate::project_chat::ProjectChatTurn {
+                        id: p.id,
+                        project_id,
+                        question: p.question,
+                        answer: p.answer,
+                        focus_task_id: p.focus_task_id,
+                        suggested_actions: p.suggested_actions,
                         created_at: ts,
                     },
                 );

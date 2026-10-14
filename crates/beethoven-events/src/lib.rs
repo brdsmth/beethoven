@@ -71,6 +71,7 @@ pub enum EventType {
     TaskRetried,
     TaskCancelled,
     TaskReassigned,
+    TaskInterrupted,
 
     ReviewChangesRequested,
 
@@ -87,6 +88,8 @@ pub enum EventType {
     TaskDependencyRemoved,
 
     PlanningSummaryGenerated,
+
+    ProjectChatTurnRecorded,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -144,6 +147,7 @@ impl std::str::FromStr for EventType {
             "TaskRetried" => EventType::TaskRetried,
             "TaskCancelled" => EventType::TaskCancelled,
             "TaskReassigned" => EventType::TaskReassigned,
+            "TaskInterrupted" => EventType::TaskInterrupted,
             "ReviewChangesRequested" => EventType::ReviewChangesRequested,
             "AgentPaused" => EventType::AgentPaused,
             "AgentResumed" => EventType::AgentResumed,
@@ -154,6 +158,7 @@ impl std::str::FromStr for EventType {
             "TaskDependencyCreated" => EventType::TaskDependencyCreated,
             "TaskDependencyRemoved" => EventType::TaskDependencyRemoved,
             "PlanningSummaryGenerated" => EventType::PlanningSummaryGenerated,
+            "ProjectChatTurnRecorded" => EventType::ProjectChatTurnRecorded,
             other => return Err(UnknownEventType(other.to_string())),
         })
     }
@@ -208,6 +213,7 @@ impl EventType {
             EventType::TaskRetried => "TaskRetried",
             EventType::TaskCancelled => "TaskCancelled",
             EventType::TaskReassigned => "TaskReassigned",
+            EventType::TaskInterrupted => "TaskInterrupted",
             EventType::ReviewChangesRequested => "ReviewChangesRequested",
             EventType::AgentPaused => "AgentPaused",
             EventType::AgentResumed => "AgentResumed",
@@ -218,6 +224,7 @@ impl EventType {
             EventType::TaskDependencyCreated => "TaskDependencyCreated",
             EventType::TaskDependencyRemoved => "TaskDependencyRemoved",
             EventType::PlanningSummaryGenerated => "PlanningSummaryGenerated",
+            EventType::ProjectChatTurnRecorded => "ProjectChatTurnRecorded",
         }
     }
 }
@@ -302,7 +309,7 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
-    const ALL_EVENT_TYPES: [EventType; 56] = [
+    const ALL_EVENT_TYPES: [EventType; 57] = [
         EventType::ProjectCreated,
         EventType::AgentTemplateCreated,
         EventType::AgentSpawned,
@@ -359,6 +366,7 @@ mod tests {
         EventType::TaskDependencyCreated,
         EventType::TaskDependencyRemoved,
         EventType::PlanningSummaryGenerated,
+        EventType::ProjectChatTurnRecorded,
     ];
 
     #[test]

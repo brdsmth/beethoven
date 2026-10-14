@@ -6,7 +6,7 @@ import { ActionButton, InboxCardShell } from "./InboxCardShell";
 export function AlertCard({ item }: { item: InboxItem }) {
   const acknowledge = useAction<void, unknown>(() => api.answerInboxItem(item.id, "acknowledged"), {
     successMessage: "Acknowledged",
-    invalidateKeys: [["inbox", item.project_id], ["project", item.project_id]],
+    invalidateKeys: [["inbox"], ["project", item.project_id]],
   });
 
   return (
@@ -14,6 +14,7 @@ export function AlertCard({ item }: { item: InboxItem }) {
       kind="alert"
       title={item.prompt}
       createdAt={item.created_at}
+      projectSlug={item.project_slug}
       actions={
         <ActionButton label="Acknowledge" onClick={() => acknowledge.mutate()} pending={acknowledge.isPending} />
       }

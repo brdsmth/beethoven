@@ -1,41 +1,49 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { api } from "../../lib/api";
 import { pickDirectory } from "../../lib/dialog";
-import { useAction } from "../../lib/hooks";
+import { useAction, useTabParam } from "../../lib/hooks";
+import { pushToast } from "../../lib/toast";
+import { formatRelativeTime } from "../../lib/format";
 import { allTasks, computeProjectHealth, currentBottleneck } from "../../lib/projectHealth";
+import { PROJECT_STATUS_TEXT_COLOR } from "../../lib/projectDisplay";
 import { displayStatus } from "../tasks/taskDisplay";
 import { DependencyGraph } from "../tasks/DependencyGraph";
 import { NewGoalForm } from "../tasks/NewGoalForm";
+import { TaskTree } from "../tasks/TaskTree";
 import { PlanningSummaryPanel } from "../tasks/PlanningSummaryPanel";
 import { PlanningHistoryPanel } from "../tasks/PlanningHistoryPanel";
-import type { Agent, ProjectDetail as ProjectDetailData, Task, TaskNode } from "../../lib/types";
+import { AgentTree } from "../agents/AgentTree";
+import { AgentDetail } from "../agents/AgentDetail";
+import { EventStream } from "../timeline/EventStream";
+import { ProjectChatPanel } from "./ProjectChatPanel";
+import type { AgentHealthStatus, Decision, ProjectDetail as ProjectDetailData } from "../../lib/types";
 import { ActionButton } from "../ActionButton";
 import { ConfirmDialog } from "../ConfirmDialog";
+import { DiffView } from "../DiffView";
+import { EmptyState } from "../EmptyState";
+import { InboxCardShell, RespondField } from "../inbox/InboxCardShell";
 import { Panel } from "../Panel";
-import { RespondField } from "../RespondField";
+import { RuntimeStartNudge } from "../RuntimeStartNudge";
 import { Tabs } from "../Tabs";
-import { TaskDetailModal } from "../TaskDetailModal";
 import { GoalHeader } from "../mission-control/GoalHeader";
 
-const STATUS_COLOR: Record<ProjectDetailData["status"], string> = {
-  active: "text-emerald-400",
-  paused: "text-amber-400",
-  archived: "text-slate-500",
-};
-
-type ProjectTab = "overview" | "task_graph" | "decisions" | "artifacts" | "runtime";
+type ProjectTab = "overview" | "tasks" | "decisions" | "artifacts" | "agents" | "chat" | "logs";
 const TABS: { id: ProjectTab; label: string }[] = [
   { id: "overview", label: "Overview" },
-  { id: "task_graph", label: "Task Graph" },
+  { id: "tasks", label: "Tasks" },
   { id: "decisions", label: "Decisions" },
   { id: "artifacts", label: "Artifacts" },
-  { id: "runtime", label: "Runtime" },
+  { id: "agents", label: "Agents" },
+  { id: "chat", label: "Chat" },
+  { id: "logs", label: "Logs" },
 ];
+const TAB_IDS = TABS.map((t) => t.id);
 
 export function ProjectDetail({ project }: { project: ProjectDetailData }) {
   const [confirmArchive, setConfirmArchive] = useState(false);
-  const [tab, setTab] = useState<ProjectTab>("overview");
+  const [tab, setTab] = useTabParam<ProjectTab>(TAB_IDS, "overview");
 
   const invalidateKeys = [["projects"], ["project", project.id]];
   const pause = useAction(api.pauseProject, { successMessage: `${project.name} paused`, invalidateKeys });
@@ -50,7 +58,7 @@ export function ProjectDetail({ project }: { project: ProjectDetailData }) {
           <div className="text-xs text-slate-500">{project.slug}</div>
         </div>
         <div className="flex items-center gap-3">
-          <span className={STATUS_COLOR[project.status]}>{project.status}</span>
+          <span className={PROJECT_STATUS_TEXT_COLOR[project.status]}>{project.status}</span>
           {project.status === "active" && (
             <ActionButton label="Pause" onClick={() => pause.mutate(project.id)} pending={pause.isPending} />
           )}
@@ -68,10 +76,12 @@ export function ProjectDetail({ project }: { project: ProjectDetailData }) {
       <Tabs tabs={TABS} active={tab} onChange={setTab} />
 
       {tab === "overview" && <OverviewTab project={project} />}
-      {tab === "task_graph" && <TaskGraphTab project={project} />}
+      {tab === "tasks" && <TasksTab project={project} />}
       {tab === "decisions" && <DecisionsTab project={project} />}
       {tab === "artifacts" && <ArtifactsTab project={project} />}
-      {tab === "runtime" && <RuntimeTab project={project} />}
+      {tab === "agents" && <AgentsTab project={project} />}
+      {tab === "chat" && <ProjectChatPanel project={project} />}
+      {tab === "logs" && <EventStream projectId={project.id} />}
 
       <ConfirmDialog
         open={confirmArchive}
@@ -90,6 +100,22 @@ export function ProjectDetail({ project }: { project: ProjectDetailData }) {
 function OverviewTab({ project }: { project: ProjectDetailData }) {
   const health = computeProjectHealth(project);
   const bottleneck = currentBottleneck(project);
+  const editable = project.status === "paused";
+
+  const [repositoryPath, setRepositoryPath] = useState(project.repository_path);
+  const [defaultBranch, setDefaultBranch] = useState(project.default_branch);
+
+  const invalidateKeys = [["projects"], ["project", project.id]];
+  const updatePath = useAction(
+    ({ projectId, repositoryPath }: { projectId: string; repositoryPath: string }) =>
+      api.updateProjectRepositoryPath(projectId, repositoryPath),
+    { successMessage: "Repository path updated", invalidateKeys },
+  );
+  const updateBranch = useAction(
+    ({ projectId, defaultBranch }: { projectId: string; defaultBranch: string }) =>
+      api.updateProjectDefaultBranch(projectId, defaultBranch),
+    { successMessage: "Default branch updated", invalidateKeys },
+  );
 
   return (
     <div className="flex flex-col gap-4">
@@ -116,27 +142,62 @@ function OverviewTab({ project }: { project: ProjectDetailData }) {
       </div>
 
       <PlanningSummaryPanel projectId={project.id} />
-    </div>
-  );
-}
 
-/// Tasks only ever get worked on while the global daemon is ticking --
-/// without it, a freshly created and planned project just sits there with
-/// Ready tasks no one picks up. Surfaced here (not just on the Runtime
-/// page) since this is exactly the moment a new project needs it.
-function RuntimeStartNudge() {
-  const { data: status } = useQuery({ queryKey: ["runtimeStatus"], queryFn: api.runtimeStatus });
-  const start = useAction<void, void>(api.runtimeStart, {
-    successMessage: "Runtime started",
-    invalidateKeys: [["runtimeStatus"]],
-  });
+      <Panel title="Project Settings">
+        <div className="flex flex-col gap-4">
+          {!editable && <div className="text-xs text-slate-500">Pause the project to edit.</div>}
 
-  if (!status || status.daemon_running) return null;
+          <div className="flex flex-col gap-1">
+            <label className="text-xs uppercase tracking-wide text-slate-500">Repository Path</label>
+            {editable ? (
+              <div className="flex items-center gap-2">
+                <input
+                  value={repositoryPath}
+                  onChange={(e) => setRepositoryPath(e.target.value)}
+                  className="flex-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-200"
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const picked = await pickDirectory("Choose Repository", repositoryPath || undefined);
+                    if (picked) setRepositoryPath(picked);
+                  }}
+                  className="whitespace-nowrap rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
+                >
+                  Browse…
+                </button>
+                <ActionButton
+                  label="Save"
+                  onClick={() => updatePath.mutate({ projectId: project.id, repositoryPath })}
+                  pending={updatePath.isPending}
+                />
+              </div>
+            ) : (
+              <div className="text-sm text-slate-300">{project.repository_path}</div>
+            )}
+          </div>
 
-  return (
-    <div className="flex items-center justify-between rounded-md border border-amber-700/50 bg-amber-950/30 px-3 py-2 text-sm text-amber-300">
-      <span>The runtime isn't running -- planned tasks won't be picked up until it starts.</span>
-      <ActionButton label="Start Runtime" onClick={() => start.mutate()} pending={start.isPending} />
+          <div className="flex flex-col gap-1">
+            <label className="text-xs uppercase tracking-wide text-slate-500">Default Branch</label>
+            {editable ? (
+              <div className="flex items-center gap-2">
+                <input
+                  value={defaultBranch}
+                  onChange={(e) => setDefaultBranch(e.target.value)}
+                  className="flex-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-200"
+                />
+                <ActionButton
+                  label="Save"
+                  onClick={() => updateBranch.mutate({ projectId: project.id, defaultBranch })}
+                  pending={updateBranch.isPending}
+                />
+              </div>
+            ) : (
+              <div className="text-sm text-slate-300">{project.default_branch}</div>
+            )}
+          </div>
+        </div>
+      </Panel>
     </div>
   );
 }
@@ -151,7 +212,7 @@ function Stat({ label, value, tone = "neutral" }: { label: string; value: number
   );
 }
 
-function TaskGraphTab({ project }: { project: ProjectDetailData }) {
+function TasksTab({ project }: { project: ProjectDetailData }) {
   const { data: agents } = useQuery({
     queryKey: ["agents", project.id],
     queryFn: () => api.getAgents(project.id),
@@ -181,23 +242,56 @@ function TaskGraphTab({ project }: { project: ProjectDetailData }) {
 }
 
 function DecisionsTab({ project }: { project: ProjectDetailData }) {
-  return (
-    <Panel title="Decisions">
-      {project.decisions.length === 0 ? (
+  if (project.decisions.length === 0) {
+    return (
+      <Panel title="Decisions">
         <div className="text-sm text-slate-500">No decisions raised.</div>
-      ) : (
-        <ul className="flex flex-col gap-1">
-          {project.decisions.map((d) => (
-            <li key={d.id} className="text-sm text-slate-300">
-              {d.question}{" "}
-              <span className={`text-xs ${d.status === "open" ? "text-amber-400" : "text-slate-500"}`}>
-                ({d.status})
-              </span>
-            </li>
-          ))}
-        </ul>
+      </Panel>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {project.decisions.map((d) => (
+        <DecisionTabCard key={d.id} decision={d} />
+      ))}
+    </div>
+  );
+}
+
+function DecisionTabCard({ decision }: { decision: Decision }) {
+  const resolve = useAction((response: string) => api.resolveDecision(decision.id, response), {
+    successMessage: "Decision resolved",
+    invalidateKeys: [["project", decision.project_id], ["decisions"]],
+  });
+
+  return (
+    <InboxCardShell
+      kind="decision"
+      title={decision.question}
+      createdAt={decision.created_at}
+      actions={
+        decision.status === "open" ? (
+          <>
+            <ActionButton label="Approve" onClick={() => resolve.mutate("approved")} pending={resolve.isPending} />
+            <ActionButton
+              label="Reject"
+              tone="danger"
+              onClick={() => resolve.mutate("rejected")}
+              pending={resolve.isPending}
+            />
+            <RespondField label="Custom Response" onSubmit={(value) => resolve.mutate(value)} pending={resolve.isPending} />
+          </>
+        ) : (
+          <span className="text-xs text-slate-500">Answer: {decision.answer}</span>
+        )
+      }
+    >
+      <p>{decision.context}</p>
+      {decision.creation_reason && (
+        <p className="mt-1 text-xs text-slate-500">Why this was raised: {decision.creation_reason}</p>
       )}
-    </Panel>
+    </InboxCardShell>
   );
 }
 
@@ -220,9 +314,7 @@ function ArtifactsTab({ project }: { project: ProjectDetailData }) {
             {projectDiffs.map((d) => (
               <div key={d.id} className="rounded-md border border-slate-800 p-2">
                 <div className="text-xs text-slate-400">{d.task_title}</div>
-                <pre className="mt-1 max-h-64 overflow-auto rounded bg-slate-950 p-2 text-xs text-slate-400">
-                  {d.content}
-                </pre>
+                <DiffView content={d.content} className="mt-1 max-h-64 overflow-auto" />
               </div>
             ))}
           </div>
@@ -249,9 +341,28 @@ function ArtifactsTab({ project }: { project: ProjectDetailData }) {
   );
 }
 
-function RuntimeTab({ project }: { project: ProjectDetailData }) {
+const HEALTH_COLOR: Record<AgentHealthStatus, string> = {
+  healthy: "text-emerald-400",
+  slow: "text-amber-400",
+  stalled: "text-rose-400",
+};
+
+function AgentsTab({ project }: { project: ProjectDetailData }) {
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+
+  const { data: agents } = useQuery({
+    queryKey: ["agents", project.id],
+    queryFn: () => api.getAgents(project.id),
+  });
   const { data: active } = useQuery({ queryKey: ["activeExecution"], queryFn: api.getActiveExecution });
+  const { data: health } = useQuery({ queryKey: ["agentHealth"], queryFn: api.getAgentHealth });
+  const { data: workspaces } = useQuery({ queryKey: ["workspaces"], queryFn: api.getWorkspaces });
+  const { data: agentTemplates } = useQuery({ queryKey: ["agentTemplates"], queryFn: api.getAgentTemplates });
+
+  const selectedAgent = (agents ?? []).find((a) => a.id === selectedAgentId) ?? null;
+  const attention = (health ?? []).filter((a) => a.project_id === project.id && a.health !== "healthy");
   const projectActive = (active ?? []).filter((a) => a.project_id === project.id);
+  const projectWorkspaces = (workspaces ?? []).filter((w) => w.project_id === project.id);
 
   return (
     <div className="flex flex-col gap-4">
@@ -273,262 +384,83 @@ function RuntimeTab({ project }: { project: ProjectDetailData }) {
         )}
       </Panel>
 
-      <ProjectSettings project={project} />
-    </div>
-  );
-}
-
-function ProjectSettings({ project }: { project: ProjectDetailData }) {
-  const editable = project.status === "paused";
-
-  const [repositoryPath, setRepositoryPath] = useState(project.repository_path);
-  const [defaultBranch, setDefaultBranch] = useState(project.default_branch);
-
-  const invalidateKeys = [["projects"], ["project", project.id]];
-  const updatePath = useAction(
-    ({ projectId, repositoryPath }: { projectId: string; repositoryPath: string }) =>
-      api.updateProjectRepositoryPath(projectId, repositoryPath),
-    { successMessage: "Repository path updated", invalidateKeys },
-  );
-  const updateBranch = useAction(
-    ({ projectId, defaultBranch }: { projectId: string; defaultBranch: string }) =>
-      api.updateProjectDefaultBranch(projectId, defaultBranch),
-    { successMessage: "Default branch updated", invalidateKeys },
-  );
-
-  const { data: agentTemplates } = useQuery({ queryKey: ["agentTemplates"], queryFn: api.getAgentTemplates });
-
-  return (
-    <Panel title="Settings">
-      <div className="flex flex-col gap-4">
-        {!editable && <div className="text-xs text-slate-500">Pause the project to edit.</div>}
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs uppercase tracking-wide text-slate-500">Repository Path</label>
-          {editable ? (
-            <div className="flex items-center gap-2">
-              <input
-                value={repositoryPath}
-                onChange={(e) => setRepositoryPath(e.target.value)}
-                className="flex-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-200"
-              />
-              <button
-                type="button"
-                onClick={async () => {
-                  const picked = await pickDirectory("Choose Repository", repositoryPath || undefined);
-                  if (picked) setRepositoryPath(picked);
-                }}
-                className="whitespace-nowrap rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
-              >
-                Browse…
-              </button>
-              <ActionButton
-                label="Save"
-                onClick={() => updatePath.mutate({ projectId: project.id, repositoryPath })}
-                pending={updatePath.isPending}
-              />
-            </div>
-          ) : (
-            <div className="text-sm text-slate-300">{project.repository_path}</div>
-          )}
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs uppercase tracking-wide text-slate-500">Default Branch</label>
-          {editable ? (
-            <div className="flex items-center gap-2">
-              <input
-                value={defaultBranch}
-                onChange={(e) => setDefaultBranch(e.target.value)}
-                className="flex-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-200"
-              />
-              <ActionButton
-                label="Save"
-                onClick={() => updateBranch.mutate({ projectId: project.id, defaultBranch })}
-                pending={updateBranch.isPending}
-              />
-            </div>
-          ) : (
-            <div className="text-sm text-slate-300">{project.default_branch}</div>
-          )}
-        </div>
-
-        <div>
-          <div className="text-xs uppercase tracking-wide text-slate-500">Runtime</div>
-          {!agentTemplates || agentTemplates.length === 0 ? (
-            <div className="mt-1 text-sm text-slate-500">No agent templates configured.</div>
-          ) : (
-            <ul className="mt-2 flex flex-col gap-1.5">
-              {agentTemplates.map((t) => (
-                <li key={t.id} className="flex items-center justify-between text-sm">
-                  <span className="text-slate-300">{t.label}</span>
-                  <span className="text-xs text-slate-500">
-                    {t.runtime_profile ? `${t.runtime_profile.runtime_id} / ${t.runtime_profile.model}` : "unresolved"}
+      {attention.length > 0 && (
+        <Panel title="Needs Attention">
+          <ul className="flex flex-col gap-2">
+            {attention.map((a) => (
+              <li key={a.agent_id} className="flex items-center justify-between text-sm">
+                <div>
+                  <span className="text-slate-200">{a.agent_name}</span>
+                  {a.current_task_title && <span className="ml-2 text-xs text-slate-500">{a.current_task_title}</span>}
+                </div>
+                <div className="flex items-center gap-3 text-xs">
+                  <span className="text-slate-500">
+                    {a.last_heartbeat ? `heartbeat ${formatRelativeTime(a.last_heartbeat)}` : "no heartbeat"}
                   </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
-    </Panel>
-  );
-}
-
-/// A task plus its descendant tree -- containers (tasks with children) just
-/// render a header and recurse; leaves render the full `TaskRow` actions,
-/// since only leaves are ever delegated to an agent.
-function TaskTree({ node, idleAgents }: { node: TaskNode; idleAgents: Agent[] }) {
-  if (node.children.length === 0) {
-    return <TaskRow task={node.task} idleAgents={idleAgents} />;
-  }
-
-  const { label, color } = displayStatus(node.task);
-
-  return (
-    <div className="rounded-md border border-slate-800 p-3">
-      <div className="flex items-center justify-between">
-        <div className="font-medium text-slate-100">{node.task.title}</div>
-        <span className={`text-xs font-semibold uppercase ${color}`}>{label}</span>
-      </div>
-      {node.task.description && <p className="mt-1 text-sm text-slate-400">{node.task.description}</p>}
-      <div className="mt-3 flex flex-col gap-2 pl-3">
-        {node.children.map((child) => (
-          <TaskTree key={child.task.id} node={child} idleAgents={idleAgents} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function TaskRow({ task, idleAgents }: { task: Task; idleAgents: Agent[] }) {
-  const [confirmCancel, setConfirmCancel] = useState(false);
-  const [reassignOpen, setReassignOpen] = useState(false);
-  const [viewDetail, setViewDetail] = useState(false);
-
-  const invalidateKeys = [["project", task.project_id], ["tasks", task.project_id]];
-  const plan = useAction(api.planTask, {
-    successMessage: (_taskId, outcome) =>
-      `Planned ${outcome.tasks.length} task(s), ${outcome.decisions.length} decision(s)`,
-    invalidateKeys,
-  });
-  const retry = useAction(api.retryTask, { successMessage: "Task retried", invalidateKeys });
-  const cancel = useAction(api.cancelTask, { successMessage: "Task cancelled", invalidateKeys });
-  const reassign = useAction(
-    ({ taskId, newAgentId }: { taskId: string; newAgentId: string }) => api.reassignTask(taskId, newAgentId),
-    { successMessage: "Task reassigned", invalidateKeys: [...invalidateKeys, ["agents", task.project_id]] },
-  );
-  const approve = useAction(api.approveReview, { successMessage: "Review approved", invalidateKeys });
-  const requestChanges = useAction(
-    ({ taskId, reason }: { taskId: string; reason: string }) => api.requestReviewChanges(taskId, reason),
-    { successMessage: "Changes requested", invalidateKeys },
-  );
-
-  const canCancel = task.status !== "done" && task.status !== "cancelled";
-  const canReassign = (task.status === "assigned" || task.status === "blocked") && idleAgents.length > 0;
-  const blockers = task.dependencies.filter((d) => d.status !== "done");
-  const { label, color } = displayStatus(task);
-
-  return (
-    <div className="flex flex-col gap-1.5 rounded-md border border-slate-800 px-3 py-2">
-      <div className="flex items-center justify-between text-sm">
-        <span className="text-slate-300">{task.title}</span>
-        <span className={`text-xs font-semibold uppercase ${color}`}>{label}</span>
-      </div>
-      {blockers.length > 0 && (
-        <div className="text-xs text-amber-400">
-          Blocked by:{" "}
-          {blockers.map((b, idx) => (
-            <span key={b.id} title={b.dependency_reason ?? undefined}>
-              {idx > 0 && ", "}
-              {b.title}
-            </span>
-          ))}
-        </div>
-      )}
-      {task.status === "blocked" && task.blocked_reason && (
-        <div className="text-xs text-rose-400">{task.blocked_reason}</div>
-      )}
-      <div className="flex flex-wrap items-center gap-2">
-        {task.status === "ready" && (
-          <ActionButton
-            label="Plan"
-            title="Break this down into tasks (and, for a model-driven planner, success criteria)."
-            onClick={() => plan.mutate(task.id)}
-            pending={plan.isPending}
-          />
-        )}
-        <ActionButton label="View Diff" onClick={() => setViewDetail(true)} />
-        {task.status === "blocked" && (
-          <ActionButton label="Retry" onClick={() => retry.mutate(task.id)} pending={retry.isPending} />
-        )}
-        {canCancel && <ActionButton label="Cancel" tone="danger" onClick={() => setConfirmCancel(true)} />}
-        {canReassign && (
-          <ActionButton label="Reassign" onClick={() => setReassignOpen((open) => !open)} />
-        )}
-        {task.status === "blocked" && (
-          <>
-            <ActionButton label="Approve" onClick={() => approve.mutate(task.id)} pending={approve.isPending} />
-            <RespondField
-              label="Request Changes"
-              onSubmit={(reason) => requestChanges.mutate({ taskId: task.id, reason })}
-              pending={requestChanges.isPending}
-            />
-          </>
-        )}
-      </div>
-
-      {reassignOpen && (
-        <AgentPicker
-          agents={idleAgents}
-          pending={reassign.isPending}
-          onSelect={(agentId) => {
-            reassign.mutate({ taskId: task.id, newAgentId: agentId }, { onSuccess: () => setReassignOpen(false) });
-          }}
-        />
+                  <span className={`font-semibold uppercase ${HEALTH_COLOR[a.health]}`}>{a.health}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Panel>
       )}
 
-      {viewDetail && <TaskDetailModal taskId={task.id} onClose={() => setViewDetail(false)} />}
+      <div className="grid grid-cols-2 gap-4">
+        <Panel title="Organization">
+          <AgentTree agents={agents ?? []} selectedAgentId={selectedAgentId} onSelect={setSelectedAgentId} />
+        </Panel>
 
-      <ConfirmDialog
-        open={confirmCancel}
-        title={`Cancel "${task.title}"?`}
-        description="Stops further execution. Work already mid-attempt will not be resurrected to Done when it completes."
-        confirmLabel="Cancel Task"
-        danger
-        pending={cancel.isPending}
-        onConfirm={() => cancel.mutate(task.id, { onSuccess: () => setConfirmCancel(false) })}
-        onCancel={() => setConfirmCancel(false)}
-      />
-    </div>
-  );
-}
+        {selectedAgent ? (
+          <AgentDetail agent={selectedAgent} />
+        ) : (
+          <Panel title="Agent Templates">
+            {!agentTemplates || agentTemplates.length === 0 ? (
+              <div className="text-sm text-slate-500">No agent templates configured.</div>
+            ) : (
+              <ul className="flex flex-col gap-1.5">
+                {agentTemplates.map((t) => (
+                  <li key={t.id} className="flex items-center justify-between text-sm">
+                    <span className="text-slate-300">{t.label}</span>
+                    <span className="text-xs text-slate-500">
+                      {t.runtime_profile ? `${t.runtime_profile.runtime_id} / ${t.runtime_profile.model}` : "unresolved"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Panel>
+        )}
+      </div>
 
-function AgentPicker({
-  agents,
-  onSelect,
-  pending,
-}: {
-  agents: Agent[];
-  onSelect: (agentId: string) => void;
-  pending?: boolean;
-}) {
-  const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
-
-  return (
-    <div className="flex items-center gap-2">
-      <select
-        value={agentId}
-        onChange={(e) => setAgentId(e.target.value)}
-        className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
-      >
-        {agents.map((a) => (
-          <option key={a.id} value={a.id}>
-            {a.name}
-          </option>
-        ))}
-      </select>
-      <ActionButton label="Confirm Reassign" onClick={() => agentId && onSelect(agentId)} pending={pending} />
+      <Panel title="Workspaces">
+        {projectWorkspaces.length === 0 ? (
+          <EmptyState message="No active workspaces." />
+        ) : (
+          <ul className="flex flex-col gap-3">
+            {projectWorkspaces.map((w) => (
+              <li key={w.task_id} className="rounded-md border border-slate-800 p-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-slate-100">{w.task_title}</span>
+                  <span className="text-xs text-slate-500">{w.agent_name}</span>
+                </div>
+                <div className="mt-1 break-all text-xs text-slate-400">
+                  {w.branch} · {w.git_worktree}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <ActionButton label="Open Workspace" onClick={() => revealItemInDir(w.git_worktree)} />
+                  <ActionButton
+                    label="Copy tmux attach"
+                    onClick={() => {
+                      navigator.clipboard.writeText(`tmux attach -t ${w.tmux_session}`);
+                      pushToast("Copied to clipboard", "success");
+                    }}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
     </div>
   );
 }

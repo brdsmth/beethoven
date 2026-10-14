@@ -41,6 +41,16 @@ pub fn projects_root(home: &Path) -> PathBuf {
     home.join("projects")
 }
 
+/// Where Project Chat's workspace-free model calls run -- a persistent,
+/// inert scratch directory, never a real repository or git worktree (see
+/// `ModelRuntime::ask`). Persistent rather than an OS tempdir so a crash
+/// mid-call doesn't race the OS's own tempdir cleanup, and so every call
+/// lives under the same `home`-rooted convention `projects_root` already
+/// establishes.
+pub fn chat_scratch_root(home: &Path) -> PathBuf {
+    home.join("chat-scratch")
+}
+
 fn current_project_path(home: &Path) -> PathBuf {
     home.join("current-project")
 }

@@ -168,6 +168,9 @@ export interface AgentHealth {
 export interface InboxItem {
   id: string;
   project_id: string;
+  /// Which project this item belongs to, by name -- shown once Inbox is
+  /// cross-project.
+  project_slug: string;
   kind: InboxKind;
   status: InboxStatus;
   prompt: string;
@@ -210,6 +213,43 @@ export interface RuntimeStatus {
   /// Tasks whose most recent Run failed -- distinct from blocked, which
   /// also covers a raised question or a low review score.
   failed_task_count: number;
+  /// Agents the DB says are running *and* whose expected tmux session is
+  /// actually alive right now -- live-reconciled, not just replayed state.
+  verified_agent_count: number;
+  /// Expected sessions with no matching real tmux session.
+  ghost_session_count: number;
+  /// Real beethoven_* tmux sessions with no matching tracked task.
+  orphaned_session_count: number;
+}
+
+export interface StopAllReport {
+  interrupted_count: number;
+  orphans_swept: number;
+  errors: string[];
+}
+
+/// One specific, concrete action a Project Chat answer proposed -- advisory
+/// only, always rendered as a one-click button the human confirms through
+/// the existing action flow, never executed automatically.
+export type SuggestedAction =
+  | { kind: "retry_task"; task_id: string }
+  | { kind: "cancel_task"; task_id: string }
+  | { kind: "reassign_task"; task_id: string; new_agent_id: string }
+  | { kind: "answer_inbox"; inbox_id: string; response: string }
+  | { kind: "resolve_decision"; decision_id: string; response: string }
+  | { kind: "approve_review"; task_id: string }
+  | { kind: "request_review_changes"; task_id: string; reason: string };
+
+export interface ProjectChatTurn {
+  id: string;
+  project_id: string;
+  question: string;
+  answer: string;
+  /// The task this turn was scoped to, if any -- `null` means the whole project.
+  focus_task_id: string | null;
+  focus_task_title: string | null;
+  suggested_actions: SuggestedAction[];
+  created_at: string;
 }
 
 export interface ActiveExecution {
@@ -478,5 +518,15 @@ export interface DecisionRecord {
   context: string;
   answer: string | null;
   status: DecisionStatus;
+  created_at: string;
+}
+
+export interface ProjectChatTurnRecord {
+  id: string;
+  project_id: string;
+  question: string;
+  answer: string;
+  focus_task_id: string | null;
+  suggested_actions: SuggestedAction[];
   created_at: string;
 }

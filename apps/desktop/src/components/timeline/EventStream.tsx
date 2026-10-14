@@ -1,7 +1,6 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
-import { useProjects } from "../../lib/hooks";
-import { useViewStore } from "../../lib/store";
 import { humanizeEventType } from "../../lib/format";
 
 function startOfDayUtc(date: string): string {
@@ -12,26 +11,29 @@ function endOfDayUtc(date: string): string {
   return `${date}T23:59:59Z`;
 }
 
-export function EventStream() {
-  const { data: projects } = useProjects();
-  const filters = useViewStore((s) => s.timelineFilters);
-  const setFilters = useViewStore((s) => s.setTimelineFilters);
+/// One project's full event log, filterable by agent/event-type/date --
+/// always scoped to `projectId` now (the project picker this used to have
+/// is gone now that this only ever lives inside that project's own Logs
+/// tab). Filters are local component state, not global store state:
+/// since this mounts fresh per project, a filter set while looking at one
+/// project's log shouldn't leak into another's.
+export function EventStream({ projectId }: { projectId: string }) {
+  const [agentId, setAgentId] = useState("");
+  const [eventType, setEventType] = useState("");
+  const [since, setSince] = useState("");
+  const [until, setUntil] = useState("");
 
-  const { data: agents } = useQuery({
-    queryKey: ["agents", filters.projectId],
-    queryFn: () => api.getAgents(filters.projectId),
-    enabled: !!filters.projectId,
-  });
+  const { data: agents } = useQuery({ queryKey: ["agents", projectId], queryFn: () => api.getAgents(projectId) });
 
   const { data: events } = useQuery({
-    queryKey: ["timeline", filters],
+    queryKey: ["timeline", projectId, agentId, eventType, since, until],
     queryFn: () =>
       api.getTimeline({
-        projectId: filters.projectId || undefined,
-        agentId: filters.agentId || undefined,
-        eventType: filters.eventType || undefined,
-        since: filters.since ? startOfDayUtc(filters.since) : undefined,
-        until: filters.until ? endOfDayUtc(filters.until) : undefined,
+        projectId,
+        agentId: agentId || undefined,
+        eventType: eventType || undefined,
+        since: since ? startOfDayUtc(since) : undefined,
+        until: until ? endOfDayUtc(until) : undefined,
       }),
   });
 
@@ -39,23 +41,9 @@ export function EventStream() {
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap gap-3">
         <select
-          value={filters.projectId}
-          onChange={(e) => setFilters({ projectId: e.target.value, agentId: "" })}
+          value={agentId}
+          onChange={(e) => setAgentId(e.target.value)}
           className="rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-200"
-        >
-          <option value="">All projects</option>
-          {(projects ?? []).map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-
-        <select
-          value={filters.agentId}
-          onChange={(e) => setFilters({ agentId: e.target.value })}
-          disabled={!filters.projectId}
-          className="rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-200 disabled:opacity-50"
         >
           <option value="">All agents</option>
           {(agents ?? []).map((a) => (
@@ -68,21 +56,21 @@ export function EventStream() {
         <input
           type="text"
           placeholder="Event type (e.g. TaskAssigned)"
-          value={filters.eventType}
-          onChange={(e) => setFilters({ eventType: e.target.value })}
+          value={eventType}
+          onChange={(e) => setEventType(e.target.value)}
           className="rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-200"
         />
 
         <input
           type="date"
-          value={filters.since}
-          onChange={(e) => setFilters({ since: e.target.value })}
+          value={since}
+          onChange={(e) => setSince(e.target.value)}
           className="rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-200"
         />
         <input
           type="date"
-          value={filters.until}
-          onChange={(e) => setFilters({ until: e.target.value })}
+          value={until}
+          onChange={(e) => setUntil(e.target.value)}
           className="rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-200"
         />
       </div>

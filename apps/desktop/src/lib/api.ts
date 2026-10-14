@@ -15,8 +15,11 @@ import type {
   ProjectDetail,
   ProjectRecord,
   ProjectSummary,
+  ProjectChatTurn,
+  ProjectChatTurnRecord,
   PromptSummary,
   RuntimeStatus,
+  StopAllReport,
   Task,
   TaskDetail,
   TaskPlanOutcome,
@@ -32,7 +35,7 @@ export const api = {
   getProject: (projectId: string) => invoke<ProjectDetail>("get_project", { projectId }),
   getAgents: (projectId: string) => invoke<Agent[]>("get_agents", { projectId }),
   getTasks: (projectId: string) => invoke<Task[]>("get_tasks", { projectId }),
-  getInbox: (projectId: string) => invoke<InboxItem[]>("get_inbox", { projectId }),
+  getInbox: (projectId?: string) => invoke<InboxItem[]>("get_inbox", { projectId }),
   getTimeline: (filters: TimelineFilters = {}) =>
     invoke<TimelineEvent[]>("get_timeline", {
       projectId: filters.projectId,
@@ -112,6 +115,12 @@ export const api = {
   spawnReviewerAgent: (projectId: string, roleDescription: string, name: string) =>
     invoke<AgentInstanceRecord>("spawn_reviewer_agent", { projectId, roleDescription, name }),
   archiveAgent: (agentId: string) => invoke<AgentInstanceRecord>("archive_agent", { agentId }),
+  stopAllAgents: () => invoke<StopAllReport>("stop_all_agents"),
+
+  // --- Project Chat -------------------------------------------------
+  askProjectChat: (projectId: string, question: string, focusTaskId: string | null) =>
+    invoke<ProjectChatTurnRecord>("ask_project_chat", { projectId, question, focusTaskId }),
+  getProjectChatHistory: (projectId: string) => invoke<ProjectChatTurn[]>("get_project_chat_history", { projectId }),
 
   // --- Runtime controls -------------------------------------------------
   runtimeStart: () => invoke<void>("runtime_start"),

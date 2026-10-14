@@ -1,29 +1,39 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient, type QueryKey } from "@tanstack/react-query";
 import { api } from "./api";
-import { useViewStore } from "./store";
 import { pushToast } from "./toast";
+
+/**
+ * Active tab synced to the `?tab=` URL query param instead of plain
+ * component state -- revisiting a tabbed page (browser back, a link from
+ * elsewhere) no longer always resets to the first tab, and a specific tab
+ * is now linkable/bookmarkable. Falls back to `defaultTab` for a missing
+ * or invalid value rather than rendering nothing. Tab switches use
+ * `replace: true` so clicking through tabs doesn't pile up back-button
+ * history entries.
+ */
+export function useTabParam<T extends string>(validTabs: readonly T[], defaultTab: T): [T, (tab: T) => void] {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const raw = searchParams.get("tab");
+  const tab = raw && (validTabs as readonly string[]).includes(raw) ? (raw as T) : defaultTab;
+
+  const setTab = (next: T) => {
+    setSearchParams(
+      (prev) => {
+        const updated = new URLSearchParams(prev);
+        updated.set("tab", next);
+        return updated;
+      },
+      { replace: true },
+    );
+  };
+
+  return [tab, setTab];
+}
 
 export function useProjects() {
   return useQuery({ queryKey: ["projects"], queryFn: api.getProjects });
-}
-
-export function useSelectedProject() {
-  const { data: projects } = useProjects();
-  const selectedProjectId = useViewStore((s) => s.selectedProjectId);
-  const setSelectedProjectId = useViewStore((s) => s.setSelectedProjectId);
-
-  useEffect(() => {
-    if (!selectedProjectId && projects && projects.length > 0) {
-      setSelectedProjectId(projects[0].id);
-    }
-  }, [projects, selectedProjectId, setSelectedProjectId]);
-
-  return {
-    projects: projects ?? [],
-    selectedProjectId,
-    setSelectedProjectId,
-  };
 }
 
 export function useElapsedLabel(since: string): string {

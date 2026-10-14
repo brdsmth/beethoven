@@ -261,6 +261,106 @@ fn extract_json_object(text: &str) -> Option<serde_json::Value> {
     serde_json::from_str(&text[start..=end]).ok()
 }
 
+/// One specific, concrete action a Project Chat answer can propose -- a
+/// raw draft straight off the model's response, one variant per existing
+/// single-entity mutating command relevant to "unblocking work". Mirrors
+/// `TaskDraft`/`DecisionDraft`'s role for planning: this crate only knows
+/// the shape a model can produce, never executes anything itself --
+/// `beethoven-core` re-validates every id against real state and owns the
+/// durable `SuggestedAction` these get translated into.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SuggestedActionDraft {
+    RetryTask { task_id: String },
+    CancelTask { task_id: String },
+    ReassignTask { task_id: String, new_agent_id: String },
+    AnswerInbox { inbox_id: String, response: String },
+    ResolveDecision { decision_id: String, response: String },
+    ApproveReview { task_id: String },
+    RequestReviewChanges { task_id: String, reason: String },
+}
+
+/// The shape `parse_chat_response` expects, and the JSON Schema
+/// (`PROJECT_CHAT_RESPONSE_SCHEMA`) asked of the model via
+/// `ModelRuntime::ask`'s `json_schema` to produce it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatModelResponse {
+    pub answer: String,
+    pub suggested_actions: Vec<SuggestedActionDraft>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawChatResponse {
+    #[serde(default)]
+    answer: String,
+    #[serde(default)]
+    suggested_actions: Vec<serde_json::Value>,
+}
+
+/// Turns a model's response to a Project Chat prompt into a
+/// `ChatModelResponse`. Same prefer-`structured_output`/fall-back-to-
+/// `extract_json_object` shape as `PlanningService::parse_model_response`,
+/// but deliberately not shared with it -- that function is hardcoded to
+/// the planner's `ModelPlanResponse`, and generalizing it for one other
+/// caller isn't worth the indirection. Each suggested action is parsed
+/// individually and silently dropped if malformed (wrong/missing fields
+/// for its `kind`) rather than failing the whole answer -- a model
+/// botching one suggestion shouldn't cost the user the answer itself.
+pub fn parse_chat_response(
+    structured: Option<&serde_json::Value>,
+    raw_response: &str,
+) -> Result<ChatModelResponse, AgentsError> {
+    let value = match structured {
+        Some(v) => v.clone(),
+        None => extract_json_object(raw_response).ok_or(AgentsError::NoChatOutput)?,
+    };
+    let parsed: RawChatResponse = serde_json::from_value(value)?;
+    if parsed.answer.trim().is_empty() {
+        return Err(AgentsError::NoChatOutput);
+    }
+    let suggested_actions = parsed
+        .suggested_actions
+        .into_iter()
+        .filter_map(|v| serde_json::from_value::<SuggestedActionDraft>(v).ok())
+        .collect();
+    Ok(ChatModelResponse {
+        answer: parsed.answer,
+        suggested_actions,
+    })
+}
+
+/// Passed as `ModelRuntime::ask`'s `json_schema` for every Project Chat call.
+pub const PROJECT_CHAT_RESPONSE_SCHEMA: &str = r#"{
+  "type": "object",
+  "properties": {
+    "answer": {
+      "type": "string",
+      "description": "Your answer to the question, grounded only in the project state and conversation history given above. Plain prose, not JSON."
+    },
+    "suggested_actions": {
+      "type": "array",
+      "description": "Zero or more specific, concrete actions the human could take right now to unblock work, each referencing a real id seen in the project state above. Leave empty if nothing actionable applies.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["retry_task", "cancel_task", "reassign_task", "answer_inbox", "resolve_decision", "approve_review", "request_review_changes"]
+          },
+          "task_id": { "type": "string", "description": "Required for retry_task, cancel_task, reassign_task, approve_review, request_review_changes." },
+          "new_agent_id": { "type": "string", "description": "Required for reassign_task -- the id of an existing idle agent in this project." },
+          "inbox_id": { "type": "string", "description": "Required for answer_inbox -- the inbox item id, NOT the same id space as decision_id." },
+          "decision_id": { "type": "string", "description": "Required for resolve_decision -- the decision id, NOT the same id space as inbox_id." },
+          "response": { "type": "string", "description": "Required for answer_inbox and resolve_decision -- the free-text response to submit." },
+          "reason": { "type": "string", "description": "Required for request_review_changes -- why changes are needed." }
+        },
+        "required": ["kind"]
+      }
+    }
+  },
+  "required": ["answer", "suggested_actions"]
+}"#;
+
 #[derive(Debug, Clone)]
 pub struct TaskExecutionContext {
     pub task_id: String,
@@ -502,6 +602,57 @@ mod tests {
     fn parse_model_response_errors_when_no_json_is_present_anywhere() {
         let err = PlanningService::parse_model_response(None, "no json here at all").unwrap_err();
         assert!(matches!(err, AgentsError::NoPlannerOutput));
+    }
+
+    #[test]
+    fn parse_chat_response_prefers_structured_output_over_raw_text() {
+        let structured = serde_json::json!({
+            "answer": "Task X is blocked because its dependency hasn't completed yet.",
+            "suggested_actions": [{"kind": "retry_task", "task_id": "t1"}],
+        });
+        let parsed = parse_chat_response(Some(&structured), "ignored raw text").unwrap();
+        assert!(parsed.answer.contains("blocked"));
+        assert_eq!(parsed.suggested_actions.len(), 1);
+        assert!(matches!(
+            &parsed.suggested_actions[0],
+            SuggestedActionDraft::RetryTask { task_id } if task_id == "t1"
+        ));
+    }
+
+    #[test]
+    fn parse_chat_response_falls_back_to_extracting_json_from_raw_text() {
+        let raw = "Sure, here you go:\n{\"answer\": \"a\", \"suggested_actions\": []}\nLet me know if you need more.";
+        let parsed = parse_chat_response(None, raw).unwrap();
+        assert_eq!(parsed.answer, "a");
+        assert!(parsed.suggested_actions.is_empty());
+    }
+
+    #[test]
+    fn parse_chat_response_drops_a_malformed_suggested_action_instead_of_failing_the_whole_answer() {
+        let structured = serde_json::json!({
+            "answer": "a",
+            "suggested_actions": [
+                {"kind": "retry_task", "task_id": "t1"},
+                {"kind": "reassign_task", "task_id": "t2"},
+            ],
+        });
+        let parsed = parse_chat_response(Some(&structured), "").unwrap();
+        assert_eq!(parsed.answer, "a");
+        assert_eq!(parsed.suggested_actions.len(), 1, "the malformed reassign_task (missing new_agent_id) is dropped");
+        assert!(matches!(&parsed.suggested_actions[0], SuggestedActionDraft::RetryTask { .. }));
+    }
+
+    #[test]
+    fn parse_chat_response_errors_on_an_empty_answer() {
+        let structured = serde_json::json!({"answer": "", "suggested_actions": []});
+        let err = parse_chat_response(Some(&structured), "").unwrap_err();
+        assert!(matches!(err, AgentsError::NoChatOutput));
+    }
+
+    #[test]
+    fn parse_chat_response_errors_when_no_json_is_present_anywhere() {
+        let err = parse_chat_response(None, "no json here at all").unwrap_err();
+        assert!(matches!(err, AgentsError::NoChatOutput));
     }
 
     #[test]

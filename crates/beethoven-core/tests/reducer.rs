@@ -387,6 +387,53 @@ fn task_cancelled_frees_its_agent() {
 }
 
 #[test]
+fn task_interrupted_returns_task_to_ready_with_no_attempt_bump() {
+    let mut events = setup_events();
+    events.push(Event::for_project(
+        "p1",
+        EventType::TaskInterrupted,
+        "human",
+        json!({"task_id": "t1", "agent_id": "a1"}),
+    ));
+
+    let state = RuntimeState::replay(&events);
+
+    assert_eq!(state.tasks["t1"].status, TaskStatus::Ready);
+    assert_eq!(state.tasks["t1"].assigned_agent_id, None);
+    // Unlike TaskRecovered (a crash), an operator-initiated stop is not a
+    // failed attempt, so it never consumes one.
+    assert_eq!(state.tasks["t1"].attempt, 1);
+    assert_eq!(state.agent_instances["a1"].status, AgentStatus::Idle);
+    assert_eq!(state.agent_instances["a1"].current_task_id, None);
+}
+
+#[test]
+fn project_chat_turn_recorded_appends_a_turn_with_its_suggested_actions() {
+    let mut events = setup_events();
+    events.push(Event::for_project(
+        "p1",
+        EventType::ProjectChatTurnRecorded,
+        "system",
+        json!({
+            "id": "turn1",
+            "question": "What's blocking t1?",
+            "answer": "t1 is waiting on a decision.",
+            "focus_task_id": "t1",
+            "suggested_actions": [{"kind": "retry_task", "task_id": "t1"}],
+        }),
+    ));
+
+    let state = RuntimeState::replay(&events);
+
+    let turn = &state.chat_turns["turn1"];
+    assert_eq!(turn.project_id, "p1");
+    assert_eq!(turn.question, "What's blocking t1?");
+    assert_eq!(turn.answer, "t1 is waiting on a decision.");
+    assert_eq!(turn.focus_task_id, Some("t1".to_string()));
+    assert_eq!(turn.suggested_actions.len(), 1);
+}
+
+#[test]
 fn task_reassigned_moves_ownership_to_the_new_agent() {
     let mut events = setup_events();
     events.push(Event::for_project(

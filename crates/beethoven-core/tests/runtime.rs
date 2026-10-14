@@ -3,8 +3,8 @@ use beethoven_agents::{
     AgentsError, ExecutionRequest, ExecutionResult, ExecutionStatus, ModelRuntime, RuntimeProfile, RuntimeRegistry,
 };
 use beethoven_core::{
-    AgentRole, AgentStatus, ArtifactKind, DecisionStatus, InboxKind, InboxStatus, PlanningSummary, ProjectStatus,
-    ReviewStatus, Runtime, RunStatus, TaskStatus,
+    AgentRole, AgentStatus, ArtifactKind, DecisionStatus, InboxKind, InboxStatus, InterruptedSession, PlanningSummary,
+    ProjectStatus, ReviewStatus, Runtime, RunStatus, StopAllOutcome, TaskStatus,
 };
 use beethoven_events::{Event, EventScope, EventStore, EventStoreError, EventType};
 use beethoven_workspaces::{TmuxSession, WorkspaceManager, WorkspaceRequest};
@@ -107,6 +107,10 @@ impl ModelRuntime for StubModelRuntime {
             cost_usd: None,
         })
     }
+
+    fn ask(&self, _prompt: &str, _cwd: &Path, _json_schema: Option<&str>) -> Result<ExecutionResult, AgentsError> {
+        panic!("this test suite never exercises Project Chat's workspace-free model call");
+    }
 }
 
 /// Like `StubModelRuntime`, but records the wall-clock window of every
@@ -138,6 +142,10 @@ impl ModelRuntime for SlowModelRuntime {
             structured_output: None,
             cost_usd: None,
         })
+    }
+
+    fn ask(&self, _prompt: &str, _cwd: &Path, _json_schema: Option<&str>) -> Result<ExecutionResult, AgentsError> {
+        panic!("this test suite never exercises Project Chat's workspace-free model call");
     }
 }
 
@@ -175,6 +183,10 @@ impl ModelRuntime for GitClobberingModelRuntime {
             cost_usd: None,
         })
     }
+
+    fn ask(&self, _prompt: &str, _cwd: &Path, _json_schema: Option<&str>) -> Result<ExecutionResult, AgentsError> {
+        panic!("this test suite never exercises Project Chat's workspace-free model call");
+    }
 }
 
 /// Completes every task without ever touching the worktree, so the captured
@@ -198,6 +210,10 @@ impl ModelRuntime for NoOpModelRuntime {
             structured_output: None,
             cost_usd: None,
         })
+    }
+
+    fn ask(&self, _prompt: &str, _cwd: &Path, _json_schema: Option<&str>) -> Result<ExecutionResult, AgentsError> {
+        panic!("this test suite never exercises Project Chat's workspace-free model call");
     }
 }
 
@@ -718,6 +734,127 @@ async fn recover_resets_a_task_crashed_mid_execution_and_cleans_up_its_workspace
     let report = runtime.run_tick(&project.id).await.unwrap();
     assert_eq!(report.completed, 1);
     assert_eq!(runtime.state.tasks[&task.id].status, TaskStatus::Done);
+}
+
+/// Stop All's call graph minus the real OS-level kill: a lock-free
+/// `plan_stop_all` scan finds exactly the in-flight task/agent, and
+/// `record_stop_all` resets it to `Ready`/`Idle` with no attempt bump and
+/// emits `TaskInterrupted` plus an orphan-sweep audit event.
+///
+/// Deliberately does NOT call the real `stop_all_sessions`: its orphan
+/// sweep kills *every* real `beethoven_*` tmux session on the ambient tmux
+/// server, not just ones a test created, with no way to scope it to this
+/// test alone (`TmuxSession` always talks to the default tmux server, no
+/// socket/namespace override). Under `cargo test`'s default parallelism
+/// that collides with other tests' own real sessions, and on a developer
+/// machine it can just as easily kill a real session belonging to a live
+/// `tauri dev` instance -- which is exactly what an earlier version of this
+/// test did. `stop_all_sessions`'s real tmux interaction is covered by the
+/// plan's manual QA step instead, plus the narrow, self-contained
+/// create/kill coverage in `beethoven-workspaces`'s `tmux.rs` unit tests.
+#[tokio::test]
+async fn plan_stop_all_targets_the_live_task_and_record_stop_all_resets_it_to_ready() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+    let projects_root = dir.path().join("projects");
+    let repo = dir.path().join("repo");
+    init_repo(&repo);
+
+    let mut runtime = Runtime::load(Arc::new(store.clone()), projects_root.clone(), registry_with(StubModelRuntime))
+        .await
+        .unwrap();
+    let project = runtime.create_project("Sample", repo.clone(), "main").await.unwrap();
+    let root = runtime.create_task(&project.id, None, "Docs", "- Write the changelog", "", None, false).await.unwrap();
+    let outcome = runtime.plan_task(&root.id).await.unwrap();
+    let task = outcome.tasks[0].clone();
+
+    let agent = spawn_worker(&mut runtime, &project.id, "Worker").await;
+
+    // Hand-roll the same in-flight sequence the original version of this
+    // test stood a real workspace/tmux session up for: just the events, no
+    // real OS session, since neither `plan_stop_all` nor `record_stop_all`
+    // touch tmux themselves -- only `stop_all_sessions` does.
+    store
+        .append(Event::for_project(
+            &project.id,
+            EventType::TaskAssigned,
+            &agent.id,
+            serde_json::json!({"task_id": task.id, "agent_id": agent.id}),
+        ))
+        .await
+        .unwrap();
+    store
+        .append(Event::for_project(
+            &project.id,
+            EventType::TaskStarted,
+            &agent.id,
+            serde_json::json!({"task_id": task.id}),
+        ))
+        .await
+        .unwrap();
+
+    runtime.refresh().await.unwrap();
+    assert_eq!(runtime.state.tasks[&task.id].status, TaskStatus::InProgress);
+
+    // plan_stop_all is `&self`-only -- no lock required beyond reading state.
+    let targets = runtime.state.plan_stop_all();
+    assert_eq!(targets.targets.len(), 1);
+    assert_eq!(targets.targets[0].task_id, task.id);
+    assert_eq!(targets.targets[0].agent_id, agent.id);
+    assert_eq!(targets.targets[0].project_id, project.id);
+
+    // Stand in for what `stop_all_sessions` would have returned had it
+    // really killed this target's session plus one true crash orphan --
+    // built by hand so this test never touches a real tmux session.
+    let stop_outcome = StopAllOutcome {
+        interrupted: vec![InterruptedSession {
+            project_id: project.id.clone(),
+            task_id: task.id.clone(),
+            agent_id: agent.id.clone(),
+            tmux_session: format!("beethoven_{}_worker_{}", project.slug, &task.id[..8]),
+        }],
+        orphans_swept: vec!["beethoven_test_orphan_deadbeef".to_string()],
+        errors: vec![],
+    };
+
+    runtime.record_stop_all(&stop_outcome).await.unwrap();
+    runtime.refresh().await.unwrap();
+
+    let reset_task = &runtime.state.tasks[&task.id];
+    assert_eq!(reset_task.status, TaskStatus::Ready);
+    assert_eq!(reset_task.assigned_agent_id, None);
+    assert_eq!(reset_task.attempt, 1, "operator-initiated stop, not a crash -- no attempt bump");
+    let reset_agent = &runtime.state.agent_instances[&agent.id];
+    assert_eq!(reset_agent.status, AgentStatus::Idle);
+    assert_eq!(reset_agent.current_task_id, None);
+
+    let events = runtime.list_events().await.unwrap();
+    assert!(events.iter().any(|e| e.event_type == EventType::TaskInterrupted));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.payload.get("note").and_then(|v| v.as_str()) == Some("orphan_sweep")),
+        "the orphan sweep is still visible in the timeline even with no resolvable task/project"
+    );
+}
+
+/// `plan_stop_all` must scope to exactly the same `Assigned|InProgress|Review`
+/// statuses `recover()` uses -- a `Ready` task with no agent attached is not
+/// a live session and must never be targeted.
+#[tokio::test]
+async fn plan_stop_all_only_targets_tasks_with_a_live_assignment() {
+    let store = InMemoryStore::default();
+    let dir = tempfile::tempdir().unwrap();
+    let mut runtime = Runtime::load(Arc::new(store), dir.path().join("projects"), registry_with(StubModelRuntime))
+        .await
+        .unwrap();
+
+    init_repo(&dir.path().join("repo"));
+    let project = runtime.create_project("Sample", dir.path().join("repo"), "main").await.unwrap();
+    runtime.create_task(&project.id, None, "Untouched", "", "", None, false).await.unwrap();
+
+    let targets = runtime.state.plan_stop_all();
+    assert!(targets.targets.is_empty(), "a plain Ready task with no agent must never be a stop-all target");
 }
 
 #[tokio::test]
@@ -1585,6 +1722,10 @@ impl ModelRuntime for CriteriaModelRuntime {
             structured_output: Some(structured),
             cost_usd: None,
         })
+    }
+
+    fn ask(&self, _prompt: &str, _cwd: &Path, _json_schema: Option<&str>) -> Result<ExecutionResult, AgentsError> {
+        panic!("this test suite never exercises Project Chat's workspace-free model call");
     }
 }
 

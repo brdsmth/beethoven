@@ -1,30 +1,23 @@
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
-import { useViewStore, type AppMode } from "../lib/store";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "../lib/api";
 import { Toaster } from "./Toaster";
 
-// Work, dependencies, progress, decisions -- not agents. Agents/Agent
-// Health/Timeline used to be top-level nav; they're now Runtime -> Workers
-// and Runtime -> Logs, reachable but no longer primary.
-const CEO_NAV = [
-  { to: "/", label: "Mission Control" },
+/// Flat, no mode toggle -- most of what used to live behind a CEO/Operator
+/// split (Tasks, Workspaces, Diffs, Prompts, Runtime's Workers/Logs) turned
+/// out to be "pick a project, then view something already duplicated
+/// inside Project Detail's tabs." Artifacts is deliberately not a nav item
+/// here -- it's a secondary, linked-to view (from Home), not a primary one.
+const NAV = [
+  { to: "/", label: "Home" },
   { to: "/projects", label: "Projects" },
-  { to: "/tasks", label: "Tasks" },
   { to: "/inbox", label: "Inbox" },
-  { to: "/decisions", label: "Decisions" },
-];
-
-const OPERATOR_NAV = [
-  { to: "/runtime", label: "Runtime" },
-  { to: "/workspaces", label: "Workspaces" },
-  { to: "/diffs", label: "Diffs" },
-  { to: "/prompts", label: "Prompts" },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const mode = useViewStore((s) => s.mode);
-  const setMode = useViewStore((s) => s.setMode);
-  const navItems = mode === "ceo" ? CEO_NAV : OPERATOR_NAV;
+  const { data: inbox } = useQuery({ queryKey: ["inbox"], queryFn: () => api.getInbox() });
+  const openInboxCount = (inbox ?? []).filter((i) => i.status === "open").length;
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-100">
@@ -38,23 +31,24 @@ export function AppShell({ children }: { children: ReactNode }) {
           Beethoven
         </div>
 
-        <ModeToggle mode={mode} onChange={setMode} />
-
-        <ul className="mt-3 flex flex-col gap-1">
-          {navItems.map((item) => (
+        <ul className="flex flex-col gap-1">
+          {NAV.map((item) => (
             <li key={item.to}>
               <NavLink
                 to={item.to}
                 end={item.to === "/"}
                 className={({ isActive }) =>
-                  `block rounded-md px-3 py-2 text-sm transition-colors ${
+                  `flex items-center justify-between rounded-md px-3 py-2 text-sm transition-colors ${
                     isActive
                       ? "bg-indigo-500/20 text-indigo-300"
                       : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
                   }`
                 }
               >
-                {item.label}
+                <span>{item.label}</span>
+                {item.to === "/inbox" && openInboxCount > 0 && (
+                  <span className="text-xs text-amber-400">{openInboxCount}</span>
+                )}
               </NavLink>
             </li>
           ))}
@@ -80,29 +74,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className="flex-1 overflow-y-auto px-6 pb-6">{children}</div>
       </main>
       <Toaster />
-    </div>
-  );
-}
-
-function ModeToggle({ mode, onChange }: { mode: AppMode; onChange: (mode: AppMode) => void }) {
-  return (
-    <div className="grid grid-cols-2 gap-1 rounded-md border border-slate-800 bg-slate-950/60 p-1 text-xs">
-      <button
-        onClick={() => onChange("ceo")}
-        className={`rounded px-2 py-1 transition-colors ${
-          mode === "ceo" ? "bg-indigo-500/20 text-indigo-300" : "text-slate-500 hover:text-slate-300"
-        }`}
-      >
-        CEO
-      </button>
-      <button
-        onClick={() => onChange("operator")}
-        className={`rounded px-2 py-1 transition-colors ${
-          mode === "operator" ? "bg-indigo-500/20 text-indigo-300" : "text-slate-500 hover:text-slate-300"
-        }`}
-      >
-        Operator
-      </button>
     </div>
   );
 }

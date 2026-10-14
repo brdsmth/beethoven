@@ -3,6 +3,7 @@ use crate::models::*;
 use crate::planning_summary::{
     PlanQualityMetrics, PlannedDecisionExplanation, PlannedTaskExplanation, PlanningSummary, ScoreBandCount,
 };
+use crate::project_chat::{ProjectChatTurn, SuggestedAction};
 use crate::state::RuntimeState;
 use beethoven_agents::{
     AgentRole, AgentsError, DelegationAgent, DelegationAgentStatus, DelegationDecision, DelegationService,
@@ -12,7 +13,7 @@ use beethoven_agents::{
     PLANNER_RESPONSE_SCHEMA,
 };
 use beethoven_events::{Event, EventStore, EventType};
-use beethoven_workspaces::{tmux_session_name, WorkspaceManager, WorkspaceRequest, WorkspaceState};
+use beethoven_workspaces::{tmux_session_name, TmuxSession, WorkspaceManager, WorkspaceRequest, WorkspaceState};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -55,6 +56,161 @@ impl std::ops::AddAssign for TickReport {
 pub struct RecoveryReport {
     pub recovered: Vec<String>,
     pub escalated: Vec<String>,
+}
+
+/// One task+agent `plan_stop_all` found possibly still running (the same
+/// `Assigned|InProgress|Review` scope `recover()` treats as "may have a live
+/// workspace"), flattened to plain data rather than borrowed `Project`/`Task`
+/// references so it can outlive the `RuntimeState` snapshot it was computed
+/// from and cross into `stop_all_sessions`, which does real (lock-free) I/O.
+#[derive(Debug, Clone)]
+pub struct StopAllTarget {
+    pub project_id: String,
+    pub project_slug: String,
+    pub repository_path: String,
+    pub task_id: String,
+    pub agent_id: String,
+    pub agent_role: AgentRole,
+    pub branch: String,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct StopAllTargets {
+    pub targets: Vec<StopAllTarget>,
+}
+
+/// A target whose session was actually torn down, carrying just enough to
+/// record bookkeeping events for it afterward.
+#[derive(Debug, Clone)]
+pub struct InterruptedSession {
+    pub project_id: String,
+    pub task_id: String,
+    pub agent_id: String,
+    pub tmux_session: String,
+}
+
+/// Result of [`stop_all_sessions`]: every tracked target's session torn
+/// down, plus any stray `beethoven_*` tmux session swept up that wasn't tied
+/// to a tracked target (a true crash orphan). `errors` is best-effort
+/// diagnostics, not a failure signal -- a single bad target/session never
+/// stops the rest from being attempted.
+#[derive(Debug, Default, Clone)]
+pub struct StopAllOutcome {
+    pub interrupted: Vec<InterruptedSession>,
+    pub orphans_swept: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+/// Deterministically rebuilds the `WorkspaceState` a task/agent's workspace
+/// would have -- the worktree path, branch, and tmux session name are all
+/// deterministic functions of (project slug, repository path, task id,
+/// branch, agent role), so this works even if the workspace was never
+/// actually created, or has already been destroyed. Shared by
+/// `Runtime::cleanup_orphaned_workspace` (crash recovery) and
+/// `stop_all_sessions` (operator-initiated stop-all) so the reconstruction
+/// logic only lives in one place.
+fn reconstruct_workspace_state(
+    project_slug: &str,
+    repository_path: &str,
+    task_id: &str,
+    branch: &str,
+    agent_role: AgentRole,
+    workspaces: &WorkspaceManager,
+) -> WorkspaceState {
+    let git_worktree = workspaces.path_for(task_id).join("repo").to_string_lossy().into_owned();
+    WorkspaceState {
+        task_id: task_id.to_string(),
+        created_at: chrono::Utc::now(),
+        repository_path: repository_path.to_string(),
+        branch: branch.to_string(),
+        tmux_session: tmux_session_name(project_slug, agent_role.as_str(), task_id),
+        git_worktree,
+        git_link: String::new(),
+    }
+}
+
+impl RuntimeState {
+    /// Pure scan for every task/agent `stop_all_sessions` should kill -- the
+    /// exact same `Assigned|InProgress|Review`-with-an-assigned-agent scope
+    /// `recover()` uses, but `&self`-only with no I/O, so it can run
+    /// directly against a lock-free snapshot (`load_state`'s `RuntimeState`
+    /// in beethoven-tauri) instead of waiting behind `tick_projects`'s mutex
+    /// like every other mutating command does.
+    pub fn plan_stop_all(&self) -> StopAllTargets {
+        let targets = self
+            .tasks
+            .values()
+            .filter(|t| matches!(t.status, TaskStatus::Assigned | TaskStatus::InProgress | TaskStatus::Review))
+            .filter_map(|t| {
+                let agent_id = t.assigned_agent_id.clone()?;
+                let project = self.projects.get(&t.project_id)?;
+                let agent_role = self.agent_instances.get(&agent_id).map(|a| a.role).unwrap_or(AgentRole::Worker);
+                let branch = t.branch.clone().unwrap_or_else(|| beethoven_git::branch_name(&t.title));
+                Some(StopAllTarget {
+                    project_id: project.id.clone(),
+                    project_slug: project.slug.clone(),
+                    repository_path: project.repository_path.to_string_lossy().into_owned(),
+                    task_id: t.id.clone(),
+                    agent_id,
+                    agent_role,
+                    branch,
+                })
+            })
+            .collect();
+        StopAllTargets { targets }
+    }
+}
+
+/// Kills every target's real workspace/tmux session (best-effort -- a
+/// failure on one target is recorded in `errors` and does not stop the
+/// rest), then sweeps any remaining real tmux session whose name starts with
+/// `beethoven_` and wasn't one of the targets just handled: a true crash
+/// orphan with no resolvable task/project. Deliberately lock-free (no
+/// `&Runtime`/`&mut Runtime` anywhere in this call) so it can run
+/// immediately even while `tick_projects` holds the runtime mutex across an
+/// in-flight batch of model calls -- see `stop_all_agents` in
+/// beethoven-tauri for the full call graph.
+pub fn stop_all_sessions(targets: &StopAllTargets, projects_root: &Path) -> StopAllOutcome {
+    let mut interrupted = Vec::new();
+    let mut errors = Vec::new();
+    let mut handled_sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for t in &targets.targets {
+        let workspaces = WorkspaceManager::new(projects_root.join(&t.project_slug).join("workspaces"));
+        let ws_state =
+            reconstruct_workspace_state(&t.project_slug, &t.repository_path, &t.task_id, &t.branch, t.agent_role, &workspaces);
+        if let Err(e) = workspaces.destroy(&ws_state) {
+            errors.push(format!("failed to destroy workspace for task {}: {e}", t.task_id));
+        }
+        handled_sessions.insert(ws_state.tmux_session.clone());
+        interrupted.push(InterruptedSession {
+            project_id: t.project_id.clone(),
+            task_id: t.task_id.clone(),
+            agent_id: t.agent_id.clone(),
+            tmux_session: ws_state.tmux_session,
+        });
+    }
+
+    let mut orphans_swept = Vec::new();
+    match TmuxSession::list_active() {
+        Ok(active) => {
+            for name in active {
+                if name.starts_with("beethoven_") && !handled_sessions.contains(&name) {
+                    match (TmuxSession { name: name.clone() }).kill() {
+                        Ok(()) => orphans_swept.push(name),
+                        Err(e) => errors.push(format!("failed to kill orphaned session {name}: {e}")),
+                    }
+                }
+            }
+        }
+        Err(e) => errors.push(format!("failed to list active tmux sessions: {e}")),
+    }
+
+    StopAllOutcome {
+        interrupted,
+        orphans_swept,
+        errors,
+    }
 }
 
 /// Everything `finish_task` needs to process one task's real model
@@ -413,17 +569,15 @@ impl Runtime {
         let agent_role = self.state.agent_instances.get(agent_id).map(|a| a.role).unwrap_or(AgentRole::Worker);
         let branch = task.branch.clone().unwrap_or_else(|| beethoven_git::branch_name(&task.title));
         let workspaces = self.workspace_manager_for(&project.slug);
-        let git_worktree = workspaces.path_for(task_id).join("repo").to_string_lossy().into_owned();
-
-        let _ = workspaces.destroy(&WorkspaceState {
-            task_id: task_id.to_string(),
-            created_at: chrono::Utc::now(),
-            repository_path: project.repository_path.to_string_lossy().into_owned(),
-            branch,
-            tmux_session: tmux_session_name(&project.slug, agent_role.as_str(), task_id),
-            git_worktree,
-            git_link: String::new(),
-        });
+        let ws_state = reconstruct_workspace_state(
+            &project.slug,
+            &project.repository_path.to_string_lossy(),
+            task_id,
+            &branch,
+            agent_role,
+            &workspaces,
+        );
+        let _ = workspaces.destroy(&ws_state);
     }
 
     /// Tears down a task's workspace/tmux session and records it -- the same
@@ -448,6 +602,82 @@ impl Runtime {
         self.emit_project(project_id, EventType::WorkspaceDestroyed, agent_id, json!({"task_id": task_id}))
             .await?;
         Ok(())
+    }
+
+    /// Records the bookkeeping for a [`StopAllOutcome`] already carried out
+    /// by `stop_all_sessions` -- the sessions are already dead by the time
+    /// this runs; this only emits events. Unlike `recover()`'s
+    /// `TaskRecovered`, this is operator-initiated, not a crash, so it emits
+    /// `TaskInterrupted` (no attempt bump, no `max_attempts` escalation) for
+    /// every tracked target, plus a `TmuxSessionDestroyed` audit event for
+    /// every swept orphan that has no resolvable task/project to attach to.
+    pub async fn record_stop_all(&mut self, outcome: &StopAllOutcome) -> Result<(), CoreError> {
+        for target in &outcome.interrupted {
+            self.emit_project(
+                &target.project_id,
+                EventType::TmuxSessionDestroyed,
+                &target.agent_id,
+                json!({"task_id": target.task_id, "session_name": target.tmux_session}),
+            )
+            .await?;
+            self.emit_project(
+                &target.project_id,
+                EventType::WorkspaceDestroyed,
+                &target.agent_id,
+                json!({"task_id": target.task_id}),
+            )
+            .await?;
+            self.emit_project(
+                &target.project_id,
+                EventType::TaskInterrupted,
+                &target.agent_id,
+                json!({"task_id": target.task_id, "agent_id": target.agent_id}),
+            )
+            .await?;
+        }
+        for session_name in &outcome.orphans_swept {
+            self.emit_global(
+                EventType::TmuxSessionDestroyed,
+                "system",
+                json!({"session_name": session_name, "note": "orphan_sweep"}),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Records one completed Project Chat turn -- the model call already
+    /// happened (lock-free, in the caller); this only emits the event.
+    /// Re-validates `suggested_actions` against `self.state`, which
+    /// `with_runtime` has just refreshed: the caller's own pre-call
+    /// validation ran against a snapshot that can be tens of seconds stale
+    /// by the time a chat call actually finishes, so a suggested action
+    /// could reference a task/decision/inbox item that's since been
+    /// retried, resolved, or cancelled by the time this runs.
+    pub async fn record_project_chat_turn(
+        &mut self,
+        project_id: &str,
+        question: &str,
+        answer: &str,
+        focus_task_id: Option<&str>,
+        suggested_actions: Vec<SuggestedAction>,
+    ) -> Result<ProjectChatTurn, CoreError> {
+        let suggested_actions = crate::project_chat::validate_suggested_actions(&self.state, suggested_actions);
+        let id = Uuid::new_v4().to_string();
+        self.emit_project(
+            project_id,
+            EventType::ProjectChatTurnRecorded,
+            "system",
+            json!({
+                "id": id,
+                "question": question,
+                "answer": answer,
+                "focus_task_id": focus_task_id,
+                "suggested_actions": suggested_actions,
+            }),
+        )
+        .await?;
+        Ok(self.state.chat_turns.get(&id).expect("just inserted").clone())
     }
 
     /// A workspace/git/tmux/io failure while starting a task escalates just
@@ -2540,6 +2770,10 @@ mod tests {
                 });
             }
             panic!("this test drives finish_task directly and should never invoke the model runtime for execution");
+        }
+
+        fn ask(&self, _prompt: &str, _cwd: &std::path::Path, _json_schema: Option<&str>) -> Result<ExecutionResult, AgentsError> {
+            panic!("this test never exercises Project Chat's workspace-free model call");
         }
     }
 

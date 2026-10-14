@@ -2,10 +2,10 @@ use crate::dto::*;
 use beethoven_agents::RuntimeRegistry;
 use beethoven_core::{
     AgentInstance, AgentRole, AgentStatus, AgentTemplate, Artifact, ArtifactKind, Decision, DecisionStatus,
-    InboxItem, InboxStatus, PlanningSummary, Project, RunStatus, RuntimeState, Task, TaskStatus,
+    InboxItem, InboxStatus, PlanningSummary, Project, ProjectChatTurn, RunStatus, RuntimeState, Task, TaskStatus,
 };
 use beethoven_events::{Event, EventType};
-use beethoven_workspaces::{tmux_session_name, WorkspaceManager};
+use beethoven_workspaces::{tmux_session_name, TmuxSession, WorkspaceManager};
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -363,18 +363,31 @@ pub fn agent_health_for(state: &RuntimeState, events: &[Event]) -> Vec<AgentHeal
 
 /// A project's inbox items, oldest-first, joined with the title/name of
 /// whatever they reference (task, agent, decision).
-pub fn inbox_for(state: &RuntimeState, project_id: &str) -> Vec<InboxItemDto> {
-    let mut items: Vec<&InboxItem> = state.inbox.values().filter(|i| i.project_id == project_id).collect();
+/// Every inbox item, optionally scoped to one project -- mirrors
+/// `get_timeline`'s `Option<&str>` project filter. `None` returns every
+/// item across every project, each carrying its `project_slug` so a
+/// cross-project view can show where it came from.
+pub fn inbox_for(state: &RuntimeState, project_id: Option<&str>) -> Vec<InboxItemDto> {
+    let mut items: Vec<&InboxItem> = state
+        .inbox
+        .values()
+        .filter(|i| match project_id {
+            Some(pid) => i.project_id == pid,
+            None => true,
+        })
+        .collect();
     items.sort_by_key(|i| i.created_at);
     items
         .into_iter()
-        .map(|i| {
+        .filter_map(|i| {
+            let project = state.projects.get(&i.project_id)?;
             let task_title = i.task_id.as_ref().and_then(|tid| state.tasks.get(tid)).map(|t| t.title.clone());
             let agent_name = i.agent_id.as_ref().and_then(|aid| state.agent_instances.get(aid)).map(|a| a.name.clone());
             let decision_question = i.decision_id.as_ref().and_then(|did| state.decisions.get(did)).map(|d| d.question.clone());
-            InboxItemDto {
+            Some(InboxItemDto {
                 id: i.id.clone(),
                 project_id: i.project_id.clone(),
+                project_slug: project.slug.clone(),
                 kind: i.kind,
                 status: i.status,
                 prompt: i.prompt.clone(),
@@ -387,7 +400,7 @@ pub fn inbox_for(state: &RuntimeState, project_id: &str) -> Vec<InboxItemDto> {
                 response: i.response.clone(),
                 created_at: i.created_at,
                 resolved_at: i.resolved_at,
-            }
+            })
         })
         .collect()
 }
@@ -461,11 +474,8 @@ pub fn runtime_status(state: &RuntimeState, events: &[Event], home: &Path) -> Ru
     let last_started = events.iter().rev().find(|e| e.event_type == EventType::RuntimeStarted).map(|e| e.timestamp);
     let last_stopped = events.iter().rev().find(|e| e.event_type == EventType::RuntimeStopped).map(|e| e.timestamp);
 
-    let active_agent_count = state
-        .agent_instances
-        .values()
-        .filter(|a| !matches!(a.status, AgentStatus::Idle | AgentStatus::Created | AgentStatus::Completed))
-        .count();
+    let active_agent_count =
+        state.agent_instances.values().filter(|a| matches!(a.status, AgentStatus::Assigned | AgentStatus::Executing)).count();
     let active_task_count = state.tasks.values().filter(|t| t.status == TaskStatus::InProgress).count();
     let open_inbox_count = state.inbox.values().filter(|i| i.status == InboxStatus::Open).count();
 
@@ -487,6 +497,22 @@ pub fn runtime_status(state: &RuntimeState, events: &[Event], home: &Path) -> Ru
         })
         .count();
 
+    // Live reconciliation: diff the sessions the DB *expects* to be running
+    // (same `Assigned|InProgress|Review` scope `stop_all_agents` would kill)
+    // against what `tmux` actually reports, so "agents running" is verified
+    // every time it's polled rather than trusted blindly from event replay.
+    let expected_sessions: HashSet<String> = state
+        .plan_stop_all()
+        .targets
+        .iter()
+        .map(|t| tmux_session_name(&t.project_slug, t.agent_role.as_str(), &t.task_id))
+        .collect();
+    let real_sessions: HashSet<String> = TmuxSession::list_active().unwrap_or_default().into_iter().collect();
+    let verified_agent_count = expected_sessions.intersection(&real_sessions).count();
+    let ghost_session_count = expected_sessions.difference(&real_sessions).count();
+    let orphaned_session_count =
+        real_sessions.iter().filter(|s| s.starts_with("beethoven_") && !expected_sessions.contains(*s)).count();
+
     RuntimeStatusDto {
         daemon_running,
         pid,
@@ -501,6 +527,9 @@ pub fn runtime_status(state: &RuntimeState, events: &[Event], home: &Path) -> Ru
         ready_task_count,
         blocked_task_count,
         failed_task_count,
+        verified_agent_count,
+        ghost_session_count,
+        orphaned_session_count,
     }
 }
 
@@ -876,6 +905,140 @@ pub fn task_detail(state: &RuntimeState, events: &[Event], task_id: &str) -> Opt
     })
 }
 
+fn project_chat_turn_dto(state: &RuntimeState, turn: &ProjectChatTurn) -> ProjectChatTurnDto {
+    let focus_task_title = turn.focus_task_id.as_ref().and_then(|id| state.tasks.get(id)).map(|t| t.title.clone());
+    ProjectChatTurnDto {
+        id: turn.id.clone(),
+        project_id: turn.project_id.clone(),
+        question: turn.question.clone(),
+        answer: turn.answer.clone(),
+        focus_task_id: turn.focus_task_id.clone(),
+        focus_task_title,
+        suggested_actions: turn.suggested_actions.clone(),
+        created_at: turn.created_at,
+    }
+}
+
+/// A project's Project Chat turns, oldest first.
+pub fn project_chat_history(state: &RuntimeState, project_id: &str) -> Vec<ProjectChatTurnDto> {
+    let mut turns: Vec<&ProjectChatTurn> = state.chat_turns.values().filter(|t| t.project_id == project_id).collect();
+    turns.sort_by_key(|t| t.created_at);
+    turns.into_iter().map(|t| project_chat_turn_dto(state, t)).collect()
+}
+
+fn truncate_for_prompt(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_chars).collect();
+        format!("{truncated}... [truncated]")
+    }
+}
+
+fn write_task_tree_line(state: &RuntimeState, t: &Task, depth: usize, out: &mut String) {
+    let indent = "  ".repeat(depth);
+    let assignee = t
+        .assigned_agent_id
+        .as_ref()
+        .and_then(|id| state.agent_instances.get(id))
+        .map(|a| a.name.as_str())
+        .unwrap_or("unassigned");
+    out.push_str(&format!("{indent}- [{:?}] {} (id: {}, assigned: {})\n", t.status, t.title, t.id, assignee));
+    if let Some(reason) = &t.blocked_reason {
+        out.push_str(&format!("{indent}  blocked_reason: {reason}\n"));
+    }
+    let mut children: Vec<&Task> =
+        state.tasks.values().filter(|c| c.parent_task_id.as_deref() == Some(t.id.as_str())).collect();
+    children.sort_by_key(|c| c.created_at);
+    for c in children {
+        write_task_tree_line(state, c, depth + 1, out);
+    }
+}
+
+/// Renders one task's full Run history (attempt, status, summary, model
+/// response -- truncated to keep prompt size bounded), not just its
+/// status. Used only for the focus task and its siblings: this is what
+/// actually lets the chat agent answer "what did the other two sessions in
+/// this graph already do," not just "what state are they in."
+fn write_task_run_history(state: &RuntimeState, events: &[Event], t: &Task, out: &mut String) {
+    out.push_str(&format!("\n**Task \"{}\" (id: {}, status: {:?})**\n", t.title, t.id, t.status));
+    let Some(detail) = task_detail(state, events, &t.id) else {
+        return;
+    };
+    if detail.runs.is_empty() {
+        out.push_str("(no runs yet)\n");
+        return;
+    }
+    for run in &detail.runs {
+        out.push_str(&format!("- Attempt {} ({:?})\n", run.attempt, run.status));
+        if let Some(summary) = &run.summary {
+            out.push_str(&format!("  Summary: {}\n", truncate_for_prompt(summary, 1000)));
+        }
+        if let Some(response) = &run.response {
+            out.push_str(&format!("  Response: {}\n", truncate_for_prompt(response, 1500)));
+        }
+    }
+}
+
+/// The "current project state" half of a Project Chat prompt: the full
+/// task tree (compact -- status/blocked_reason/assignment, even across
+/// hundreds of tasks) plus every decision, and when `focus_task_id` is
+/// given, the focus task's and its siblings' full Run history too. This is
+/// the direct fix for "three Claude sessions in one graph that don't know
+/// about each other": the chat agent gets to read what each sibling
+/// actually did, not just its status.
+pub fn project_chat_context(
+    state: &RuntimeState,
+    events: &[Event],
+    project_id: &str,
+    focus_task_id: Option<&str>,
+) -> Result<String, String> {
+    let project = state.projects.get(project_id).ok_or_else(|| format!("project not found: {project_id}"))?;
+
+    let mut out = String::new();
+    out.push_str(&format!("# Project: {} ({})\n\n", project.name, project.slug));
+
+    out.push_str("## Task tree\n\n");
+    let mut roots: Vec<&Task> =
+        state.tasks.values().filter(|t| t.project_id == project_id && t.parent_task_id.is_none()).collect();
+    roots.sort_by_key(|t| t.created_at);
+    for root in roots {
+        write_task_tree_line(state, root, 0, &mut out);
+    }
+
+    let mut decisions: Vec<&Decision> = state.decisions.values().filter(|d| d.project_id == project_id).collect();
+    decisions.sort_by_key(|d| d.created_at);
+    if !decisions.is_empty() {
+        out.push_str("\n## Decisions\n\n");
+        for d in decisions {
+            out.push_str(&format!("- [{:?}] {} (id: {})\n  Context: {}\n", d.status, d.question, d.id, d.context));
+            if let Some(answer) = &d.answer {
+                out.push_str(&format!("  Answer: {answer}\n"));
+            }
+        }
+    }
+
+    if let Some(focus_id) = focus_task_id {
+        let focus_task = state.tasks.get(focus_id).ok_or_else(|| format!("task not found: {focus_id}"))?;
+        out.push_str(&format!("\n## Focus task: \"{}\" (id: {})\n", focus_task.title, focus_task.id));
+
+        let mut siblings: Vec<&Task> = state
+            .tasks
+            .values()
+            .filter(|t| t.parent_task_id == focus_task.parent_task_id && t.id != focus_task.id)
+            .collect();
+        siblings.sort_by_key(|t| t.created_at);
+
+        out.push_str("\n### Focus task and its siblings -- full run history\n");
+        write_task_run_history(state, events, focus_task, &mut out);
+        for sibling in siblings {
+            write_task_run_history(state, events, sibling, &mut out);
+        }
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1087,12 +1250,22 @@ mod tests {
     #[test]
     fn inbox_for_resolves_task_and_decision_titles() {
         let (state, _events) = fixture();
-        let items = inbox_for(&state, "p1");
+        let items = inbox_for(&state, Some("p1"));
         assert_eq!(items.len(), 2);
         let question = items.iter().find(|i| i.id == "inbox1").unwrap();
         assert_eq!(question.task_title, Some("Implement login form".to_string()));
+        assert_eq!(question.project_slug, "punch");
         let decision_item = items.iter().find(|i| i.id == "inbox2").unwrap();
         assert_eq!(decision_item.decision_question, Some("Pick an email provider".to_string()));
+    }
+
+    #[test]
+    fn inbox_for_returns_every_project_when_no_project_id_is_given() {
+        let (state, _events) = fixture();
+        let all_items = inbox_for(&state, None);
+        let scoped_items = inbox_for(&state, Some("p1"));
+        assert_eq!(all_items.len(), scoped_items.len(), "fixture only has one project, so both should match");
+        assert!(all_items.iter().all(|i| i.project_slug == "punch"));
     }
 
     #[test]

@@ -87,7 +87,7 @@ export function NewProjectDialog({
               )
             }
             disabled={!canSubmit || create.isPending}
-            className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-md border border-amber-700/50 px-3 py-1.5 text-xs font-medium text-amber-300 hover:bg-amber-950/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {create.isPending ? "Creating…" : "Create Project"}
           </button>
