@@ -36,13 +36,19 @@ func Open(path string, secretKey []byte) (*Store, error) {
 	if len(secretKey) != 32 {
 		return nil, errors.New("store: secret key must be 32 bytes")
 	}
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
+	dsn := "file:" + path + "?_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
 	w, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
 	w.SetMaxOpenConns(1)
 	if err := migrate(w); err != nil {
+		w.Close()
+		return nil, fmt.Errorf("store: %s: %w", path, err)
+	}
+	// WAL mode persists in the file, so it is set once, and only after
+	// migrate has made sure the file is ours.
+	if _, err := w.Exec(`PRAGMA journal_mode = WAL`); err != nil {
 		w.Close()
 		return nil, err
 	}
@@ -58,7 +64,8 @@ func Open(path string, secretKey []byte) (*Store, error) {
 func (s *Store) Close() error { return errors.Join(s.r.Close(), s.w.Close()) }
 
 // migrate applies migrations/NNN_*.sql in order, tracking progress in
-// PRAGMA user_version so each runs once.
+// PRAGMA user_version so each runs once. A database with tables but no
+// version was created by something else, and is refused untouched.
 func migrate(db *sql.DB) error {
 	names, err := fs.Glob(migrations, "migrations/*.sql")
 	if err != nil {
@@ -68,6 +75,15 @@ func migrate(db *sql.DB) error {
 	var version int
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
+	}
+	if version == 0 {
+		var tables int
+		if err := db.QueryRow(`SELECT count(*) FROM sqlite_master`).Scan(&tables); err != nil {
+			return err
+		}
+		if tables > 0 {
+			return errors.New("not a beethoven database; move it aside or use another data directory")
+		}
 	}
 	for i, name := range names {
 		if i < version {
@@ -80,7 +96,7 @@ func migrate(db *sql.DB) error {
 		}
 		if _, err := tx.Exec(string(body)); err != nil {
 			tx.Rollback()
-			return fmt.Errorf("store: migration %s: %w", name, err)
+			return fmt.Errorf("migration %s: %w", name, err)
 		}
 		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, i+1)); err != nil {
 			tx.Rollback()
