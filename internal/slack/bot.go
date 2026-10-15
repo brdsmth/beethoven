@@ -32,9 +32,9 @@ import (
 // the thread (any reply, in a direct message) are follow-up prompts, with
 // what was said in between as context. Files shared with a request, or in
 // the thread since the bot was last asked there, are attached to its
-// prompt. A request works on the
-// repositories or environment it names, else on the channel's default,
-// else the bot asks, offering to remember the answer for the channel.
+// prompt. A request works on the repositories or environment it names,
+// else on the channel's default, else the bot asks, offering to remember
+// the answer for the channel.
 // Only full members of the workspace can start sessions.
 type Bot struct {
 	Slack *Client
