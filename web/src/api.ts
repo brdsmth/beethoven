@@ -46,6 +46,31 @@ export type MCPServer = {
   id: string; name: string; scope: string; type: 'http' | 'stdio'; url?: string; command?: string[];
   secret_keys: string[]; enabled: boolean; created_at: string; updated_at: string;
 };
+/** A pull request a session opened, as last seen on GitHub. */
+export type PullRequest = {
+  repo: string; number: number; session_id: string; url: string; state: 'open' | 'merged' | 'closed'; draft: boolean;
+  opened_at: string; merged_at?: string; closed_at?: string; synced_at: string;
+};
+export type Count = { label: string; n: number };
+export type InsightDay = {
+  date: string; sessions: number; first_try: number; more_cycles: number; unsuccessful: number; merged: number; spend: number;
+};
+export type InsightGroup = {
+  name: string; sessions: number; settled: number; first_try_rate: number; cycles: number; merged: number; spend: number;
+};
+/** GET /api/insights: how the sessions of a window went. */
+export type Insights = {
+  from: string; to: string;
+  sessions: number; settled: number; cycles: number; cycle_counts: Count[]; first_try_rate: number; success_rate: number;
+  prompts: number; failed: number; stopped: number; failures: Count[]; agent_seconds: number;
+  pull_requests: {
+    opened: number; merged: number; closed: number; open: number; acceptance_rate: number | null;
+    median_to_open_secs: number; median_to_merge_secs: number; cost_per_merged: number; sessions_with_merged: number;
+  };
+  automations: { runs: number; succeeded: number; failed: number; spend: number };
+  spend: number;
+  days: InsightDay[]; by_source: InsightGroup[]; by_person: InsightGroup[]; by_repo: InsightGroup[];
+};
 export type GitHubRepo = { repo: string; description?: string; private: boolean; default_branch: string };
 export type SlackStatus = {
   /** The Slack app the server acts as: preconfigured (environment) or created here (settings). */
