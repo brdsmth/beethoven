@@ -30,7 +30,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		replyErr(w, err)
 		return
 	}
-	cfg := s.M.Config()
+	cfg, author := s.M.Config(), s.M.DefaultAuthor(r.Context())
 	reply(w, http.StatusOK, map[string]any{
 		"settings": settings,
 		// What applies where a setting is left empty.
@@ -39,8 +39,8 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 			"idle_minutes":  int(cfg.IdleTimeout / time.Minute),
 			"turn_minutes":  int(cfg.TurnTimeout / time.Minute),
 			"branch_prefix": "beethoven/",
-			"author_name":   cfg.Author.Name,
-			"author_email":  cfg.Author.Email,
+			"author_name":   author.Name,
+			"author_email":  author.Email,
 		},
 		"efforts": session.Efforts,
 	})
@@ -105,7 +105,7 @@ func (s *Server) getCredentials(w http.ResponseWriter, r *http.Request) {
 	for _, k := range credentialNames {
 		stored[k] = creds[k] != ""
 	}
-	gh := map[string]any{"source": s.GitHub.Source(r.Context())}
+	gh := map[string]any{"source": s.GitHub.TokenSource(r.Context())}
 	if r.URL.Query().Get("check") == "1" && gh["source"] != "" {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
@@ -447,9 +447,9 @@ func (s *Server) deleteMCP(w http.ResponseWriter, r *http.Request) {
 
 // ------------------------------------------------------------- repositories
 
-// listRepos lists GitHub repositories the token can push to, for pickers.
+// listRepos lists GitHub repositories the server can work on, for pickers.
 func (s *Server) listRepos(w http.ResponseWriter, r *http.Request) {
-	if tok, _ := s.GitHub.Token(r.Context()); tok == "" {
+	if s.GitHub.Mode(r.Context()) == "" {
 		reply(w, http.StatusOK, []any{})
 		return
 	}

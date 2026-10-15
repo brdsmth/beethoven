@@ -343,15 +343,16 @@ func (r *runner) boot(ctx context.Context, id string, s store.Session, eff Effec
 	}
 	env["WORK_BRANCH"], env["WORKDIR"] = s.Branch, Workdir(s)
 	if len(s.Repos) > 0 {
-		tok, err := r.m.scm.Token(ctx)
-		if err != nil {
-			return err
-		}
-		var lines []string
+		var lines, tokens []string
 		for _, ref := range s.Repos {
+			tok, err := r.m.scm.Token(ctx, ref.Repo)
+			if err != nil {
+				return err
+			}
 			lines = append(lines, ref.Dir()+" "+r.m.scm.CloneURL(ref.Repo)+" "+firstOf(ref.BaseBranch, "-"))
+			tokens = append(tokens, ref.Dir()+" "+tok)
 		}
-		env["REPOS"], env["GH_TOKEN"] = strings.Join(lines, "\n"), tok
+		env["REPOS"], env["GH_TOKENS"] = strings.Join(lines, "\n"), strings.Join(tokens, "\n")
 	}
 	if e := eff.Environment; e != nil {
 		env["ENV_SETUP"], env["ENV_SETUP_ID"], env["ENV_START"] = e.SetupScript, shortHash(e.SetupScript), e.StartScript
@@ -462,12 +463,12 @@ func (r *runner) openPR(ctx context.Context, repo, title, body string, draft *bo
 	if draft == nil {
 		draft = &eff.DraftPRs
 	}
-	token, err := r.m.scm.Token(ctx)
+	token, err := r.m.scm.Token(ctx, ref.Repo)
 	if err != nil {
 		return "", err
 	}
 	if token == "" {
-		return "", errors.New("no GitHub token is configured on the server")
+		return "", fmt.Errorf("no GitHub credential can push to %s: connect GitHub in Settings", ref.Repo)
 	}
 	id, release, err := r.acquire(ctx)
 	if err != nil {

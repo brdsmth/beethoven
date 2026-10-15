@@ -12,6 +12,7 @@ import (
 
 	"github.com/brdsmth/beethoven/internal/sandbox"
 	"github.com/brdsmth/beethoven/internal/session"
+	"github.com/brdsmth/beethoven/internal/store"
 )
 
 // Provider is an in-memory sandbox.Provider whose agent behaves like Claude
@@ -165,14 +166,16 @@ func argAfter(args []string, flag string) string {
 
 // SCM is an in-memory git host.
 type SCM struct {
-	mu  sync.Mutex
-	PRs []session.PullRequest
-	Err error
+	mu       sync.Mutex
+	PRs      []session.PullRequest
+	Err      error
+	Identity store.Author // whom the host acts for
 }
 
 func (s *SCM) CloneURL(repo string) string                           { return "file:///remote/" + repo + ".git" }
-func (s *SCM) Token(context.Context) (string, error)                 { return "test-token", nil }
+func (s *SCM) Token(context.Context, string) (string, error)         { return "test-token", nil }
 func (s *SCM) DefaultBranch(context.Context, string) (string, error) { return "main", nil }
+func (s *SCM) Author(context.Context) store.Author                   { return s.Identity }
 
 func (s *SCM) OpenPR(_ context.Context, pr session.PullRequest) (string, error) {
 	s.mu.Lock()

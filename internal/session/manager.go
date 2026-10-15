@@ -38,9 +38,10 @@ var (
 // are opened.
 type SCM interface {
 	CloneURL(repo string) string
-	Token(ctx context.Context) (string, error) // credential for clone and push; "" if none
+	Token(ctx context.Context, repo string) (string, error) // credential to clone and push repo; "" if none
 	DefaultBranch(ctx context.Context, repo string) (string, error)
 	OpenPR(ctx context.Context, pr PullRequest) (url string, err error)
+	Author(ctx context.Context) store.Author // the identity of the person the host acts for; zero if unknown
 }
 
 type PullRequest struct {

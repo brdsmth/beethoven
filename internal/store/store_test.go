@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -195,5 +196,54 @@ func TestAdvanceScheduleFiresOnce(t *testing.T) {
 	}
 	if ok, _ := s.AdvanceSchedule(ctx, a.ID, *list[0].NextRunAt, next); ok {
 		t.Fatal("second advance from the same due time succeeded")
+	}
+}
+
+func TestGitHubAccounts(t *testing.T) {
+	s := open(t)
+	if _, err := s.GitHubAccount(ctx, 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v", err)
+	}
+	expires := time.Now().Add(time.Hour).Truncate(time.Millisecond)
+	first := GitHubAccount{AppID: 1, ID: 7, Login: "octo", Tokens: GitHubTokens{Access: "ghu_a", AccessExpires: expires, Refresh: "ghr_a"}}
+	if err := s.SaveGitHubAccount(ctx, &first); err != nil {
+		t.Fatal(err)
+	}
+	var sealed []byte
+	s.r.QueryRow(`SELECT tokens FROM github_accounts`).Scan(&sealed)
+	if strings.Contains(string(sealed), "ghu_a") {
+		t.Error("tokens are stored in the clear")
+	}
+	got, err := s.GitHubAccount(ctx, 1)
+	if err != nil || got.Login != "octo" || got.Tokens.Access != "ghu_a" || !got.Tokens.AccessExpires.Equal(expires) {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	second := GitHubAccount{AppID: 1, ID: 8, Login: "hubot", Tokens: GitHubTokens{Access: "ghu_b"}}
+	s.SaveGitHubAccount(ctx, &second)
+	other := GitHubAccount{AppID: 2, ID: 9, Login: "elsewhere", Tokens: GitHubTokens{Access: "ghu_c"}}
+	s.SaveGitHubAccount(ctx, &other)
+	if got, _ := s.GitHubAccount(ctx, 1); got.Login != "hubot" {
+		t.Errorf("acting for %q, want the most recently connected", got.Login)
+	}
+	first.Tokens.Access = "ghu_refreshed" // a refresh keeps the connection time
+	s.SaveGitHubAccount(ctx, &first)
+	if got, _ := s.GitHubAccount(ctx, 1); got.Login != "hubot" {
+		t.Errorf("a refresh made @%s the current account", got.Login)
+	}
+
+	if err := s.DeleteGitHubAccounts(ctx, 1, 8); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GitHubAccount(ctx, 1); got.Tokens.Access != "ghu_refreshed" {
+		t.Errorf("after deleting one: %+v", got)
+	}
+	s.DeleteGitHubAccounts(ctx, 1, 0)
+	if _, err := s.GitHubAccount(ctx, 1); !errors.Is(err, ErrNotFound) {
+		t.Errorf("app 1 still has an account: %v", err)
+	}
+	if _, err := s.GitHubAccount(ctx, 2); err != nil {
+		t.Errorf("another app's account went too: %v", err)
 	}
 }

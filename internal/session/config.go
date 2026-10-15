@@ -137,7 +137,7 @@ func (m *Manager) Effective(ctx context.Context, environmentID string) (Effectiv
 		TurnTimeout:  m.cfg.TurnTimeout,
 		DraftPRs:     g.DraftPRs,
 		BranchPrefix: firstOf(g.BranchPrefix, "beethoven/"),
-		Author:       m.cfg.Author,
+		Author:       m.DefaultAuthor(ctx),
 	}
 	if g.IdleMinutes > 0 {
 		e.IdleTimeout = time.Duration(g.IdleMinutes) * time.Minute
@@ -155,6 +155,15 @@ func (m *Manager) Effective(ctx context.Context, environmentID string) (Effectiv
 		}
 	}
 	return e, nil
+}
+
+// DefaultAuthor is the commit author when the settings name none: the
+// person the git host acts for, else the server's own git identity.
+func (m *Manager) DefaultAuthor(ctx context.Context) store.Author {
+	if a := m.scm.Author(ctx); a.Name != "" && a.Email != "" {
+		return a
+	}
+	return m.cfg.Author
 }
 
 // secretTarget decides which secret scopes reach a session's sandbox.
