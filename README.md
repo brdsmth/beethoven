@@ -171,6 +171,28 @@ Slack only delivers events to a public HTTPS address, so the server needs one; f
 tunnel such as `cloudflared tunnel --url http://localhost:7070` works, with its host in
 `BEETHOVEN_HOSTS`.
 
+### Insights
+
+The **Insights** page measures how sessions go over the last 7, 30 or 90 days, quality first. Its
+quality numbers cover the sessions people started (not automations, nor sessions agents spawned)
+once they settle, meaning they ran and have nothing queued or running:
+
+- **Cycles**: one prompt and its response. A session's cycles are its prompts that ran, the first
+  request included.
+- **First-try rate**: settled sessions that succeeded in one cycle. A session succeeds when its last
+  cycle finished and none of its pull requests was closed without merging.
+- **Success rate**, failures by reason, and stopped prompts.
+- **Pull requests**: opened, merged, closed unmerged and still open, the median time from a session's
+  start to its pull request and from opening to merging, and the cost per merged pull request (with
+  the sessions agents spawned).
+- **Usage**: sessions per day by outcome, automation runs, spend, and breakdowns by source, person
+  and workspace.
+
+Each session's header shows its cycles, the agents' working time and its pull requests' state, and
+each automation shows how its recent runs went. Pull requests are tracked by polling GitHub every
+ten minutes until they are merged or closed. Sessions are archived, never deleted, so the numbers
+keep their history.
+
 ### Repository hooks
 
 - `.beethoven/setup.sh` runs once per sandbox after the clone (dependencies, builds). Failure is a
@@ -219,7 +241,7 @@ included), and what was said in a thread reaches the agent marked as context, no
 | | |
 |---|---|
 | `GET/POST /api/sessions` | list; create `{prompt, environment_id \| repos, model, effort, title}` |
-| `GET /api/sessions/{id}` | session and prompts |
+| `GET /api/sessions/{id}` | session, prompts and pull requests |
 | `POST /api/sessions/{id}/prompts` | queue `{content, model}` |
 | `DELETE /api/sessions/{id}/prompts/{pid}` | cancel a prompt |
 | `POST /api/sessions/{id}/stop` · `/archive` · `/pr` | stop; `{archived}`; `{repo, title, body, draft}` |
@@ -239,6 +261,7 @@ included), and what was said in a thread reaches the agent marked as context, no
 | `DELETE /api/slack/app` · `/installations/{team}` · `/channels/{team}/{channel}` | remove them |
 | `POST /slack/events` · `/slack/interactions` | Slack's events and clicks (signed by Slack) |
 | `/api/mcp-servers[/{id}]` | CRUD; header and env values write-only |
+| `GET /api/insights?days=&tz=` | quality, pull requests and usage of the last days |
 | `GET /api/repos[/{owner}/{name}/branches]` | GitHub repositories and branches, for pickers |
 | `/mcp` | agent tools (session tokens) |
 
@@ -263,6 +286,7 @@ internal/automation  schedules, webhooks, failure policy
 internal/store       SQLite migrations and queries, environments, settings, encrypted secrets
 internal/github      the GitHub App, its tokens and accounts, clone URLs, pull requests
 internal/slack       the Slack app, its installations, and the bot
+internal/insights    cycles, first-try rate, pull request outcomes and usage
 internal/api         HTTP API, event streams, guards
 web                  Preact UI, embedded in the binary
 ```
@@ -273,4 +297,5 @@ Compared with Open-Inspect: GitHub and Linear bots (the `Notifier` interface and
 are their extension points); in Slack, picking a repository with a model, live progress, images and
 App Home preferences, and Socket Mode for servers without a public address; sandbox providers other than Docker; prebuilt images and warming a
 sandbox while you type; automation fan-out across repositories; users, teams and permissions;
-presence; in-browser terminal and editor; tunnelled ports; memory, skills, budgets and analytics.
+presence; in-browser terminal and editor; tunnelled ports; memory, skills and budgets; token and
+per-model cost breakdowns.
