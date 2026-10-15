@@ -275,3 +275,39 @@ func TestTrackNewPullRequests(t *testing.T) {
 		t.Errorf("outside the window: %d", len(prs))
 	}
 }
+
+func TestAccountsAndLogins(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	if has, err := s.HasAccounts(ctx); err != nil || has {
+		t.Fatalf("new store: %v %v", has, err)
+	}
+	a, err := s.CreateOwner(ctx, Account{Email: "me@example.com", Name: "Me"}, "hash")
+	if err != nil || !a.Owner {
+		t.Fatalf("owner: %+v %v", a, err)
+	}
+	if _, err := s.CreateOwner(ctx, Account{Email: "you@example.com"}, "hash"); !errors.Is(err, ErrConflict) {
+		t.Errorf("second owner: %v, want ErrConflict", err)
+	}
+	if got, hash, err := s.AccountByEmail(ctx, "ME@example.com"); err != nil || got.ID != a.ID || hash != "hash" {
+		t.Errorf("by email: %+v %q %v", got, hash, err)
+	}
+	if _, _, err := s.AccountByEmail(ctx, "nobody@example.com"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown email: %v", err)
+	}
+
+	if err := s.CreateLogin(ctx, "l1", a.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.LoginAccount(ctx, "l1"); err != nil || got.Email != "me@example.com" {
+		t.Errorf("login: %+v %v", got, err)
+	}
+	s.CreateLogin(ctx, "old", a.ID, time.Now().Add(-time.Minute))
+	if _, err := s.LoginAccount(ctx, "old"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expired login: %v", err)
+	}
+	s.DeleteLogin(ctx, "l1")
+	if _, err := s.LoginAccount(ctx, "l1"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("after signing out: %v", err)
+	}
+}
