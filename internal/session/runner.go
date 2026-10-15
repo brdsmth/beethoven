@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -23,9 +22,8 @@ import (
 //
 // Lock order is sbMu → mu → emitMu; nothing holding mu takes sbMu.
 type runner struct {
-	m    *Manager
-	id   string
-	gone atomic.Bool // deleted
+	m  *Manager
+	id string
 
 	mu   sync.Mutex // guards s, turn, last
 	s    store.Session
@@ -56,9 +54,6 @@ type outcome struct {
 func (r *runner) enqueue(ctx context.Context, in PromptInput) (store.Prompt, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.gone.Load() {
-		return store.Prompt{}, ErrNotFound
-	}
 	p := store.Prompt{ID: store.NewID(), SessionID: r.id, Content: in.Content, Model: in.Model, Effort: in.Effort,
 		Author: in.Author, Source: in.Source, DedupKey: in.DedupKey, AutomationID: in.AutomationID}
 	if p.Author == (store.Author{}) {
@@ -84,7 +79,7 @@ func (r *runner) kick() {
 
 // next starts the oldest queued prompt unless one is already running. mu held.
 func (r *runner) next() {
-	if r.turn != nil || r.gone.Load() || r.m.ctx.Err() != nil {
+	if r.turn != nil || r.m.ctx.Err() != nil {
 		return
 	}
 	p, err := r.m.db.ClaimNext(context.Background(), r.id)
@@ -128,9 +123,6 @@ func (r *runner) finish(p store.Prompt, o outcome, ctxErr error) {
 		p.Status, p.Error = store.Failed, fmt.Sprintf("timed out after %s", t.timeout)
 	case ctxErr != nil:
 		p.Status, p.Error = store.Failed, "interrupted: the server is shutting down"
-	}
-	if r.gone.Load() {
-		return
 	}
 	if err := r.m.db.FinishPrompt(context.Background(), &p); err != nil {
 		r.m.log.Error("finish prompt", "session", r.id, "err", err)
@@ -294,7 +286,7 @@ func (r *runner) armIdle() {
 	time.AfterFunc(idle, func() {
 		r.sbMu.Lock()
 		defer r.sbMu.Unlock()
-		if gen == r.idleGen && r.leases == 0 && !r.gone.Load() {
+		if gen == r.idleGen && r.leases == 0 {
 			r.stopLocked("idle")
 		}
 	})
@@ -398,26 +390,6 @@ func (r *runner) stopLocked(reason string) {
 		r.m.log.Warn("stop sandbox", "session", r.id, "err", err)
 	}
 	r.setSandbox("stopped", "", reason)
-}
-
-func (r *runner) destroy(ctx context.Context) error {
-	r.mu.Lock()
-	r.gone.Store(true)
-	if r.turn != nil {
-		r.turn.stopped = true
-		r.turn.cancel()
-	}
-	r.mu.Unlock()
-	r.sbMu.Lock()
-	defer r.sbMu.Unlock()
-	r.idleGen++
-	if id := r.snapshot().SandboxID; id != "" {
-		if err := r.m.box.Destroy(ctx, id); err != nil {
-			r.gone.Store(false)
-			return err
-		}
-	}
-	return r.m.db.DeleteSession(ctx, r.id)
 }
 
 func (r *runner) setSandbox(state, phase, message string) {
@@ -534,9 +506,6 @@ func (r *runner) update(fn func(*store.Session)) {
 
 // save persists the session and announces it. mu held.
 func (r *runner) save() {
-	if r.gone.Load() {
-		return
-	}
 	if err := r.m.db.SaveSession(context.Background(), &r.s); err != nil {
 		r.m.log.Error("save session", "session", r.id, "err", err)
 		return
@@ -555,9 +524,6 @@ func (r *runner) currentPrompt() string {
 
 // emit appends an event to the session's log and publishes it.
 func (r *runner) emit(promptID, typ string, data any) {
-	if r.gone.Load() {
-		return
-	}
 	e := store.Event{Session: r.id, Type: typ, Prompt: promptID, Data: mustJSON(data), At: time.Now()}
 	r.emitMu.Lock()
 	defer r.emitMu.Unlock()
