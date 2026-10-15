@@ -1,14 +1,14 @@
 # Beethoven
 
 Background coding agents you run yourself. Give it a repository and a prompt — from the web UI, the
-CLI, a cron schedule or a webhook — and an agent works on it in an isolated container while you do
+CLI, Slack, a cron schedule or a webhook — and an agent works on it in an isolated container while you do
 something else. Everything it does streams live and is kept as a replayable log; follow-up prompts
 queue on the same session and continue the same conversation; when the work is ready the agent opens
 a pull request authored by you. Agents can split work across parallel child sessions.
 
 A minimal reimplementation of [Open-Inspect](https://github.com/ColeMurray/background-agents) (itself
 modelled on [Ramp's Inspect](https://builders.ramp.com/post/why-we-built-our-background-agent)): one
-Go binary, SQLite, Docker and Claude Code: roughly 4,000 lines of Go and a small Preact UI, where the
+Go binary, SQLite, Docker and Claude Code: roughly 8,000 lines of Go and a small Preact UI, where the
 original spans about 2,800 files across a dozen packages and several clouds.
 
 ## Quick start
@@ -143,6 +143,33 @@ and its setup URL the server's URL plus `/github/installed`.
 Until someone connects, a personal access token is used instead: one saved under **Settings ›
 GitHub**, `GITHUB_TOKEN`, or the GitHub CLI's (`gh auth token`).
 
+### Slack
+
+Mention **@beethoven** in a channel, or send it a direct message, and it works on the request in a
+session and answers in the thread: 👀 on the request, a status reply with **Open in Beethoven** and
+**Stop**, then the agent's answer and its pull requests, and ✅ or ❌. The thread is the session:
+mention the bot in it again (any reply, in a direct message) to queue a follow-up, which carries what
+was said in the thread since as context. A request works on the repositories (`owner/repo`) or the
+environment it names, else on the channel's default; otherwise the bot asks, and the answer can
+become the channel's default. Full members of the workspace can start sessions; guests and people
+from other organizations in shared channels can't. Commits are authored by the Slack user, with the
+email on their Slack profile.
+
+Like GitHub, Slack is reached through an app, which is either:
+
+- **Preconfigured**: an operator's app, given in `BEETHOVEN_SLACK_APP` as JSON (`app_id`,
+  `client_id`, `client_secret`, `signing_secret`) or a file holding it. People click **Add to Slack**.
+  Its event and interactivity URLs are the server's URL plus `/slack/events` and
+  `/slack/interactions`, and its redirect URL the server's URL plus `/slack/installed`.
+- **Created from the server**: paste an [app configuration token](https://api.slack.com/apps) (under
+  *Your App Configuration Tokens*) in **Settings › Slack**, and the server creates its app with
+  Slack's manifest API, then sends you on to add it to the workspace. The token is used once and not
+  stored.
+
+Slack only delivers events to a public HTTPS address, so the server needs one; for local testing, a
+tunnel such as `cloudflared tunnel --url http://localhost:7070` works, with its host in
+`BEETHOVEN_HOSTS`.
+
 ### Repository hooks
 
 - `.beethoven/setup.sh` runs once per sandbox after the clone (dependencies, builds). Failure is a
@@ -163,6 +190,7 @@ GitHub**, `GITHUB_TOKEN`, or the GitHub CLI's (`gh auth token`).
 | `BEETHOVEN_TURN_TIMEOUT` | `2h` | limit for one prompt |
 | `BEETHOVEN_MODEL` | — | initial default model; then edit it in Settings |
 | `BEETHOVEN_GITHUB_APP` | — | a preconfigured GitHub App: its credentials as JSON, or a file (see [GitHub](#github)) |
+| `BEETHOVEN_SLACK_APP` | — | a preconfigured Slack app: its credentials as JSON, or a file (see [Slack](#slack)) |
 | `GITHUB_TOKEN` | `gh auth token` | personal access token used until someone connects GitHub, unless one is saved in Settings |
 | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` | — | passed to sandboxes unless saved in Settings |
 
@@ -181,7 +209,9 @@ Their tool token only acts on their own session and its children. GitHub tokens 
 for the clone and push commands the server runs, each limited to one repository for an hour. GitHub
 returns the browser to `/github/<step>` without the API token, so those pages only redirect to the UI,
 which completes each step through the API; a single-use state ties each return to the request that
-started it.
+started it; Slack's installation works the same way. Requests from Slack must carry a valid signature
+from the last five minutes, a redelivered event is acted on once, the bot ignores bots (itself
+included), and what was said in a thread reaches the agent marked as context, not instructions.
 
 ## API
 
@@ -203,6 +233,10 @@ started it.
 | `GET /api/github` | the GitHub App, the connected account and its installations |
 | `POST /api/github/app` · `/app/created` · `DELETE /api/github/app` | register an app (manifest flow); forget it |
 | `POST /api/github/authorize` · `/account` · `DELETE /api/github/account` | connect an account; disconnect it |
+| `GET /api/slack` | the Slack app, its workspaces and channel defaults |
+| `POST /api/slack/app` · `/install` · `/installed` | create the app; add it to a workspace |
+| `DELETE /api/slack/app` · `/installations/{team}` · `/channels/{team}/{channel}` | remove them |
+| `POST /slack/events` · `/slack/interactions` | Slack's events and clicks (signed by Slack) |
 | `/api/mcp-servers[/{id}]` | CRUD; header and env values write-only |
 | `GET /api/repos[/{owner}/{name}/branches]` | GitHub repositories and branches, for pickers |
 | `/mcp` | agent tools (session tokens) |
@@ -227,13 +261,15 @@ internal/tools       MCP tool server
 internal/automation  schedules, webhooks, failure policy
 internal/store       SQLite migrations and queries, environments, settings, encrypted secrets
 internal/github      the GitHub App, its tokens and accounts, clone URLs, pull requests
+internal/slack       the Slack app, its installations, and the bot
 internal/api         HTTP API, event streams, guards
 web                  Preact UI, embedded in the binary
 ```
 
 ## Not (yet) here
 
-Compared with Open-Inspect: Slack, GitHub and Linear bots (the `Notifier` interface and continuation
-keys are their extension points); sandbox providers other than Docker; prebuilt images and warming a
+Compared with Open-Inspect: GitHub and Linear bots (the `Notifier` interface and continuation keys
+are their extension points); in Slack, picking a repository with a model, live progress, images and
+App Home preferences, and Socket Mode for servers without a public address; sandbox providers other than Docker; prebuilt images and warming a
 sandbox while you type; automation fan-out across repositories; users, teams and permissions;
 presence; in-browser terminal and editor; tunnelled ports; memory, skills, budgets and analytics.
