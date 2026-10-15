@@ -6,10 +6,7 @@ something else. Everything it does streams live and is kept as a replayable log;
 queue on the same session and continue the same conversation; when the work is ready the agent opens
 a pull request authored by you. Agents can split work across parallel child sessions.
 
-A minimal reimplementation of [Open-Inspect](https://github.com/ColeMurray/background-agents) (itself
-modelled on [Ramp's Inspect](https://builders.ramp.com/post/why-we-built-our-background-agent)): one
-Go binary, SQLite, Docker and Claude Code: roughly 9,000 lines of Go and a small Preact UI, where the
-original spans about 2,800 files across a dozen packages and several clouds.
+One Go binary, SQLite, Docker and Claude Code, with a small Preact UI built in.
 
 ## Quick start
 
@@ -291,11 +288,7 @@ internal/api         HTTP API, event streams, guards
 web                  Preact UI, embedded in the binary
 ```
 
-## Not (yet) here
+## License
 
-Compared with Open-Inspect: GitHub and Linear bots (the `Notifier` interface and continuation keys
-are their extension points); in Slack, picking a repository with a model, live progress, images and
-App Home preferences, and Socket Mode for servers without a public address; sandbox providers other than Docker; prebuilt images and warming a
-sandbox while you type; automation fan-out across repositories; users, teams and permissions;
-presence; in-browser terminal and editor; tunnelled ports; memory, skills and budgets; token and
-per-model cost breakdowns.
+[MIT](LICENSE). Beethoven was inspired by Ramp's [Inspect](https://builders.ramp.com/post/why-we-built-our-background-agent)
+and [Open-Inspect](https://github.com/ColeMurray/background-agents).
