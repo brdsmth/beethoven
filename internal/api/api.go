@@ -19,6 +19,7 @@ import (
 
 	"github.com/brdsmth/beethoven/internal/automation"
 	"github.com/brdsmth/beethoven/internal/github"
+	"github.com/brdsmth/beethoven/internal/insights"
 	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/slack"
 	"github.com/brdsmth/beethoven/internal/store"
@@ -96,6 +97,7 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/github/authorize", s.authorize)
 	api("POST /api/github/account", s.connectAccount)
 	api("DELETE /api/github/account", s.disconnectAccount)
+	api("GET /api/insights", s.insights)
 	api("GET /api/repos", s.listRepos)
 	api("GET /api/repos/{owner}/{name}/branches", s.listBranches)
 
@@ -239,6 +241,29 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, http.StatusOK, map[string]any{"session": sess, "prompts": orEmpty(prompts), "pull_requests": orEmpty(pulls)})
+}
+
+// insights measures the last ?days calendar days (default 30) in the
+// viewer's ?tz.
+func (s *Server) insights(w http.ResponseWriter, r *http.Request) {
+	days, err := strconv.Atoi(r.URL.Query().Get("days"))
+	if err != nil {
+		days = 30
+	}
+	if days < 1 || days > 366 {
+		fail(w, http.StatusBadRequest, "days must be between 1 and 366")
+		return
+	}
+	loc, err := time.LoadLocation(r.URL.Query().Get("tz"))
+	if err != nil {
+		loc = time.UTC
+	}
+	report, err := insights.Compute(r.Context(), s.M.Store(), days, time.Now(), loc)
+	if err != nil {
+		replyErr(w, err)
+		return
+	}
+	reply(w, http.StatusOK, report)
 }
 
 func (s *Server) postPrompt(w http.ResponseWriter, r *http.Request) {
