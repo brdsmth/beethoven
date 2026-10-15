@@ -324,6 +324,12 @@ func render(e store.Event) {
 		author, _ := d["author"].(map[string]any)
 		name, _ := author["name"].(string)
 		fmt.Printf("\n%s› %s%s %s\n", bold, name, reset, s("content"))
+		files, _ := d["attachments"].([]any)
+		for _, f := range files {
+			if a, ok := f.(map[string]any); ok {
+				fmt.Printf("%s  📎 %v%s\n", dim, a["name"], reset)
+			}
+		}
 	case "sandbox":
 		if s("state") == "failed" {
 			fmt.Printf("%s✗ sandbox failed: %s%s\n", red, s("message"), reset)
