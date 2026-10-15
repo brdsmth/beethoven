@@ -207,7 +207,7 @@ function NewSession({ info }: { info?: Info }) {
       <h1>New session</h1>
       {info && !info.github && <GitHubSetup />}
       <form class="form" onSubmit={e => { e.preventDefault(); submit(); }}>
-        <div class={'prompt-box' + (f.over ? ' dropping' : '')} {...f.drop}>
+        <div class={'prompt-box' + (f.over ? ' dropping' : '')}>
           <textarea class="big" rows={8} autoFocus placeholder="What should the agent do?" value={prompt}
             onInput={e => setPrompt(e.currentTarget.value)} onKeyDown={modEnter(submit)} onPaste={f.onPaste} />
           <div class="prompt-files">

@@ -363,7 +363,7 @@ function Composer({ id, running }: { id: string; running: boolean }) {
     setBusy(false);
   };
   return (
-    <form class={'composer' + (f.over ? ' dropping' : '')} onSubmit={e => { e.preventDefault(); send(); }} {...f.drop}>
+    <form class={'composer' + (f.over ? ' dropping' : '')} onSubmit={e => { e.preventDefault(); send(); }}>
       <div class="col">
         <PendingFiles files={f.files} remove={f.remove} />
         <div class="composer-row">

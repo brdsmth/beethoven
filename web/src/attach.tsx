@@ -12,8 +12,8 @@ export function bytes(n: number) {
   return `${(n / (1 << 20)).toFixed(1)} MB`;
 }
 
-/** Files waiting to go with a prompt: picked, pasted or dropped onto the
- * element that spreads `drop`. */
+/** Files waiting to go with a prompt: picked, pasted, or dropped anywhere
+ * on the page; `over` is true while files are dragged over it. */
 export function useFiles() {
   const [files, setFiles] = useState<File[]>([]);
   const [over, setOver] = useState(false);
@@ -24,7 +24,24 @@ export function useFiles() {
     if (next.length > MAX_FILES || next.reduce((t, f) => t + f.size, 0) > MAX_BYTES) toast(LIMITS, true);
     else if (incoming.length) set(next);
   };
-  const hasFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes('Files');
+  useEffect(() => {
+    let depth = 0; // dragenter and dragleave pair up, element by element
+    const hasFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes('Files');
+    const on: Record<string, (e: DragEvent) => void> = {
+      dragenter: e => { if (hasFiles(e) && depth++ === 0) setOver(true); },
+      dragleave: e => { if (hasFiles(e) && (depth = Math.max(0, depth - 1)) === 0) setOver(false); },
+      dragover: e => { if (hasFiles(e)) e.preventDefault(); },
+      drop: e => {
+        if (!hasFiles(e)) return;
+        e.preventDefault(); // else the browser leaves the page to show the file
+        depth = 0;
+        setOver(false);
+        add([...e.dataTransfer!.files]);
+      },
+    };
+    for (const k in on) window.addEventListener(k, on[k] as EventListener);
+    return () => { for (const k in on) window.removeEventListener(k, on[k] as EventListener); };
+  }, []);
   return {
     files, add,
     remove: (f: File) => set(cur.current.filter(x => x !== f)),
@@ -37,18 +54,6 @@ export function useFiles() {
       add(pasted);
     },
     over,
-    drop: {
-      onDragOver: (e: DragEvent) => { if (hasFiles(e)) { e.preventDefault(); setOver(true); } },
-      onDragLeave: (e: DragEvent) => {
-        if (!(e.currentTarget as Node).contains(e.relatedTarget as Node)) setOver(false);
-      },
-      onDrop: (e: DragEvent) => {
-        setOver(false);
-        if (!e.dataTransfer?.files.length) return;
-        e.preventDefault();
-        add([...e.dataTransfer.files]);
-      },
-    },
   };
 }
 
@@ -110,14 +115,17 @@ function Pending({ f, remove }: { f: File; remove: () => void }) {
 const SHOWN = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const isImage = (a: Attachment) => SHOWN.includes(a.content_type.split(';')[0].trim());
 
-/** A prompt's attachments: images as thumbnails, other files as links. */
+/** A prompt's attachments: images as thumbnails, other files (and images
+ * that fail to load) as links. */
 export function Attachments({ session, files }: { session: string; files: Attachment[] }) {
-  const images = files.filter(isImage), others = files.filter(a => !isImage(a));
+  const [broken, setBroken] = useState<Record<string, boolean>>({});
+  const shown = (a: Attachment) => isImage(a) && !broken[a.id];
+  const images = files.filter(shown), others = files.filter(a => !shown(a));
   return (
     <div class="files">
       {images.map(a => (
         <a key={a.id} class="thumb" href={attachmentURL(session, a)} target="_blank" rel="noopener" title={`${a.name} · ${bytes(a.size)}`}>
-          <img src={attachmentURL(session, a)} alt={a.name} loading="lazy" />
+          <img src={attachmentURL(session, a)} alt={a.name} loading="lazy" onError={() => setBroken(b => ({ ...b, [a.id]: true }))} />
         </a>
       ))}
       {others.map(a => (
