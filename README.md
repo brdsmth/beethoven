@@ -8,7 +8,7 @@ a pull request authored by you. Agents can split work across parallel child sess
 
 A minimal reimplementation of [Open-Inspect](https://github.com/ColeMurray/background-agents) (itself
 modelled on [Ramp's Inspect](https://builders.ramp.com/post/why-we-built-our-background-agent)): one
-Go binary, SQLite, Docker and Claude Code: roughly 8,000 lines of Go and a small Preact UI, where the
+Go binary, SQLite, Docker and Claude Code: roughly 9,000 lines of Go and a small Preact UI, where the
 original spans about 2,800 files across a dozen packages and several clouds.
 
 ## Quick start
