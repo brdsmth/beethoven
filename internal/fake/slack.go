@@ -20,7 +20,16 @@ type Slack struct {
 	calls   []SlackCall
 	users   map[string]map[string]any
 	replies []map[string]any
+	files   map[string]slackFile
 	ts      int
+
+	// NoFileScope makes the bot token lack files:read.
+	NoFileScope bool
+}
+
+type slackFile struct {
+	name, mimetype string
+	data           []byte
 }
 
 // SlackCall is one Web API call.
@@ -33,7 +42,7 @@ const SlackBotToken = "xoxb-test"
 
 func NewSlack(t testing.TB) *Slack {
 	t.Helper()
-	f := &Slack{users: map[string]map[string]any{}}
+	f := &Slack{users: map[string]map[string]any{}, files: map[string]slackFile{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	f.URL = srv.URL
@@ -59,6 +68,13 @@ func (f *Slack) SetReplies(msgs ...map[string]any) {
 	f.replies = msgs
 }
 
+// SetFile adds a file that messages can share, as {"id": id}.
+func (f *Slack) SetFile(id, name, mimetype string, data []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.files[id] = slackFile{name, mimetype, data}
+}
+
 // Calls returns the calls made to method, or every call for "".
 func (f *Slack) Calls(method string) []SlackCall {
 	f.mu.Lock()
@@ -73,6 +89,10 @@ func (f *Slack) Calls(method string) []SlackCall {
 }
 
 func (f *Slack) serve(w http.ResponseWriter, r *http.Request) {
+	if id, ok := strings.CutPrefix(r.URL.Path, "/files-pri/T1-"); ok {
+		f.download(w, r, strings.Split(id, "/")[0])
+		return
+	}
 	r.ParseForm()
 	method := strings.TrimPrefix(r.URL.Path, "/api/")
 	reply := func(v map[string]any) {
@@ -128,9 +148,40 @@ func (f *Slack) serve(w http.ResponseWriter, r *http.Request) {
 		reply(map[string]any{"ts": fmt.Sprintf("900.%06d", f.ts), "channel": r.PostForm.Get("channel")})
 	case "conversations.replies":
 		reply(map[string]any{"messages": f.replies})
+	case "files.info":
+		file, ok := f.files[r.PostForm.Get("file")]
+		switch {
+		case f.NoFileScope:
+			reply(map[string]any{"ok": false, "error": "missing_scope", "needed": "files:read"})
+		case !ok:
+			reply(map[string]any{"ok": false, "error": "file_not_found"})
+		default:
+			id := r.PostForm.Get("file")
+			reply(map[string]any{"file": map[string]any{"id": id, "name": file.name, "mimetype": file.mimetype,
+				"size": len(file.data), "mode": "hosted", "url_private_download": f.URL + "/files-pri/T1-" + id + "/download/" + file.name}})
+		}
 	case "conversations.info":
 		reply(map[string]any{"channel": map[string]any{"id": r.PostForm.Get("channel"), "name": "eng"}})
 	default: // chat.update, chat.postEphemeral, reactions.add, reactions.remove, auth.revoke
 		reply(map[string]any{})
+	}
+}
+
+// download serves a file's content to the bot, and to anyone else Slack's
+// sign-in page.
+func (f *Slack) download(w http.ResponseWriter, r *http.Request, id string) {
+	f.mu.Lock()
+	file, ok := f.files[id]
+	allowed := r.Header.Get("Authorization") == "Bearer "+SlackBotToken && !f.NoFileScope
+	f.mu.Unlock()
+	switch {
+	case !allowed:
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, "<html><body>Sign in to Slack</body></html>")
+	case !ok:
+		http.NotFound(w, r)
+	default:
+		w.Header().Set("Content-Type", file.mimetype)
+		w.Write(file.data)
 	}
 }

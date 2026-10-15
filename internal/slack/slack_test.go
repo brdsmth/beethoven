@@ -291,3 +291,74 @@ func TestStopButton(t *testing.T) {
 	h.waitCall(t, "reactions.add", func(a url.Values) bool { return a.Get("name") == "black_square_for_stop" })
 	h.waitCall(t, "chat.update", func(a url.Values) bool { return strings.HasPrefix(a.Get("text"), "Stopped") })
 }
+
+func TestFilesAreAttached(t *testing.T) {
+	h := setup(t)
+	png := []byte("\x89PNG\r\n\x1a\nscreenshot")
+	h.slack.SetFile("F1", "screenshot.png", "image/png", png)
+	h.slack.SetFile("F2", "build.log", "text/plain", []byte("error: boom"))
+	h.slack.SetFile("F3", "old.txt", "text/plain", []byte("before"))
+	h.slack.SetReplies(
+		map[string]any{"ts": "700.000001", "user": "U2", "text": "the build is broken", "subtype": "file_share",
+			"files": []any{map[string]any{"id": "F2", "name": "build.log"}}},
+		map[string]any{"ts": "700.000002", "user": "U1", "text": "<@UBOT> fix acme/app", "files": []any{map[string]any{"id": "F1", "name": "screenshot.png"}}},
+	)
+	ev := mention("U1", "<@UBOT> fix acme/app", "700.000002", "700.000001")
+	ev["files"] = []any{map[string]any{"id": "F1", "name": "screenshot.png"}, map[string]any{"id": "F4", "name": "doc"}}
+	h.event(t, "Ev1", ev)
+
+	s := h.session(t, "700.000001", 1)
+	ps, _ := h.env.DB.Prompts(ctx, s.ID)
+	p := ps[0]
+	if a := p.Attachments; len(a) != 2 || a[0].Name != "screenshot.png" || a[0].ContentType != "image/png" || a[1].Name != "build.log" {
+		t.Fatalf("attachments = %+v, want the request's screenshot, then the thread's log", a)
+	}
+	files, _ := h.env.DB.PromptFiles(ctx, p.ID)
+	if string(files[0].Data) != string(png) || string(files[1].Data) != "error: boom" {
+		t.Errorf("contents = %q, %q", files[0].Data, files[1].Data)
+	}
+	for _, want := range []string{"[bob]: the build is broken (shared build.log)", "couldn't be attached: doc (Slack couldn't find it)"} {
+		if !strings.Contains(p.Content, want) {
+			t.Errorf("prompt lacks %q: %q", want, p.Content)
+		}
+	}
+	h.waitCall(t, "chat.postMessage", func(a url.Values) bool { return strings.HasPrefix(a.Get("text"), ":warning: I left out doc") })
+}
+
+func TestADirectMessageCanBeJustAFile(t *testing.T) {
+	h := setup(t)
+	h.slack.SetFile("F1", "trace.txt", "text/plain", []byte("panic: nil map"))
+	if err := h.env.DB.SaveSlackChannel(ctx, &store.SlackChannel{TeamID: "T1", Channel: "D1", Repos: []store.RepoRef{{Repo: "acme/app"}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.event(t, "Ev1", map[string]any{"type": "message", "subtype": "file_share", "channel_type": "im", "channel": "D1",
+		"user": "U1", "text": "", "ts": "800.000001", "files": []any{map[string]any{"id": "F1", "name": "trace.txt"}}})
+	var s store.Session
+	fake.WaitFor(t, "the session", func() bool {
+		var err error
+		s, err = h.env.DB.SessionByKey(ctx, "slack:T1:D1:800.000001")
+		return err == nil
+	})
+	ps, _ := h.env.DB.Prompts(ctx, s.ID)
+	if len(ps) != 1 || ps[0].Content != "" || len(ps[0].Attachments) != 1 || s.Title != "trace.txt" {
+		t.Errorf("session %q, prompts %+v", s.Title, ps)
+	}
+}
+
+func TestFilesWithoutTheScope(t *testing.T) {
+	h := setup(t)
+	h.slack.NoFileScope = true
+	h.slack.SetFile("F1", "screenshot.png", "image/png", []byte("\x89PNG\r\n\x1a\n"))
+	ev := mention("U1", "<@UBOT> what's wrong in acme/app?", "900.000001", "")
+	ev["files"] = []any{map[string]any{"id": "F1", "name": "screenshot.png"}}
+	h.event(t, "Ev1", ev)
+
+	s := h.session(t, "900.000001", 1)
+	ps, _ := h.env.DB.Prompts(ctx, s.ID)
+	if len(ps[0].Attachments) != 0 || !strings.Contains(ps[0].Content, "screenshot.png (the Slack app can't read files)") {
+		t.Errorf("prompt = %+v", ps[0])
+	}
+	h.waitCall(t, "chat.postMessage", func(a url.Values) bool {
+		return strings.Contains(a.Get("text"), "`files:read`") && strings.Contains(a.Get("text"), "https://api.slack.com/apps/A1/oauth")
+	})
+}
