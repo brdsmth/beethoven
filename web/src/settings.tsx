@@ -1,14 +1,15 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { api, get, resetGitHub, type Credentials, type Info, type Settings as S, type SettingsInfo } from './api';
+import { api, get, resetGitHub, type Credentials, type GitHubStatus, type Info, type Settings as S, type SettingsInfo } from './api';
 import { EnvironmentEdit, Environments } from './environments';
+import { ConnectGitHub } from './github';
 import { MCPServers } from './mcp';
 import { SecretsPage } from './secrets';
 import { ConfirmButton, EffortSelect, Group, Head, ModelField, SaveBar, errText, fail, num, str, toast, useLoad } from './util';
 
 const SECTIONS: [string, [string, string][]][] = [
   ['Agent', [['general', 'General'], ['credentials', 'Credentials']]],
-  ['Workspace', [['environments', 'Environments'], ['secrets', 'Secrets'], ['mcp', 'MCP servers']]],
+  ['Workspace', [['github', 'GitHub'], ['environments', 'Environments'], ['secrets', 'Secrets'], ['mcp', 'MCP servers']]],
   ['Server', [['about', 'About']]],
 ];
 
@@ -19,6 +20,7 @@ export function Settings({ info, route }: { info?: Info; route: string[] }) {
   }, [section]);
   const body = section === 'general' ? <General />
     : section === 'credentials' ? <CredentialsPage />
+    : section === 'github' ? <GitHubPage />
     : section === 'environments' ? (id ? <EnvironmentEdit key={id} id={id} tab={tab} /> : <Environments />)
     : section === 'secrets' ? <SecretsPage scope={id || ''} />
     : section === 'mcp' ? <MCPServers />
@@ -123,27 +125,15 @@ const ANTHROPIC: Record<string, string> = {
   secret: 'Using a global secret.',
   '': "Not configured, so agents can't run.",
 };
-const GITHUB: Record<string, string> = {
-  settings: 'Using the token stored here.',
-  environment: "Using GITHUB_TOKEN from the server's environment.",
-  gh: "Using the GitHub CLI's login on the server.",
-  '': "Not configured. Sessions can't clone private repositories, push or open pull requests.",
-};
-
 function CredentialsPage() {
-  const [c, reload, setC] = useLoad<Credentials>('/api/credentials');
-  const [checking, setChecking] = useState(false);
-  const check = async () => {
-    setChecking(true);
-    try { setC(await get<Credentials>('/api/credentials?check=1')); } catch (e) { fail(e); }
-    setChecking(false);
-  };
+  const [c, reload] = useLoad<Credentials>('/api/credentials');
   if (!c) return <p class="empty">Loading…</p>;
-  const a = c.anthropic.source, g = c.github;
+  const a = c.anthropic.source;
   return (
     <>
       <Head title="Credentials">
-        Stored encrypted on this server; values are never shown again. A credential stored here takes precedence over the server's environment.
+        Stored encrypted on this server; values are never shown again. A credential stored here takes precedence over the server's
+        environment. GitHub is connected under <a href="#/settings/github">GitHub</a>.
       </Head>
       <section class="card">
         <div class="card-head"><h2>Anthropic</h2><Status ok={!!a} /></div>
@@ -153,15 +143,88 @@ function CredentialsPage() {
         <CredRow name="CLAUDE_CODE_OAUTH_TOKEN" label="Subscription token" stored={c.stored.CLAUDE_CODE_OAUTH_TOKEN} done={reload}
           hint={<>Uses a Claude subscription. Create one with <code>claude setup-token</code>.</>} />
       </section>
+    </>
+  );
+}
+
+// ------------------------------------------------------------------- github
+
+const TOKEN: Record<string, string> = {
+  settings: 'Using the token stored here.',
+  environment: "Using GITHUB_TOKEN from the server's environment.",
+  gh: "Using the GitHub CLI's login on the server.",
+  '': 'No token is set.',
+};
+
+function GitHubPage() {
+  const [st, reload] = useLoad<GitHubStatus>('/api/github');
+  const [c, reloadCreds, setC] = useLoad<Credentials>('/api/credentials');
+  const [checking, setChecking] = useState(false);
+  if (!st || !c) return <p class="empty">Loading…</p>;
+  const changed = () => { resetGitHub(); reload(); reloadCreds(); };
+  const check = async () => {
+    setChecking(true);
+    try { setC(await get<Credentials>('/api/credentials?check=1')); } catch (e) { fail(e); }
+    setChecking(false);
+  };
+  const { app, account } = st, g = c.github;
+  return (
+    <>
+      <Head title="GitHub">
+        Agents clone, push and open pull requests through a GitHub App. Each push uses a token for that one repository,
+        valid for an hour; pull requests open as the person who connected.
+      </Head>
+      {st.error && <p class="err" role="alert">{st.error}</p>}
       <section class="card">
         <div class="card-head">
-          <h2>GitHub</h2><Status ok={!!g.source} />
+          <h2>Account</h2><span class={'chip ' + (account ? 'green' : 'amber')}>{account ? 'Connected' : 'Not connected'}</span>
+          {account && <span class="push"><ConfirmButton small label="Disconnect" note="Agents fall back to the access token below, if any."
+            onConfirm={() => api('DELETE', '/api/github/account').then(changed)} /></span>}
+        </div>
+        {account
+          ? <p>Connected as <b>@{account.login}</b>{account.name && <span class="muted"> ({account.name})</span>}. Commits are authored by you, unless
+            the <a href="#/settings/general">general settings</a> name another author.</p>
+          : <ConnectGitHub status={st} />}
+      </section>
+      {app && (
+        <section class="card">
+          <div class="card-head">
+            <h2>App</h2><span class="chip">{app.source === 'environment' ? 'Preconfigured' : 'Created from this server'}</span>
+            {app.source === 'settings' && <span class="push"><ConfirmButton small label="Remove" ask="Remove app"
+              note="Disconnects everyone. The app stays on GitHub; delete it there."
+              onConfirm={() => api('DELETE', '/api/github/app').then(changed)} /></span>}
+          </div>
+          <p><a href={app.url} target="_blank" rel="noreferrer">{app.name || app.slug}</a> <span class="muted">owned by @{app.owner}</span></p>
+          {account && (
+            <>
+              <div class="rows">
+                {st.installations.map(i => (
+                  <a key={i.id} class="row link" href={i.url} target="_blank" rel="noreferrer">
+                    <span class="row-main">
+                      <span class="row-title">{i.account}</span>
+                      <span class="row-desc">{i.selection === 'all' ? 'All repositories' : 'Selected repositories'}</span>
+                    </span>
+                    <span class="hint">Manage ›</span>
+                  </a>
+                ))}
+              </div>
+              {!st.installations.length && <p class="warn">Not installed on any repositories yet.</p>}
+              <div><a class="btn" href={app.install_url}>Add repositories or accounts</a></div>
+            </>
+          )}
+        </section>
+      )}
+      <section class="card">
+        <div class="card-head">
+          <h2>Personal access token</h2>
           {g.source && <button class="btn sm push" disabled={checking} onClick={check}>{checking ? 'Checking…' : 'Check'}</button>}
         </div>
-        <p class="hint">{GITHUB[g.source] ?? g.source}</p>
-        {g.login && <p class="ok">Connected as <b>@{g.login}</b></p>}
+        <p class="hint">
+          Instead of the app: used for everything until someone connects. {TOKEN[st.token] ?? st.token}
+        </p>
+        {g.login && <p class="ok">Belongs to <b>@{g.login}</b></p>}
         {g.error && <p class="err">{g.error}</p>}
-        <CredRow name="GITHUB_TOKEN" label="Access token" stored={c.stored.GITHUB_TOKEN} done={() => { resetGitHub(); reload(); }}
+        <CredRow name="GITHUB_TOKEN" label="Access token" stored={c.stored.GITHUB_TOKEN} done={changed}
           hint="Needs read and write access to contents and pull requests of the repositories agents work on." />
       </section>
     </>
@@ -225,7 +288,7 @@ function About({ info }: { info?: Info }) {
         <dt>Anthropic</dt>
         <dd>{info.anthropic ? <span class="ok">Credential configured</span> : <span class="warn">Missing</span>} · <a href="#/settings/credentials">credentials</a></dd>
         <dt>GitHub</dt>
-        <dd>{info.github ? <span class="ok">Token available</span> : <span class="warn">No token: sessions can't push or open pull requests</span>} · <a href="#/settings/credentials">credentials</a></dd>
+        <dd>{info.github ? <span class="ok">Connected</span> : <span class="warn">Not connected: sessions can't push or open pull requests</span>} · <a href="#/settings/github">GitHub</a></dd>
       </dl>
     </>
   );

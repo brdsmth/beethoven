@@ -47,6 +47,16 @@ export type MCPServer = {
   secret_keys: string[]; enabled: boolean; created_at: string; updated_at: string;
 };
 export type GitHubRepo = { repo: string; description?: string; private: boolean; default_branch: string };
+export type GitHubStatus = {
+  /** The GitHub App the server acts as: preconfigured (environment) or registered here (settings). */
+  app: { name: string; slug: string; owner: string; url: string; install_url: string; source: 'environment' | 'settings' } | null;
+  /** Who connected it; the server acts for them. */
+  account: { id: number; login: string; name: string } | null;
+  installations: { id: number; account: string; type: string; selection: 'all' | 'selected'; url: string }[];
+  /** Where a personal access token comes from; used until someone connects. */
+  token: string;
+  error?: string;
+};
 
 const KEY = 'beethoven.token';
 let token = '';

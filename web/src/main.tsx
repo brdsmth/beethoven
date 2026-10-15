@@ -2,6 +2,7 @@ import { render } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { api, get, onAuthRequired, onGlobal, setToken, type Environment, type Info, type Session } from './api';
 import { AutomationEdit, Automations } from './automations';
+import { GitHubReturn, GitHubSetup, githubStep } from './github';
 import { TargetPicker, fromTarget, targetProblem, toTarget, type Pick } from './pickers';
 import { SessionView } from './session';
 import { Settings } from './settings';
@@ -21,7 +22,8 @@ function App() {
 
   const [page, arg] = route;
   let view;
-  if (page === 's' && arg) view = <SessionView key={arg} id={arg} />;
+  if (githubStep()) view = <GitHubReturn />;
+  else if (page === 's' && arg) view = <SessionView key={arg} id={arg} />;
   else if (page === 'automations') view = arg ? <AutomationEdit key={arg} id={arg} /> : <Automations />;
   else if (page === 'settings') view = <Settings info={info} route={route.slice(1)} />;
   else view = <NewSession info={info} />;
@@ -121,6 +123,7 @@ function NewSession({ info }: { info?: Info }) {
   return (
     <div class="page narrow">
       <h1>New session</h1>
+      {info && !info.github && <GitHubSetup />}
       <form class="form" onSubmit={e => { e.preventDefault(); submit(); }}>
         <textarea class="big" rows={8} autoFocus placeholder="What should the agent do?" value={prompt}
           onInput={e => setPrompt(e.currentTarget.value)} onKeyDown={modEnter(submit)} />
