@@ -3,6 +3,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { api, get, onAuthRequired, onGlobal, setToken, type Environment, type Info, type Session } from './api';
 import { AutomationEdit, Automations } from './automations';
 import { GitHubReturn, GitHubSetup, githubStep } from './github';
+import { SlackReturn, slackStep } from './slack';
 import { TargetPicker, fromTarget, targetProblem, toTarget, type Pick } from './pickers';
 import { SessionView } from './session';
 import { Settings } from './settings';
@@ -23,6 +24,7 @@ function App() {
   const [page, arg] = route;
   let view;
   if (githubStep()) view = <GitHubReturn />;
+  else if (slackStep()) view = <SlackReturn />;
   else if (page === 's' && arg) view = <SessionView key={arg} id={arg} />;
   else if (page === 'automations') view = arg ? <AutomationEdit key={arg} id={arg} /> : <Automations />;
   else if (page === 'settings') view = <Settings info={info} route={route.slice(1)} />;

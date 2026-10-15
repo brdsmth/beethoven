@@ -47,6 +47,13 @@ export type MCPServer = {
   secret_keys: string[]; enabled: boolean; created_at: string; updated_at: string;
 };
 export type GitHubRepo = { repo: string; description?: string; private: boolean; default_branch: string };
+export type SlackStatus = {
+  /** The Slack app the server acts as: preconfigured (environment) or created here (settings). */
+  app: { app_id: string; source: 'environment' | 'settings'; settings_url: string } | null;
+  installations: { team_id: string; team_name: string; installer: string; base_url: string; created_at: string }[];
+  /** What a channel works on when a request names nothing. */
+  channels: { team_id: string; channel: string; name: string; environment_id?: string; repos: RepoRef[] }[];
+};
 export type GitHubStatus = {
   /** The GitHub App the server acts as: preconfigured (environment) or registered here (settings). */
   app: { name: string; slug: string; owner: string; url: string; install_url: string; source: 'environment' | 'settings' } | null;
