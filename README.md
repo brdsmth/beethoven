@@ -104,6 +104,11 @@ stream `GET /api/sessions/{id}/events` and resume from `Last-Event-ID`, so recon
 history and following live are the same operation. Streaming text deltas are sent live but not
 stored.
 
+**Attachments.** A prompt can carry files: picked, pasted or dropped in the web UI, or shared in
+Slack, up to 10 files and 50 MB in all. They're stored with the prompt and shown in its timeline. When
+the prompt runs, they're copied into the sandbox, to `~/attachments/<prompt id>/`, and the agent is told
+where they are, so it reads the ones it needs. Claude Code's Read tool shows it images and PDFs.
+
 **Sandbox.** One container per session behind a four-method interface: `Start` (create or resume),
 `Exec`, `Stop` (keep the filesystem), `Destroy`. A sandbox stops after 10 idle minutes and resumes on
 the next prompt with its workspace, installed dependencies and agent conversation intact. Nothing of
@@ -193,7 +198,8 @@ Mention **@beethoven** in a channel, or send it a direct message, and it works o
 session and answers in the thread: 👀 on the request, a status reply with **Open in Beethoven** and
 **Stop**, then the agent's answer and its pull requests, and ✅ or ❌. The thread is the session:
 mention the bot in it again (any reply, in a direct message) to queue a follow-up, which carries what
-was said in the thread since as context. A request works on the repositories (`owner/repo`) or the
+was said in the thread since as context. Files shared with the request, or in the thread since the bot
+was last asked there, are attached to its prompt. A request works on the repositories (`owner/repo`) or the
 environment it names, else on the channel's default; otherwise the bot asks, and the answer can
 become the channel's default. Full members of the workspace can start sessions; guests and people
 from other organizations in shared channels can't. Commits are authored by the Slack user, with the
@@ -209,6 +215,10 @@ Like GitHub, Slack is reached through an app, which is either:
   *Your App Configuration Tokens*) in **Settings › Slack**, and the server creates its app with
   Slack's manifest API, then sends you on to add it to the workspace. The token is used once and not
   stored.
+
+The bot needs the `files:read` scope to read shared files. Apps created before Beethoven handled files
+lack it. Add it under **OAuth & Permissions** in the app's settings on api.slack.com, then reinstall
+the app. Until you do, the bot replies with these steps whenever someone shares a file.
 
 Slack only delivers events to a public HTTPS address, so the server needs one; for local testing, a
 tunnel such as `cloudflared tunnel --url http://localhost:7070` works, with its host in
@@ -288,7 +298,10 @@ returns the browser to `/github/<step>`, outside the signed-in API, so those pag
 which completes each step through the API; a single-use state ties each return to the request that
 started it; Slack's installation works the same way. Requests from Slack must carry a valid signature
 from the last five minutes, a redelivered event is acted on once, the bot ignores bots (itself
-included), and what was said in a thread reaches the agent marked as context, not instructions.
+included), and what was said in a thread reaches the agent marked as context, not instructions. The
+bot downloads shared files with its token from Slack's own hosts only. Attached files are served with
+`nosniff` and a sandboxing CSP, and only images and plain text open in the browser; everything else,
+HTML and SVG included, downloads, so a file can't run script as the person viewing it.
 
 ## API
 
@@ -297,6 +310,8 @@ included), and what was said in a thread reaches the agent marked as context, no
 | `GET/POST /api/sessions` | list; create `{prompt, environment_id \| repos, model, effort, title}` |
 | `GET /api/sessions/{id}` | session, prompts and pull requests |
 | `POST /api/sessions/{id}/prompts` | queue `{content, model}` |
+| | to attach files to either, send a multipart form: the JSON in a `request` field, each file in a `file` field |
+| `GET /api/sessions/{id}/attachments/{aid}` | an attached file |
 | `DELETE /api/sessions/{id}/prompts/{pid}` | cancel a prompt |
 | `POST /api/sessions/{id}/stop` · `/archive` · `/pr` | stop; `{archived}`; `{repo, title, body, draft}` |
 | `GET /api/auth` · `POST /api/auth/setup` · `/login` · `/logout` | who is signed in; create the first account; sign in and out |
