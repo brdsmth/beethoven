@@ -4,7 +4,6 @@
 package api
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,13 +31,15 @@ type Server struct {
 	GitHub   *github.Client
 	Slack    *slack.Client // optional, with SlackBot
 	SlackBot *slack.Bot
-	Token    string   // optional: required on /api when set
+	SignIn   bool     // require signing in: for servers reachable beyond this machine
+	Token    string   // optional: accepted instead of signing in (scripts, the CLI); setting it requires signing in
 	Hosts    []string // Host header values accepted besides loopback; "*" accepts any
 	UI       fs.FS
 	Log      *slog.Logger
 	Version  string
 
-	flows flows // GitHub round trips in progress
+	flows flows    // GitHub round trips in progress
+	tries throttle // failed sign-ins
 }
 
 type Info struct {
@@ -64,7 +65,12 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	api := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.guard(h)) }
+	open := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.checked(h)) }
 
+	open("GET /api/auth", s.authState)
+	open("POST /api/auth/setup", s.setup)
+	open("POST /api/auth/login", s.login)
+	open("POST /api/auth/logout", s.logout)
 	api("GET /api/info", s.info)
 	api("GET /api/sessions", s.listSessions)
 	api("POST /api/sessions", s.createSession)
@@ -136,17 +142,24 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// guard protects the API of a server that usually listens on localhost:
-// cross-site requests are refused (CSRF), unexpected Host headers are
-// refused (DNS rebinding), and the token is checked when one is set.
+// guard protects the API: requests must pass checked and, when the server
+// asks for it, come from a signed-in browser or carry the token.
 func (s *Server) guard(h http.Handler) http.Handler {
+	return s.checked(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.signedIn(r) {
+			fail(w, http.StatusUnauthorized, "sign in required")
+			return
+		}
+		h.ServeHTTP(w, r)
+	}))
+}
+
+// checked refuses cross-site requests (CSRF) and unexpected Host headers
+// (DNS rebinding), for a server that often listens on localhost.
+func (s *Server) checked(h http.Handler) http.Handler {
 	return http.NewCrossOriginProtection().Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.hostAllowed(r.Host) {
 			fail(w, http.StatusForbidden, "host not allowed: "+r.Host)
-			return
-		}
-		if s.Token != "" && !s.authorized(r) {
-			fail(w, http.StatusUnauthorized, "missing or invalid token")
 			return
 		}
 		h.ServeHTTP(w, r)
@@ -167,14 +180,6 @@ func (s *Server) hostAllowed(hostport string) bool {
 		}
 	}
 	return false
-}
-
-func (s *Server) authorized(r *http.Request) bool {
-	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if got == "" {
-		got = r.URL.Query().Get("token") // EventSource cannot set headers
-	}
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.Token)) == 1
 }
 
 // ---------------------------------------------------------------- sessions
