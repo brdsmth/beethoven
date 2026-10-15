@@ -65,6 +65,7 @@ var Scopes = []string{
 	"users:read", "users:read.email", // who asks: members only, and the commit author
 	"channels:history", "groups:history", "mpim:history", // the thread a request is part of
 	"channels:read", "groups:read", // channel names, for the settings
+	"files:read", // files shared with requests
 }
 
 type Client struct {
