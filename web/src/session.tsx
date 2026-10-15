@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'preact/hooks';
-import { api, get, onGlobal, subscribe, type Environment, type Ev, type Prompt, type Session } from './api';
+import { api, get, onGlobal, subscribe, type Environment, type Ev, type Prompt, type PullRequest, type Session } from './api';
+import { span } from './insights';
 import { Link, Markdown, safeHref } from './markdown';
 import { Chip, Dot, EffortSelect, Spinner, ago, dur, fail, modEnter, money, useTick } from './util';
 
@@ -57,6 +58,7 @@ export function SessionView({ id }: { id: string }) {
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const [missing, setMissing] = useState('');
   const [kids, setKids] = useState<Session[]>([]);
+  const [prs, setPrs] = useState<PullRequest[]>([]);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   useTick();
@@ -70,9 +72,10 @@ export function SessionView({ id }: { id: string }) {
       if (e.type === 'child') loadKids();
       bump();
     });
-    get<{ session: Session; prompts: Prompt[] }>(`/api/sessions/${id}`).then(r => {
+    get<{ session: Session; prompts: Prompt[]; pull_requests: PullRequest[] }>(`/api/sessions/${id}`).then(r => {
       m.session ||= r.session;
       for (const p of r.prompts) m.prompts[p.id] ||= p;
+      setPrs(r.pull_requests);
       bump();
     }, e => { if (e.status === 404) stop(); setMissing(e.message); });
     loadKids();
@@ -93,7 +96,7 @@ export function SessionView({ id }: { id: string }) {
   if (!s) return <div class="page"><p class="empty">Loading…</p></div>;
   return (
     <div class="session">
-      <Header s={s} kids={kids} />
+      <Header s={s} kids={kids} stats={<Stats m={m} prs={prs} />} />
       <div class="timeline" ref={scroller} onScroll={() => {
         const el = scroller.current!;
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -107,7 +110,35 @@ export function SessionView({ id }: { id: string }) {
   );
 }
 
-function Header({ s, kids }: { s: Session; kids: Session[] }) {
+/** How the session has gone: its cycles, the agents' working time and what
+ * became of its pull requests. */
+function Stats({ m, prs }: { m: Model; prs: PullRequest[] }) {
+  const ran = Object.values(m.prompts).filter(p => p.started_at);
+  const secs = ran.reduce((t, p) => {
+    const ms = m.ends[p.id]?.duration_ms ?? (p.finished_at && p.started_at ? Date.parse(p.finished_at) - Date.parse(p.started_at) : 0);
+    return t + ms / 1000;
+  }, 0);
+  const merged = prs.filter(p => p.state === 'merged'), open = prs.filter(p => p.state === 'open'), closed = prs.filter(p => p.state === 'closed');
+  let pr = '';
+  if (prs.length === 1) {
+    const p = prs[0];
+    pr = p.state === 'merged' && p.merged_at ? `PR merged in ${span((Date.parse(p.merged_at) - Date.parse(p.opened_at)) / 1000)}`
+      : p.state === 'closed' ? 'PR closed unmerged' : 'PR open';
+  } else if (prs.length > 1) {
+    pr = `${prs.length} PRs: ` + [[merged, 'merged'], [open, 'open'], [closed, 'closed']].filter(([l]) => l.length)
+      .map(([l, w]) => `${(l as PullRequest[]).length} ${w}`).join(', ');
+  }
+  if (!ran.length) return null;
+  return (
+    <>
+      <span>{ran.length} {ran.length === 1 ? 'cycle' : 'cycles'}</span>
+      {secs > 0 && <span>{span(secs)} agent time</span>}
+      {pr && <span>{pr}</span>}
+    </>
+  );
+}
+
+function Header({ s, kids, stats }: { s: Session; kids: Session[]; stats: ComponentChildren }) {
   const [pr, setPr] = useState<{ url: string; warning: string }>();
   const [env, setEnv] = useState<string>(); // its name; "" once known to be deleted
   const [busy, setBusy] = useState(false);
@@ -141,6 +172,7 @@ function Header({ s, kids }: { s: Session; kids: Session[] }) {
           <span>sandbox {s.sandbox}</span>
           {s.effort && <span>effort {s.effort}</span>}
           <span>{money(s.cost_usd)}</span>
+          {stats}
           {s.parent_id && <a href={`#/s/${s.parent_id}`}>parent session</a>}
           {s.automation_id && <a href={`#/automations/${s.automation_id}`}>automation</a>}
         </div>
