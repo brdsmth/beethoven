@@ -58,7 +58,7 @@ Server environment:
   BEETHOVEN_ADDR          listen address (127.0.0.1:7070, or 0.0.0.0:$PORT when PORT is set)
   BEETHOVEN_URL           the server's public HTTPS address (on Railway: its domain)
   BEETHOVEN_DATA          data directory (~/.beethoven)
-  BEETHOVEN_TOKEN         require this token on the API (required beyond localhost)
+  BEETHOVEN_TOKEN         an API token for scripts and the CLI, accepted instead of signing in
   BEETHOVEN_HOSTS         extra Host names to accept, comma separated
   BEETHOVEN_SANDBOX       sandbox provider: docker, or modal (default when MODAL_TOKEN_ID is set)
   MODAL_TOKEN_ID, MODAL_TOKEN_SECRET
@@ -122,9 +122,6 @@ func serve(args []string) error {
 	dataDir := fs.String("data", env("BEETHOVEN_DATA", filepath.Join(home(), ".beethoven")), "data directory")
 	fs.Parse(args)
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	if err := needToken(*addr, os.Getenv("BEETHOVEN_TOKEN")); err != nil {
-		return err
-	}
 	if os.Getenv("RAILWAY_ENVIRONMENT") != "" && os.Getenv("RAILWAY_VOLUME_MOUNT_PATH") == "" {
 		log.Warn("no Railway volume is attached: sessions, settings and secrets will be lost on the next deploy; " +
 			"attach one at /data (railway volume add --mount-path /data)")
@@ -224,9 +221,17 @@ func serve(args []string) error {
 	if u, err := url.Parse(public); err == nil && u.Hostname() != "" {
 		hosts = append(hosts, u.Hostname())
 	}
+	signIn := reachable(*addr, hosts)
+	if has, err := db.HasAccounts(ctx); err == nil && signIn && !has {
+		where := public
+		if where == "" {
+			where = "http://" + *addr
+		}
+		log.Warn("this server has no account yet: the first person to open " + where + " creates the one that owns it")
+	}
 	srv := &http.Server{Addr: *addr, Handler: (&api.Server{
-		M: m, Auto: auto, GitHub: gh, Slack: sl, SlackBot: bot, Token: os.Getenv("BEETHOVEN_TOKEN"), Hosts: hosts,
-		UI: web.FS(), Log: log, Version: version,
+		M: m, Auto: auto, GitHub: gh, Slack: sl, SlackBot: bot, SignIn: signIn, Token: os.Getenv("BEETHOVEN_TOKEN"),
+		Hosts: hosts, UI: web.FS(), Log: log, Version: version,
 	}).Handler(), ReadHeaderTimeout: 10 * time.Second}
 
 	errc := make(chan error, 1)
@@ -339,17 +344,16 @@ func publicURL() string {
 	return ""
 }
 
-// needToken refuses to serve beyond localhost without an API token: anyone
-// who could reach the server could run agents with its credentials.
-func needToken(addr, token string) error {
+// reachable reports whether people other than this machine's can reach
+// the server, who must then sign in: it listens beyond localhost, or
+// accepts other host names (a tunnel, a proxy, a platform's domain).
+func reachable(addr string, hosts []string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("addr: %w", err)
+		host = addr
 	}
-	if ip := net.ParseIP(host); token == "" && host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		return fmt.Errorf("set BEETHOVEN_TOKEN to listen on %s: without it, anyone who can reach the server can run agents with its credentials", addr)
-	}
-	return nil
+	ip := net.ParseIP(host)
+	return len(hosts) > 0 || host != "localhost" && (ip == nil || !ip.IsLoopback())
 }
 
 func gitConfig(key string) string {

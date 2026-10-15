@@ -2,20 +2,21 @@ package main
 
 import "testing"
 
-func TestNeedToken(t *testing.T) {
+func TestReachable(t *testing.T) {
 	for _, c := range []struct {
-		addr, token string
-		ok          bool
+		addr  string
+		hosts []string
+		want  bool
 	}{
-		{"127.0.0.1:7070", "", true},
-		{"localhost:7070", "", true},
-		{"[::1]:7070", "", true},
-		{"0.0.0.0:7070", "", false},
-		{":7070", "", false}, // every interface
-		{"0.0.0.0:7070", "s3cret", true},
+		{"127.0.0.1:7070", nil, false},
+		{"localhost:7070", nil, false},
+		{"[::1]:7070", nil, false},
+		{"127.0.0.1:7070", []string{"tunnel.example.com"}, true},
+		{"0.0.0.0:7070", nil, true},
+		{":7070", nil, true}, // every interface
 	} {
-		if err := needToken(c.addr, c.token); (err == nil) != c.ok {
-			t.Errorf("needToken(%q, %q) = %v", c.addr, c.token, err)
+		if got := reachable(c.addr, c.hosts); got != c.want {
+			t.Errorf("reachable(%q, %q) = %v", c.addr, c.hosts, got)
 		}
 	}
 }
