@@ -48,19 +48,21 @@ creating the Modal token need you.
 
    ```sh
    railway init --name beethoven
-   railway up --detach                     # builds the Dockerfile and deploys it
+   railway add --service beethoven
+   railway service link beethoven
+   railway variable set --skip-deploys BEETHOVEN_TOKEN="$(openssl rand -hex 24)" \
+     MODAL_TOKEN_ID=<id> MODAL_TOKEN_SECRET=<secret>
    railway volume add --mount-path /data   # keeps the database across deploys
    railway domain                          # a public HTTPS address
-   railway variable set BEETHOVEN_TOKEN="$(openssl rand -hex 24)" MODAL_TOKEN_ID=<id> MODAL_TOKEN_SECRET=<secret>
+   railway up --detach                     # builds the Dockerfile and deploys it
    ```
 
 3. Open the domain, enter the token (`railway variable list` shows it), then connect GitHub and Slack
    and add an Anthropic key in **Settings**.
 
 Railway assigns the port and the domain; Beethoven listens on that port and uses the domain as its
-address for GitHub, Slack and its sandboxes. Optionally, `railway environment edit --service-config
-<service> deploy.healthcheckPath /healthz` (the service name is in `railway status`) makes deploys
-wait until the server is up. The first
+address for GitHub, Slack and its sandboxes. Optionally, set the service's healthcheck path to
+`/healthz` (**Settings › Deploy** in Railway) so deploys wait until the server is up. The first
 session waits a few minutes while Modal builds the sandbox image; Beethoven starts building it as soon
 as the server starts. Until Modal is configured the server runs, and sessions explain what's missing.
 
