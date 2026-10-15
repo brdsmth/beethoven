@@ -202,7 +202,9 @@ func (c *modalClient) terminate(ctx context.Context, id string) error {
 		return translate(err, false)
 	}
 	defer sb.Detach()
-	_, err = sb.Terminate(ctx, nil)
+	// Wait: until it has ended, its name still finds it, running, and a
+	// Start right after a Stop would reuse it.
+	_, err = sb.Terminate(ctx, &modal.SandboxTerminateParams{Wait: true})
 	return translate(err, false)
 }
 
