@@ -29,7 +29,7 @@ type flows struct {
 }
 
 type flow struct {
-	kind    string // app or authorize
+	kind    string // app, authorize or slack
 	base    string // the server's URL as the browser reaches it
 	expires time.Time
 }
@@ -72,12 +72,14 @@ func baseURL(s string) (string, bool) {
 	return u.Scheme + "://" + u.Host, true
 }
 
-// githubReturn sends the browser GitHub returned from to the UI, with
-// GitHub's parameters and the step.
-func githubReturn(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	q.Set("github", r.PathValue("step"))
-	http.Redirect(w, r, "/?"+q.Encode(), http.StatusFound)
+// returnTo sends a browser that GitHub or Slack returned to the UI, with
+// their parameters and the step.
+func returnTo(service string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		q.Set(service, r.PathValue("step"))
+		http.Redirect(w, r, "/?"+q.Encode(), http.StatusFound)
+	}
 }
 
 func (s *Server) githubStatus(w http.ResponseWriter, r *http.Request) {
