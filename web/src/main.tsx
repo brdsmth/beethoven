@@ -3,6 +3,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { api, get, onAuthRequired, onGlobal, setToken, type Environment, type Info, type Session } from './api';
 import { AutomationEdit, Automations } from './automations';
 import { GitHubReturn, GitHubSetup, githubStep } from './github';
+import { Insights } from './insights';
 import { SlackReturn, slackStep } from './slack';
 import { TargetPicker, fromTarget, targetProblem, toTarget, type Pick } from './pickers';
 import { SessionView } from './session';
@@ -27,6 +28,7 @@ function App() {
   else if (slackStep()) view = <SlackReturn />;
   else if (page === 's' && arg) view = <SessionView key={arg} id={arg} />;
   else if (page === 'automations') view = arg ? <AutomationEdit key={arg} id={arg} /> : <Automations />;
+  else if (page === 'insights') view = <Insights />;
   else if (page === 'settings') view = <Settings info={info} route={route.slice(1)} />;
   else view = <NewSession info={info} />;
   if (page !== 's') document.title = 'Beethoven';
@@ -88,6 +90,7 @@ function Sidebar({ current }: { current: string }) {
       </div>
       <div class="side-foot">
         <a href="#/automations" class={current === 'automations' ? 'active' : ''}>Automations</a>
+        <a href="#/insights" class={current === 'insights' ? 'active' : ''}>Insights</a>
         <a href="#/settings" class={current === 'settings' ? 'active' : ''}>Settings</a>
       </div>
     </nav>

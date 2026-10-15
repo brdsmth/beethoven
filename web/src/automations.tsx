@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { api, get, type Automation, type Environment, type Prompt, type Session, type Spec } from './api';
+import { span } from './insights';
 import { TargetPicker, fromTarget, targetProblem, toTarget, type Pick } from './pickers';
 import { Chip, ConfirmButton, EffortSelect, ModelField, ago, fail, go, money, targetLabel, toast, useForm, useLoad, when } from './util';
 
@@ -129,7 +130,7 @@ export function AutomationEdit({ id }: { id: string }) {
       {runs && (
         <section class="section">
           <h2>Runs</h2>
-          {runs.length === 0 && <p class="empty small">No runs yet.</p>}
+          {runs.length === 0 ? <p class="empty small">No runs yet.</p> : <RunStats runs={runs} />}
           <div class="rows">
             {runs.map(p => (
               <a key={p.id} class="row link" href={`#/s/${p.session_id}`}>
@@ -168,5 +169,21 @@ function HookCreated({ id, url, token }: { id: string; url: string; token: strin
         </div>
       </div>
     </div>
+  );
+}
+
+/** How an automation's recent runs went. */
+function RunStats({ runs }: { runs: Prompt[] }) {
+  const done = runs.filter(p => p.finished_at && p.started_at);
+  if (!done.length) return null;
+  const ok = done.filter(p => p.status === 'done').length;
+  const secs = done.map(p => (Date.parse(p.finished_at!) - Date.parse(p.started_at!)) / 1000).sort((a, b) => a - b);
+  const median = secs.length % 2 ? secs[(secs.length - 1) / 2] : (secs[secs.length / 2 - 1] + secs[secs.length / 2]) / 2;
+  const spent = runs.reduce((t, p) => t + p.cost_usd, 0);
+  return (
+    <p class="hint">
+      Last {done.length} {done.length === 1 ? 'run' : 'runs'}: {Math.round((ok / done.length) * 100)}% succeeded · {span(median)} median
+      · {money(spent)} spent
+    </p>
   );
 }
