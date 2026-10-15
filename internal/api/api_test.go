@@ -182,3 +182,15 @@ func TestInsights(t *testing.T) {
 		t.Errorf("session: %d %v", code, out)
 	}
 }
+
+func TestHealthz(t *testing.T) {
+	srv, _ := server(t, "s3cret")
+	resp, err := http.Get(srv.URL + "/healthz") // no token, any Host
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("healthz: %d", resp.StatusCode)
+	}
+}

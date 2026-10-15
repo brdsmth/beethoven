@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -54,12 +55,19 @@ Client (talks to $BEETHOVEN_URL, default http://127.0.0.1:7070):
       scope: empty (global), owner/name, or env:<environment name>
 
 Server environment:
-  BEETHOVEN_ADDR          listen address (127.0.0.1:7070)
+  BEETHOVEN_ADDR          listen address (127.0.0.1:7070, or 0.0.0.0:$PORT when PORT is set)
+  BEETHOVEN_URL           the server's public HTTPS address (on Railway: its domain)
   BEETHOVEN_DATA          data directory (~/.beethoven)
-  BEETHOVEN_TOKEN         require this token on the API
+  BEETHOVEN_TOKEN         require this token on the API (required beyond localhost)
   BEETHOVEN_HOSTS         extra Host names to accept, comma separated
+  BEETHOVEN_SANDBOX       sandbox provider: docker, or modal (default when MODAL_TOKEN_ID is set)
+  MODAL_TOKEN_ID, MODAL_TOKEN_SECRET
+                          Modal credentials (or ~/.modal.toml)
+  BEETHOVEN_DOCKER_NETWORK
+                          Docker network for sandboxes, e.g. one the server shares
   BEETHOVEN_IMAGE         sandbox image (beethoven-sandbox:latest)
-  BEETHOVEN_SANDBOX_URL   server URL as seen from sandboxes (http://host.docker.internal:<port>)
+  BEETHOVEN_SANDBOX_URL   server URL as seen from sandboxes (Docker: http://host.docker.internal:<port>;
+                          Modal: BEETHOVEN_URL)
   BEETHOVEN_IDLE          stop idle sandboxes after (10m)
   BEETHOVEN_TURN_TIMEOUT  limit for one prompt (2h)
   BEETHOVEN_MODEL         initial default model (then: Settings)
@@ -110,10 +118,18 @@ func main() {
 
 func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	addr := fs.String("addr", env("BEETHOVEN_ADDR", "127.0.0.1:7070"), "listen address")
+	addr := fs.String("addr", env("BEETHOVEN_ADDR", defaultAddr()), "listen address")
 	dataDir := fs.String("data", env("BEETHOVEN_DATA", filepath.Join(home(), ".beethoven")), "data directory")
 	fs.Parse(args)
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if err := needToken(*addr, os.Getenv("BEETHOVEN_TOKEN")); err != nil {
+		return err
+	}
+	if os.Getenv("RAILWAY_ENVIRONMENT") != "" && os.Getenv("RAILWAY_VOLUME_MOUNT_PATH") == "" {
+		log.Warn("no Railway volume is attached: sessions, settings and secrets will be lost on the next deploy; " +
+			"attach one at /data (railway volume add --mount-path /data)")
+	}
+	public := publicURL()
 
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
 		return err
@@ -131,18 +147,14 @@ func serve(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	image := env("BEETHOVEN_IMAGE", "beethoven-sandbox:latest")
-	docker := &sandbox.Docker{}
-	if image == "beethoven-sandbox:latest" {
-		log.Info("checking sandbox image", "image", image)
-		if err := docker.EnsureImage(ctx, image, sandbox.Dockerfile, os.Stderr); err != nil {
-			return err
-		}
-	}
-
+	image := env("BEETHOVEN_IMAGE", sandbox.DefaultImage)
 	_, port, err := net.SplitHostPort(*addr)
 	if err != nil {
 		return fmt.Errorf("addr: %w", err)
+	}
+	box, toolsBase, err := sandboxes(ctx, log, image, port, public)
+	if err != nil {
+		return err
 	}
 	idle, err := time.ParseDuration(env("BEETHOVEN_IDLE", "10m"))
 	if err != nil {
@@ -173,11 +185,11 @@ func serve(args []string) error {
 		IdleTimeout: idle,
 		TurnTimeout: turnTimeout,
 		Author:      author,
-		ToolsURL:    env("BEETHOVEN_SANDBOX_URL", "http://host.docker.internal:"+port) + "/mcp",
+		ToolsURL:    toolsBase + "/mcp",
 		TokenKey:    tokenKey[:],
 		Committer:   store.Author{Name: "Beethoven", Email: "beethoven@localhost"},
 		Env:         passEnv,
-	}, db, docker, agent.Claude{}, gh, log)
+	}, db, box, agent.Claude{}, gh, log)
 	auto := automation.New(m, log)
 	sl := &slack.Client{DB: db}
 	if v := os.Getenv("BEETHOVEN_SLACK_APP"); v != "" {
@@ -208,8 +220,12 @@ func serve(args []string) error {
 			db.SaveSettings(ctx, s)
 		}
 	}
+	hosts := splitList(os.Getenv("BEETHOVEN_HOSTS"))
+	if u, err := url.Parse(public); err == nil && u.Hostname() != "" {
+		hosts = append(hosts, u.Hostname())
+	}
 	srv := &http.Server{Addr: *addr, Handler: (&api.Server{
-		M: m, Auto: auto, GitHub: gh, Slack: sl, SlackBot: bot, Token: os.Getenv("BEETHOVEN_TOKEN"), Hosts: splitList(os.Getenv("BEETHOVEN_HOSTS")),
+		M: m, Auto: auto, GitHub: gh, Slack: sl, SlackBot: bot, Token: os.Getenv("BEETHOVEN_TOKEN"), Hosts: hosts,
 		UI: web.FS(), Log: log, Version: version,
 	}).Handler(), ReadHeaderTimeout: 10 * time.Second}
 
@@ -249,6 +265,91 @@ func secretKey(dir string) ([]byte, error) {
 	k := make([]byte, 32)
 	rand.Read(k)
 	return k, os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(k)+"\n"), 0o600)
+}
+
+// sandboxes opens the sandbox provider, and says where sandboxes reach this
+// server: Modal when BEETHOVEN_SANDBOX says so or Modal credentials are set,
+// otherwise the host's Docker.
+func sandboxes(ctx context.Context, log *slog.Logger, image, port, public string) (sandbox.Provider, string, error) {
+	kind := os.Getenv("BEETHOVEN_SANDBOX")
+	if kind == "" {
+		kind = "docker"
+		if os.Getenv("MODAL_TOKEN_ID") != "" {
+			kind = "modal"
+		}
+	}
+	switch kind {
+	case "docker":
+		if exec.CommandContext(ctx, "docker", "info").Run() != nil {
+			log.Warn("no sandboxes: Docker isn't available here; set MODAL_TOKEN_ID and MODAL_TOKEN_SECRET to use Modal")
+			return sandbox.Unavailable{Reason: "no sandbox provider is configured: set MODAL_TOKEN_ID and MODAL_TOKEN_SECRET " +
+				"to run sandboxes on Modal, or run Beethoven where Docker is available"}, "", nil
+		}
+		d := &sandbox.Docker{}
+		if network := os.Getenv("BEETHOVEN_DOCKER_NETWORK"); network != "" {
+			d.Args = []string{"--network", network}
+		}
+		if image == sandbox.DefaultImage {
+			log.Info("checking sandbox image", "image", image)
+			if err := d.EnsureImage(ctx, image, sandbox.Dockerfile, os.Stderr); err != nil {
+				return nil, "", err
+			}
+		}
+		return d, env("BEETHOVEN_SANDBOX_URL", "http://host.docker.internal:"+port), nil
+	case "modal":
+		url := env("BEETHOVEN_SANDBOX_URL", public)
+		if url == "" {
+			return nil, "", errors.New("Modal sandboxes reach this server over the internet: set BEETHOVEN_URL to its public HTTPS address")
+		}
+		m, err := sandbox.NewModal(env("BEETHOVEN_MODAL_APP", "beethoven"))
+		if err != nil {
+			return nil, "", fmt.Errorf("modal: %w", err)
+		}
+		go func() {
+			log.Info("modal: building the sandbox image (the first time takes a few minutes)")
+			if err := m.Warm(ctx); err != nil && ctx.Err() == nil {
+				log.Warn("modal: building the sandbox image", "err", err)
+				return
+			}
+			log.Info("modal: sandbox image ready")
+		}()
+		return m, url, nil
+	}
+	return nil, "", fmt.Errorf("BEETHOVEN_SANDBOX: unknown provider %q; use docker or modal", kind)
+}
+
+// defaultAddr listens on localhost, or on the port a platform such as
+// Railway assigns in $PORT.
+func defaultAddr() string {
+	if port := os.Getenv("PORT"); port != "" {
+		return "0.0.0.0:" + port
+	}
+	return "127.0.0.1:7070"
+}
+
+// publicURL is the server's address on the internet, if it has one: the
+// BEETHOVEN_URL setting, or the domain Railway assigns.
+func publicURL() string {
+	if v := strings.TrimSuffix(os.Getenv("BEETHOVEN_URL"), "/"); v != "" {
+		return v
+	}
+	if d := os.Getenv("RAILWAY_PUBLIC_DOMAIN"); d != "" {
+		return "https://" + d
+	}
+	return ""
+}
+
+// needToken refuses to serve beyond localhost without an API token: anyone
+// who could reach the server could run agents with its credentials.
+func needToken(addr, token string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("addr: %w", err)
+	}
+	if ip := net.ParseIP(host); token == "" && host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return fmt.Errorf("set BEETHOVEN_TOKEN to listen on %s: without it, anyone who can reach the server can run agents with its credentials", addr)
+	}
+	return nil
 }
 
 func gitConfig(key string) string {
