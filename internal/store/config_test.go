@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"io/fs"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -45,8 +46,8 @@ func TestMigratesVersion1Database(t *testing.T) {
 	}
 	var version int
 	s.r.QueryRow(`PRAGMA user_version`).Scan(&version)
-	if version != 2 {
-		t.Errorf("user_version = %d", version)
+	if names, _ := fs.Glob(migrations, "migrations/*.sql"); version != len(names) {
+		t.Errorf("user_version = %d, want %d", version, len(names))
 	}
 }
 

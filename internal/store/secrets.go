@@ -37,7 +37,7 @@ var secretName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // Names the server sets itself: a secret may not shadow them.
 var reservedNames = map[string]bool{
 	"PATH": true, "HOME": true, "USER": true, "SHELL": true, "TERM": true, "PWD": true, "LANG": true,
-	"HOSTNAME": true, "GH_TOKEN": true, "REPOS": true, "WORKDIR": true, "WORK_BRANCH": true, "BRANCH": true,
+	"HOSTNAME": true, "GH_TOKEN": true, "GH_TOKENS": true, "REPOS": true, "WORKDIR": true, "WORK_BRANCH": true, "BRANCH": true,
 	"ENV_SETUP": true, "ENV_SETUP_ID": true, "ENV_START": true,
 }
 var reservedPrefixes = []string{"BEETHOVEN_", "GIT_AUTHOR_", "GIT_COMMITTER_"}

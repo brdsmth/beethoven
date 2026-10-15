@@ -33,12 +33,14 @@ type Server struct {
 	UI      fs.FS
 	Log     *slog.Logger
 	Version string
+
+	flows flows // GitHub round trips in progress
 }
 
 type Info struct {
 	Version   string       `json:"version"`
 	Author    store.Author `json:"author"`
-	GitHub    bool         `json:"github"`    // a GitHub token is available
+	GitHub    bool         `json:"github"`    // the server can reach GitHub: a connected app or a token
 	Anthropic bool         `json:"anthropic"` // a model credential reaches sandboxes
 	Model     string       `json:"model"`     // the global default; "" = the agent's own
 	Effort    string       `json:"effort"`
@@ -51,8 +53,7 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 		replyErr(w, err)
 		return
 	}
-	tok, _ := s.GitHub.Token(r.Context())
-	reply(w, http.StatusOK, Info{Version: s.Version, Author: eff.Author, GitHub: tok != "",
+	reply(w, http.StatusOK, Info{Version: s.Version, Author: eff.Author, GitHub: s.GitHub.Mode(r.Context()) != "",
 		Anthropic: s.anthropicSource(r.Context()) != "", Model: eff.Model, Effort: eff.Effort, Efforts: session.Efforts})
 }
 
@@ -86,6 +87,13 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/mcp-servers", s.createMCP)
 	api("PUT /api/mcp-servers/{id}", s.updateMCP)
 	api("DELETE /api/mcp-servers/{id}", s.deleteMCP)
+	api("GET /api/github", s.githubStatus)
+	api("POST /api/github/app", s.registerApp)
+	api("POST /api/github/app/created", s.appCreated)
+	api("DELETE /api/github/app", s.forgetApp)
+	api("POST /api/github/authorize", s.authorize)
+	api("POST /api/github/account", s.connectAccount)
+	api("DELETE /api/github/account", s.disconnectAccount)
 	api("GET /api/repos", s.listRepos)
 	api("GET /api/repos/{owner}/{name}/branches", s.listBranches)
 
@@ -104,6 +112,7 @@ func (s *Server) Handler() http.Handler {
 	api("DELETE /api/secrets", s.deleteSecret)
 
 	mux.HandleFunc("POST /hooks/{id}", s.hook)
+	mux.HandleFunc("GET /github/{step}", githubReturn)
 	mux.Handle("/mcp", tools.Handler(s.M))
 	mux.Handle("/", s.static())
 	return mux

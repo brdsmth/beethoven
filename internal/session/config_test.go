@@ -209,3 +209,25 @@ func TestChildInheritsWorkspace(t *testing.T) {
 		t.Errorf("child on one repository = %+v", solo)
 	}
 }
+
+func TestCommitAuthorPrecedence(t *testing.T) {
+	env := fake.NewEnv(t)
+	author := func() store.Author {
+		eff, err := env.M.Effective(ctx, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return eff.Author
+	}
+	if a := author(); a.Name != "Test Owner" {
+		t.Errorf("without a GitHub account: %+v, want the server's identity", a)
+	}
+	env.SCM.Identity = store.Author{Name: "Octo Cat", Email: "7+octo@users.noreply.github.com"}
+	if a := author(); a != env.SCM.Identity {
+		t.Errorf("with a GitHub account: %+v, want the account", a)
+	}
+	env.DB.SaveSettings(ctx, store.Settings{AuthorName: "Jane", AuthorEmail: "jane@example.com"})
+	if a := author(); a.Name != "Jane" {
+		t.Errorf("with an author in the settings: %+v, want the settings'", a)
+	}
+}

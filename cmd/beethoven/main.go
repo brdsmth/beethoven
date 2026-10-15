@@ -62,7 +62,8 @@ Server environment:
   BEETHOVEN_IDLE          stop idle sandboxes after (10m)
   BEETHOVEN_TURN_TIMEOUT  limit for one prompt (2h)
   BEETHOVEN_MODEL         initial default model (then: Settings)
-  GITHUB_TOKEN            GitHub credential (default: gh auth token)
+  BEETHOVEN_GITHUB_APP    a preconfigured GitHub App: credentials JSON, or a file holding it
+  GITHUB_TOKEN            GitHub token until someone connects the app (default: gh auth token)
   ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN
                           passed to sandboxes unless overridden by secrets
 `
@@ -151,11 +152,12 @@ func serve(args []string) error {
 	}
 	author := store.Author{Name: env("BEETHOVEN_GIT_NAME", gitConfig("user.name")), Email: env("BEETHOVEN_GIT_EMAIL", gitConfig("user.email"))}
 	gh := github.New(os.Getenv("GITHUB_TOKEN"))
-	gh.Stored = func(ctx context.Context) string {
-		creds, _ := db.Credentials(ctx)
-		return creds["GITHUB_TOKEN"]
+	gh.DB = db
+	if v := os.Getenv("BEETHOVEN_GITHUB_APP"); v != "" {
+		if gh.EnvApp, err = github.LoadApp(v); err != nil {
+			return fmt.Errorf("BEETHOVEN_GITHUB_APP: %w", err)
+		}
 	}
-	ghToken, _ := gh.Token(ctx)
 
 	passEnv := map[string]string{}
 	for _, k := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL"} {
@@ -193,7 +195,7 @@ func serve(args []string) error {
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
-	log.Info("beethoven is running", "url", "http://"+*addr, "data", *dataDir, "github", ghToken != "")
+	log.Info("beethoven is running", "url", "http://"+*addr, "data", *dataDir, "github", gh.Mode(ctx))
 	select {
 	case err := <-errc:
 		return err
