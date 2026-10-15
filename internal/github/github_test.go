@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/brdsmth/beethoven/internal/fake"
 	"github.com/brdsmth/beethoven/internal/github"
@@ -156,5 +157,46 @@ func TestPreconfiguredAppWins(t *testing.T) {
 	}
 	if _, err := github.ParseApp([]byte(`{"id":1,"slug":"x","client_id":"c","client_secret":"s","pem":"nope"}`)); err == nil {
 		t.Error("parsed an app without a private key")
+	}
+}
+
+func TestPullRequestsAreTrackedUntilMerged(t *testing.T) {
+	gh := fake.NewGitHub(t)
+	gh.Install("acme/app", 1, true)
+	c := connected(t, gh)
+	s := store.Session{ID: store.NewID(), Title: "t", Branch: "b", Source: "web", Status: "idle", Sandbox: "none",
+		Repos: []store.RepoRef{{Repo: "acme/app", PRURL: "https://github.com/acme/app/pull/5"}}}
+	if err := c.DB.CreateSession(ctx, &s); err != nil {
+		t.Fatal(err)
+	}
+	gh.SetPull("acme/app", 5, map[string]any{"state": "open", "draft": true, "created_at": "2026-10-01T10:00:00Z"})
+	sync := func() store.PullRequest {
+		t.Helper()
+		if err := c.SyncPullRequests(ctx); err != nil {
+			t.Fatal(err)
+		}
+		prs, _ := c.DB.SessionPullRequests(ctx, s.ID)
+		if len(prs) != 1 {
+			t.Fatalf("tracking %d pull requests", len(prs))
+		}
+		return prs[0]
+	}
+
+	if p := sync(); p.State != "open" || !p.Draft || p.OpenedAt.UTC().Hour() != 10 {
+		t.Errorf("first sync: %+v", p)
+	}
+	sync()
+	if gh.PullReads["304"] != 1 {
+		t.Errorf("reads = %v; an unchanged pull request should come back 304", gh.PullReads)
+	}
+	gh.SetPull("acme/app", 5, map[string]any{"state": "closed", "created_at": "2026-10-01T10:00:00Z",
+		"merged_at": "2026-10-01T13:00:00Z", "closed_at": "2026-10-01T13:00:00Z"})
+	if p := sync(); p.State != "merged" || p.MergedAt == nil || p.MergedAt.Sub(p.OpenedAt) != 3*time.Hour {
+		t.Errorf("after merging: %+v", p)
+	}
+	reads := gh.PullReads["200"] + gh.PullReads["304"]
+	sync()
+	if gh.PullReads["200"]+gh.PullReads["304"] != reads {
+		t.Error("polled a merged pull request")
 	}
 }
