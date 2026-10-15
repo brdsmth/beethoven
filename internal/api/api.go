@@ -80,6 +80,7 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/sessions/{id}/stop", s.stop)
 	api("POST /api/sessions/{id}/archive", s.archive)
 	api("POST /api/sessions/{id}/pr", s.openPR)
+	api("GET /api/sessions/{id}/attachments/{aid}", s.attachment)
 	api("GET /api/sessions/{id}/events", s.sessionEvents)
 	api("GET /api/events", s.allEvents)
 
@@ -197,7 +198,8 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 // createReq targets an environment, repositories (repo/base_branch is a
-// shorthand for one), or neither for a scratch workspace.
+// shorthand for one), or neither for a scratch workspace. Sent as a
+// multipart form, it can attach files (see decodeWithFiles).
 type createReq struct {
 	Prompt        string          `json:"prompt"`
 	EnvironmentID string          `json:"environment_id"`
@@ -212,7 +214,8 @@ type createReq struct {
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	var in createReq
-	if !decode(w, r, &in) {
+	files, ok := decodeWithFiles(w, r, &in)
+	if !ok {
 		return
 	}
 	if in.Source != "cli" {
@@ -221,8 +224,9 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(in.Repo) != "" {
 		in.Repos = append([]store.RepoRef{{Repo: in.Repo, BaseBranch: in.BaseBranch}}, in.Repos...)
 	}
-	sess, p, err := s.M.Submit(r.Context(), session.Request{Prompt: in.Prompt, EnvironmentID: in.EnvironmentID,
-		Repos: in.Repos, Model: in.Model, Effort: in.Effort, Title: in.Title, Author: s.author(r), Source: in.Source})
+	sess, p, err := s.M.Submit(r.Context(), session.Request{Prompt: in.Prompt, Attachments: files,
+		EnvironmentID: in.EnvironmentID, Repos: in.Repos, Model: in.Model, Effort: in.Effort, Title: in.Title,
+		Author: s.author(r), Source: in.Source})
 	if err != nil {
 		replyErr(w, err)
 		return
@@ -279,14 +283,15 @@ func (s *Server) postPrompt(w http.ResponseWriter, r *http.Request) {
 		Effort  string `json:"effort"`
 		Source  string `json:"source"`
 	}
-	if !decode(w, r, &in) {
+	files, ok := decodeWithFiles(w, r, &in)
+	if !ok {
 		return
 	}
 	if in.Source != "cli" {
 		in.Source = "web"
 	}
-	p, err := s.M.Enqueue(r.Context(), r.PathValue("id"), session.PromptInput{Content: in.Content, Model: in.Model,
-		Effort: in.Effort, Author: s.author(r), Source: in.Source})
+	p, err := s.M.Enqueue(r.Context(), r.PathValue("id"), session.PromptInput{Content: in.Content, Attachments: files,
+		Model: in.Model, Effort: in.Effort, Author: s.author(r), Source: in.Source})
 	if err != nil {
 		replyErr(w, err)
 		return
