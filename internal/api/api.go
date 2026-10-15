@@ -68,7 +68,6 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/sessions", s.listSessions)
 	api("POST /api/sessions", s.createSession)
 	api("GET /api/sessions/{id}", s.getSession)
-	api("DELETE /api/sessions/{id}", s.deleteSession)
 	api("POST /api/sessions/{id}/prompts", s.postPrompt)
 	api("DELETE /api/sessions/{id}/prompts/{pid}", s.cancelPrompt)
 	api("POST /api/sessions/{id}/stop", s.stop)
@@ -129,6 +128,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /slack/{step}", returnTo("slack"))
 	}
 	mux.Handle("/mcp", tools.Handler(s.M))
+	api("/api/", func(w http.ResponseWriter, r *http.Request) { fail(w, http.StatusNotFound, "no such endpoint") })
 	mux.Handle("/", s.static())
 	return mux
 }
@@ -234,14 +234,6 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, http.StatusOK, map[string]any{"session": sess, "prompts": orEmpty(prompts)})
-}
-
-func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
-	if err := s.M.Delete(r.Context(), r.PathValue("id")); err != nil {
-		replyErr(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) postPrompt(w http.ResponseWriter, r *http.Request) {

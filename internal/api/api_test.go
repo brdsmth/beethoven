@@ -116,11 +116,8 @@ func TestSessionLifecycleAndStream(t *testing.T) {
 	if code, out = do(t, "POST", srv.URL+"/api/sessions/"+id+"/pr", `{"title":"","body":"","draft":true}`); code != 200 || out["url"] != "https://github.com/acme/app/pull/1" {
 		t.Errorf("pr: %d %v", code, out)
 	}
-	if code, _ = do(t, "DELETE", srv.URL+"/api/sessions/"+id, ""); code != http.StatusNoContent {
-		t.Errorf("delete: %d", code)
-	}
-	if code, _ = do(t, "GET", srv.URL+"/api/sessions/"+id, ""); code != http.StatusNotFound {
-		t.Errorf("get deleted: %d", code)
+	if code, _ = do(t, "DELETE", srv.URL+"/api/sessions/"+id, ""); code != http.StatusNotFound {
+		t.Errorf("delete: %d, want sessions to be archived instead", code)
 	}
 }
 

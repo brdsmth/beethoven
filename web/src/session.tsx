@@ -2,7 +2,7 @@ import type { ComponentChildren } from 'preact';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'preact/hooks';
 import { api, get, onGlobal, subscribe, type Environment, type Ev, type Prompt, type Session } from './api';
 import { Link, Markdown, safeHref } from './markdown';
-import { Chip, ConfirmButton, Dot, EffortSelect, Spinner, ago, dur, fail, go, modEnter, money, useTick } from './util';
+import { Chip, Dot, EffortSelect, Spinner, ago, dur, fail, modEnter, money, useTick } from './util';
 
 type End = { id: string; status: string; error?: string; cost_usd: number; duration_ms?: number };
 type Group = { id: string; items: Ev[] };
@@ -77,7 +77,6 @@ export function SessionView({ id }: { id: string }) {
     }, e => { if (e.status === 404) stop(); setMissing(e.message); });
     loadKids();
     const off = onGlobal(e => {
-      if (e.type === 'deleted' && e.data.id === id) { stop(); setMissing('This session was deleted.'); }
       if (e.type === 'session' && e.data.parent_id === id) setKids(k => [e.data, ...k.filter(x => x.id !== e.data.id)]);
     });
     return () => { stop(); off(); cancelAnimationFrame(raf); };
@@ -121,10 +120,6 @@ function Header({ s, kids }: { s: Session; kids: Session[] }) {
     setBusy(false);
   };
   const base = `/api/sessions/${s.id}`;
-  const remove = async () => {
-    await api('DELETE', base);
-    go('/');
-  };
   return (
     <header class="s-head">
       <div class="col">
@@ -135,7 +130,6 @@ function Header({ s, kids }: { s: Session; kids: Session[] }) {
             <button class="btn" disabled={busy} onClick={act(() => api('POST', `${base}/archive`, { archived: !s.archived }))}>
               {s.archived ? 'Unarchive' : 'Archive'}
             </button>
-            <ConfirmButton ask="Delete session" note="Its sandbox and history go for good." onConfirm={remove} />
           </div>
         </div>
         <div class="meta">

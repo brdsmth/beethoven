@@ -52,7 +52,8 @@ bin/beethoven secret import -scope env:"web stack" < .env
 └────────────────────────────────────────────────────────────┘
 ```
 
-**Session.** A prompt queue, an event log and a sandbox, owned by one runner. Prompts run strictly in
+**Session.** A prompt queue, an event log and a sandbox, owned by one runner. Sessions are archived,
+never deleted, so their history stays available. Prompts run strictly in
 order; a prompt sent while the agent works waits its turn. Stop ends the running prompt and cancels
 the queue. A session's status is derived from its prompts: `running`, then `done`, `failed` or
 `stopped`.
@@ -218,7 +219,7 @@ included), and what was said in a thread reaches the agent marked as context, no
 | | |
 |---|---|
 | `GET/POST /api/sessions` | list; create `{prompt, environment_id \| repos, model, effort, title}` |
-| `GET/DELETE /api/sessions/{id}` | session and prompts; delete with its sandbox |
+| `GET /api/sessions/{id}` | session and prompts |
 | `POST /api/sessions/{id}/prompts` | queue `{content, model}` |
 | `DELETE /api/sessions/{id}/prompts/{pid}` | cancel a prompt |
 | `POST /api/sessions/{id}/stop` · `/archive` · `/pr` | stop; `{archived}`; `{repo, title, body, draft}` |

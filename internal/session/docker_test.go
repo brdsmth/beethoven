@@ -73,12 +73,7 @@ func TestDocker(t *testing.T) {
 		t.Errorf("result after restart = %q, want the conversation resumed at turn 3", got.Result)
 	}
 
-	if err := m.Delete(ctx, s.ID); err != nil {
-		t.Fatal(err)
-	}
-	if exec.Command("docker", "inspect", "beethoven-"+s.ID).Run() == nil {
-		t.Error("container still exists after delete")
-	}
+	run(t, "", "docker", "rm", "-f", "-v", "beethoven-"+s.ID)
 }
 
 // TestDockerEnvironment boots a two-repository environment with scripts,
