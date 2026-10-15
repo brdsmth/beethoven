@@ -74,7 +74,8 @@ func TestModalLive(t *testing.T) {
 	if code, _ := m.Exec(cctx, id, Cmd{Args: []string{"sh", "-c", "sleep 300 & sleep 300"}}); code != -1 {
 		t.Errorf("cancel: exit %d", code)
 	}
-	if left := run(id, "", "sh", "-c", "pgrep -c sleep || true"); left != "0" {
+	// Not every sleep: the sandbox's own process is `sleep infinity`.
+	if left := run(id, "", "sh", "-c", "pgrep -c -f '^sleep 300' || true"); left != "0" {
 		t.Errorf("%s sleep processes left after cancelling", left)
 	}
 }
