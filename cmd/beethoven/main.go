@@ -27,6 +27,7 @@ import (
 	"github.com/brdsmth/beethoven/internal/github"
 	"github.com/brdsmth/beethoven/internal/sandbox"
 	"github.com/brdsmth/beethoven/internal/session"
+	"github.com/brdsmth/beethoven/internal/slack"
 	"github.com/brdsmth/beethoven/internal/store"
 	"github.com/brdsmth/beethoven/web"
 )
@@ -63,6 +64,7 @@ Server environment:
   BEETHOVEN_TURN_TIMEOUT  limit for one prompt (2h)
   BEETHOVEN_MODEL         initial default model (then: Settings)
   BEETHOVEN_GITHUB_APP    a preconfigured GitHub App: credentials JSON, or a file holding it
+  BEETHOVEN_SLACK_APP     a preconfigured Slack app: credentials JSON, or a file holding it
   GITHUB_TOKEN            GitHub token until someone connects the app (default: gh auth token)
   ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN
                           passed to sandboxes unless overridden by secrets
@@ -177,6 +179,23 @@ func serve(args []string) error {
 		Env:         passEnv,
 	}, db, docker, agent.Claude{}, gh, log)
 	auto := automation.New(m, log)
+	sl := &slack.Client{DB: db}
+	if v := os.Getenv("BEETHOVEN_SLACK_APP"); v != "" {
+		if sl.EnvApp, err = slack.LoadApp(v); err != nil {
+			return fmt.Errorf("BEETHOVEN_SLACK_APP: %w", err)
+		}
+	}
+	bot := slack.NewBot(sl, m, func(ctx context.Context) ([]string, error) {
+		if gh.Mode(ctx) == "" {
+			return nil, nil
+		}
+		repos, err := gh.Repos(ctx)
+		names := make([]string, len(repos))
+		for i, r := range repos {
+			names[i] = r.Repo
+		}
+		return names, err
+	}, log)
 	if err := m.Start(ctx); err != nil {
 		return err
 	}
@@ -189,7 +208,7 @@ func serve(args []string) error {
 		}
 	}
 	srv := &http.Server{Addr: *addr, Handler: (&api.Server{
-		M: m, Auto: auto, GitHub: gh, Token: os.Getenv("BEETHOVEN_TOKEN"), Hosts: splitList(os.Getenv("BEETHOVEN_HOSTS")),
+		M: m, Auto: auto, GitHub: gh, Slack: sl, SlackBot: bot, Token: os.Getenv("BEETHOVEN_TOKEN"), Hosts: splitList(os.Getenv("BEETHOVEN_HOSTS")),
 		UI: web.FS(), Log: log, Version: version,
 	}).Handler(), ReadHeaderTimeout: 10 * time.Second}
 

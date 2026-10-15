@@ -20,19 +20,22 @@ import (
 	"github.com/brdsmth/beethoven/internal/automation"
 	"github.com/brdsmth/beethoven/internal/github"
 	"github.com/brdsmth/beethoven/internal/session"
+	"github.com/brdsmth/beethoven/internal/slack"
 	"github.com/brdsmth/beethoven/internal/store"
 	"github.com/brdsmth/beethoven/internal/tools"
 )
 
 type Server struct {
-	M       *session.Manager
-	Auto    *automation.Service
-	GitHub  *github.Client
-	Token   string   // optional: required on /api when set
-	Hosts   []string // Host header values accepted besides loopback; "*" accepts any
-	UI      fs.FS
-	Log     *slog.Logger
-	Version string
+	M        *session.Manager
+	Auto     *automation.Service
+	GitHub   *github.Client
+	Slack    *slack.Client // optional, with SlackBot
+	SlackBot *slack.Bot
+	Token    string   // optional: required on /api when set
+	Hosts    []string // Host header values accepted besides loopback; "*" accepts any
+	UI       fs.FS
+	Log      *slog.Logger
+	Version  string
 
 	flows flows // GitHub round trips in progress
 }
@@ -112,7 +115,19 @@ func (s *Server) Handler() http.Handler {
 	api("DELETE /api/secrets", s.deleteSecret)
 
 	mux.HandleFunc("POST /hooks/{id}", s.hook)
-	mux.HandleFunc("GET /github/{step}", githubReturn)
+	mux.HandleFunc("GET /github/{step}", returnTo("github"))
+	if s.Slack != nil && s.SlackBot != nil {
+		api("GET /api/slack", s.slackStatus)
+		api("POST /api/slack/app", s.createSlackApp)
+		api("DELETE /api/slack/app", s.forgetSlackApp)
+		api("POST /api/slack/install", s.installSlack)
+		api("POST /api/slack/installed", s.slackInstalled)
+		api("DELETE /api/slack/installations/{team}", s.uninstallSlack)
+		api("DELETE /api/slack/channels/{team}/{channel}", s.deleteSlackChannel)
+		mux.HandleFunc("POST /slack/events", s.SlackBot.Events) // signed by Slack
+		mux.HandleFunc("POST /slack/interactions", s.SlackBot.Interactions)
+		mux.HandleFunc("GET /slack/{step}", returnTo("slack"))
+	}
 	mux.Handle("/mcp", tools.Handler(s.M))
 	mux.Handle("/", s.static())
 	return mux
