@@ -55,7 +55,7 @@ func (r *runner) enqueue(ctx context.Context, in PromptInput) (store.Prompt, err
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p := store.Prompt{ID: store.NewID(), SessionID: r.id, Content: in.Content, Model: in.Model, Effort: in.Effort,
-		Author: in.Author, Source: in.Source, DedupKey: in.DedupKey, AutomationID: in.AutomationID}
+		Author: in.Author, Source: in.Source, DedupKey: in.DedupKey, AutomationID: in.AutomationID, Attachments: in.Attachments}
 	if p.Author == (store.Author{}) {
 		p.Author = r.s.Author
 	}
@@ -191,10 +191,22 @@ func (r *runner) execute(ctx context.Context, p store.Prompt) outcome {
 	if err != nil {
 		return outcome{status: store.Failed, err: err.Error()}
 	}
+	prompt := p.Content
+	files, err := r.m.db.PromptFiles(ctx, p.ID)
+	if err != nil {
+		return outcome{status: store.Failed, err: err.Error()}
+	}
+	if len(files) > 0 {
+		dir, err := r.attach(ctx, id, p.ID, files)
+		if err != nil {
+			return outcome{status: store.Failed, err: "attachments: " + err.Error()}
+		}
+		prompt = withAttachments(prompt, dir, files)
+	}
 	resume := s.AgentSession
 	for attempt := 0; ; attempt++ {
 		t := agent.Turn{
-			Prompt: p.Content,
+			Prompt: prompt,
 			Model:  firstOf(p.Model, s.Model, eff.Model),
 			Effort: firstOf(p.Effort, s.Effort, eff.Effort),
 			Resume: resume,
