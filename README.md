@@ -50,15 +50,15 @@ creating the Modal token need you.
    railway init --name beethoven
    railway add --service beethoven
    railway service link beethoven
-   railway variable set --skip-deploys BEETHOVEN_TOKEN="$(openssl rand -hex 24)" \
-     MODAL_TOKEN_ID=<id> MODAL_TOKEN_SECRET=<secret>
+   railway variable set --skip-deploys MODAL_TOKEN_ID=<id> MODAL_TOKEN_SECRET=<secret>
    railway volume add --mount-path /data   # keeps the database across deploys
    railway domain                          # a public HTTPS address
    railway up --detach                     # builds the Dockerfile and deploys it
    ```
 
-3. Open the domain, enter the token (`railway variable list` shows it), then connect GitHub and Slack
-   and add an Anthropic key in **Settings**.
+3. Open the domain as soon as the deploy is up and create your account: on a new server, the first
+   visitor creates the account that owns it. Then connect GitHub and Slack and add an Anthropic key
+   in **Settings**.
 
 Railway assigns the port and the domain; Beethoven listens on that port and uses the domain as its
 address for GitHub, Slack and its sandboxes. Optionally, set the service's healthcheck path to
@@ -70,8 +70,8 @@ as the server starts. Until Modal is configured the server runs, and sessions ex
 
 Use the [quick start](#quick-start) on a Mac or Linux machine with Docker, or run the server's image
 with the Docker socket mounted. To reach it from the internet, put it behind HTTPS (for testing, a
-tunnel such as `cloudflared tunnel --url http://localhost:7070` works) and set `BEETHOVEN_URL`,
-`BEETHOVEN_TOKEN` and `BEETHOVEN_HOSTS`.
+tunnel such as `cloudflared tunnel --url http://localhost:7070` works) and set `BEETHOVEN_URL` and
+`BEETHOVEN_HOSTS`; the server then asks people to sign in.
 
 ## How it works
 
@@ -249,7 +249,7 @@ keep their history.
 | `BEETHOVEN_ADDR` | `127.0.0.1:7070`, or `0.0.0.0:$PORT` when `PORT` is set | listen address |
 | `BEETHOVEN_URL` | Railway's domain, if any | the server's public HTTPS address |
 | `BEETHOVEN_DATA` | `~/.beethoven` | database and encryption key |
-| `BEETHOVEN_TOKEN` | — | require a bearer token on the API; required to listen beyond localhost |
+| `BEETHOVEN_TOKEN` | — | an API token for scripts and the CLI (`Authorization: Bearer`), accepted instead of signing in |
 | `BEETHOVEN_HOSTS` | — | extra `Host` names to accept (for access through a proxy) |
 | `BEETHOVEN_SANDBOX` | `modal` when `MODAL_TOKEN_ID` is set, else `docker` | sandbox provider |
 | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | `~/.modal.toml` | Modal credentials |
@@ -269,16 +269,22 @@ Settings saved in the UI take precedence over `BEETHOVEN_IDLE`, `BEETHOVEN_TURN_
 `BEETHOVEN_IMAGE`, which act as defaults.
 
 On Linux, sandboxes reach the server through the Docker bridge, so listen on an address they can
-reach (for example `BEETHOVEN_ADDR=0.0.0.0:7070` with `BEETHOVEN_TOKEN` set).
+reach (for example `BEETHOVEN_ADDR=0.0.0.0:7070`); the UI then asks you to sign in.
 
 ## Security model
 
-Single user, trusted repositories. The API listens on localhost and rejects cross-site requests and
-foreign `Host` headers (CSRF and DNS rebinding); set `BEETHOVEN_TOKEN` before exposing it. Agents run
+Trusted repositories. The API rejects cross-site requests and foreign `Host` headers (CSRF and DNS
+rebinding). On localhost it is open to this machine; a server reachable beyond it (listening on
+another address, or accepting other host names) asks people to sign in with an email and password.
+Passwords are stored as salted PBKDF2-SHA256 hashes; a signed-in browser holds an `HttpOnly`,
+`SameSite=Lax` cookie for 30 days, stored only as its hash; ten failed sign-ins for an email within
+15 minutes block it until the window passes. A new server belongs to whoever creates the first
+account, so create it as soon as the server is up. `BEETHOVEN_TOKEN`, when set, works instead of
+signing in, for scripts and the CLI. Agents run
 with permissions bypassed inside their container, see the sandbox secrets, and can reach the network.
 Their tool token only acts on their own session and its children. GitHub tokens reach a sandbox only
 for the clone and push commands the server runs, each limited to one repository for an hour. GitHub
-returns the browser to `/github/<step>` without the API token, so those pages only redirect to the UI,
+returns the browser to `/github/<step>`, outside the signed-in API, so those pages only redirect to the UI,
 which completes each step through the API; a single-use state ties each return to the request that
 started it; Slack's installation works the same way. Requests from Slack must carry a valid signature
 from the last five minutes, a redelivered event is acted on once, the bot ignores bots (itself
@@ -293,6 +299,7 @@ included), and what was said in a thread reaches the agent marked as context, no
 | `POST /api/sessions/{id}/prompts` | queue `{content, model}` |
 | `DELETE /api/sessions/{id}/prompts/{pid}` | cancel a prompt |
 | `POST /api/sessions/{id}/stop` · `/archive` · `/pr` | stop; `{archived}`; `{repo, title, body, draft}` |
+| `GET /api/auth` · `POST /api/auth/setup` · `/login` · `/logout` | who is signed in; create the first account; sign in and out |
 | `GET /api/sessions/{id}/events` | server-sent events; `Last-Event-ID` resumes |
 | `GET /api/events` | live state of every session |
 | `/api/automations[/{id}[/run\|/runs]]` | CRUD, run now, run history |
