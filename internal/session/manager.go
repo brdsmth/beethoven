@@ -165,6 +165,7 @@ func (m *Manager) Shutdown(timeout time.Duration) {
 // a list of repositories, or (with neither) a scratch workspace.
 type Request struct {
 	Prompt        string
+	Attachments   []store.Attachment // files for the agent: a name, a declared type and the content
 	EnvironmentID string
 	Repos         []store.RepoRef // the first is the primary
 	Model         string          // "" = the effective default, resolved per prompt
@@ -180,10 +181,11 @@ type Request struct {
 
 // Submit queues r.Prompt on the session named by r.Key, or on a new session.
 func (m *Manager) Submit(ctx context.Context, r Request) (store.Session, store.Prompt, error) {
-	if strings.TrimSpace(r.Prompt) == "" {
+	if strings.TrimSpace(r.Prompt) == "" && len(r.Attachments) == 0 {
 		return store.Session{}, store.Prompt{}, fmt.Errorf("%w: empty prompt", ErrInvalid)
 	}
-	in := PromptInput{Content: r.Prompt, Author: r.Author, Source: r.Source, DedupKey: r.DedupKey, AutomationID: r.AutomationID}
+	in := PromptInput{Content: r.Prompt, Attachments: r.Attachments, Author: r.Author, Source: r.Source,
+		DedupKey: r.DedupKey, AutomationID: r.AutomationID}
 	if r.Key != "" {
 		// A continued session keeps its own settings; carry the request's
 		// choices on the prompt instead.
@@ -268,6 +270,7 @@ func (m *Manager) create(ctx context.Context, r Request) (store.Session, error) 
 
 type PromptInput struct {
 	Content      string
+	Attachments  []store.Attachment
 	Model        string // overrides the session's for this prompt
 	Effort       string
 	Author       store.Author
@@ -278,10 +281,14 @@ type PromptInput struct {
 
 // Enqueue adds a prompt to an existing session's queue.
 func (m *Manager) Enqueue(ctx context.Context, sessionID string, in PromptInput) (store.Prompt, error) {
-	if strings.TrimSpace(in.Content) == "" {
+	if strings.TrimSpace(in.Content) == "" && len(in.Attachments) == 0 {
 		return store.Prompt{}, fmt.Errorf("%w: empty prompt", ErrInvalid)
 	}
 	if err := ValidateOverrides(store.Overrides{Model: in.Model, Effort: in.Effort}); err != nil {
+		return store.Prompt{}, err
+	}
+	var err error
+	if in.Attachments, err = prepareAttachments(in.Attachments); err != nil {
 		return store.Prompt{}, err
 	}
 	r, err := m.runner(ctx, sessionID)
@@ -403,5 +410,8 @@ func titleOf(r Request) string {
 		return t
 	}
 	line, _, _ := strings.Cut(strings.TrimSpace(r.Prompt), "\n")
+	if line == "" && len(r.Attachments) > 0 {
+		line = fileName(r.Attachments[0].Name)
+	}
 	return clip(line, 80)
 }

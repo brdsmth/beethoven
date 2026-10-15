@@ -27,12 +27,24 @@ type Provider struct {
 	Boots   []sandbox.Cmd  // every boot script run
 	Specs   []sandbox.Spec // every sandbox started
 	Pushes  []sandbox.Cmd
-	BootErr bool // make boot fail
+	Files   map[string][]byte // files written into sandboxes, by path; read with File
+	BootErr bool              // make boot fail
 }
 
 func NewProvider() *Provider {
-	return &Provider{running: map[string]bool{}, convos: map[string]int{}}
+	return &Provider{running: map[string]bool{}, convos: map[string]int{}, Files: map[string][]byte{}}
 }
+
+// File returns a file written into a sandbox.
+func (p *Provider) File(path string) ([]byte, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	b, ok := p.Files[path]
+	return b, ok
+}
+
+// AttachmentDir is where the agent's home would hold a prompt's attachments.
+func AttachmentDir(promptID string) string { return "/home/agent/attachments/" + promptID }
 
 func (p *Provider) Calls() []string {
 	p.mu.Lock()
@@ -107,6 +119,14 @@ func (p *Provider) Exec(ctx context.Context, id string, c sandbox.Cmd) (int, err
 		p.mu.Lock()
 		p.Pushes = append(p.Pushes, c)
 		p.mu.Unlock()
+		return 0, nil
+	case len(c.Args) == 3 && c.Args[0] == "sh" && strings.Contains(c.Args[2], "/attachments/$PROMPT"):
+		data, _ := io.ReadAll(c.Stdin)
+		dir := AttachmentDir(c.Env["PROMPT"])
+		p.mu.Lock()
+		p.Files[dir+"/"+c.Env["NAME"]] = data
+		p.mu.Unlock()
+		fmt.Fprintln(c.Stdout, dir)
 		return 0, nil
 	}
 	p.mu.Lock()

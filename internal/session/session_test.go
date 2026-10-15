@@ -407,3 +407,60 @@ func TestLiveEventsReachSubscribers(t *testing.T) {
 		t.Error("no global session event")
 	}
 }
+
+func TestAttachmentsReachTheAgent(t *testing.T) {
+	env := fake.NewEnv(t)
+	png := []byte("\x89PNG\r\n\x1a\nrest")
+	s, p := submit(t, env, "", func(r *session.Request) {
+		r.Attachments = []store.Attachment{
+			{Name: "image.png", ContentType: "application/octet-stream", Data: png},
+			{Name: "Image.png", Data: png},
+			{Name: "../../etc/passwd", ContentType: "text/plain", Data: []byte("root:x:0:0")},
+		}
+	})
+	if s.Title != "image.png" {
+		t.Errorf("title = %q, want the first file's name", s.Title)
+	}
+	waitStatus(t, env, p.ID, store.Done)
+
+	dir := fake.AttachmentDir(p.ID)
+	for name, want := range map[string][]byte{"image.png": png, "Image-2.png": png, "passwd": []byte("root:x:0:0")} {
+		if got, ok := env.Box.File(dir + "/" + name); !ok || string(got) != string(want) {
+			t.Errorf("%s in the sandbox = %q, %v; want %q", name, got, ok, want)
+		}
+	}
+	got, _ := env.DB.Prompt(ctx, p.ID)
+	if a := got.Attachments; len(a) != 3 || a[0].ContentType != "image/png" || a[2].ContentType != "text/plain" {
+		t.Errorf("stored attachments = %+v", a)
+	}
+
+	evs, _ := env.DB.Events(ctx, s.ID, 0, 1000)
+	var said string
+	for _, e := range evs {
+		switch e.Type {
+		case session.EvPrompt:
+			if !strings.Contains(string(e.Data), `"name":"Image-2.png"`) {
+				t.Errorf("the prompt event lacks the attachments: %s", e.Data)
+			}
+		case "text":
+			said = string(e.Data)
+		}
+	}
+	for _, want := range []string{"saved in " + dir, "- image.png (image/png, 12 B)", "- passwd (text/plain, 10 B)"} {
+		if !strings.Contains(said, want) {
+			t.Errorf("the agent was not told %q; it got %s", want, said)
+		}
+	}
+}
+
+func TestAttachmentLimits(t *testing.T) {
+	env := fake.NewEnv(t)
+	tooMany := make([]store.Attachment, session.MaxAttachments+1)
+	if _, _, err := env.M.Submit(ctx, session.Request{Prompt: "p", Attachments: tooMany, Source: "test"}); !errors.Is(err, session.ErrInvalid) {
+		t.Errorf("too many files: err = %v, want invalid", err)
+	}
+	tooBig := []store.Attachment{{Name: "a", Data: []byte("x")}, {Name: "b", Data: make([]byte, session.MaxAttachmentBytes)}}
+	if _, _, err := env.M.Submit(ctx, session.Request{Prompt: "p", Attachments: tooBig, Source: "test"}); !errors.Is(err, session.ErrInvalid) {
+		t.Errorf("over the total: err = %v, want invalid", err)
+	}
+}
