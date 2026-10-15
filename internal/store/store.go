@@ -304,6 +304,9 @@ type Prompt struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	StartedAt    *time.Time `json:"started_at,omitempty"`
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	// Files attached to the prompt. Prompt and Prompts fill them in,
+	// without their data.
+	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
 const promptCols = `id, session_id, content, model, effort, author_name, author_email, source,
@@ -324,11 +327,16 @@ func scanPrompt(row scanner) (Prompt, error) {
 	return p, err
 }
 
-// CreatePrompt queues p. If p.DedupKey matches an existing prompt, p is
-// replaced by that prompt and created is false.
+// CreatePrompt queues p with its attachments. If p.DedupKey matches an
+// existing prompt, p is replaced by that prompt and created is false.
 func (s *Store) CreatePrompt(ctx context.Context, p *Prompt) (created bool, err error) {
 	p.Status, p.CreatedAt = Queued, time.Now()
-	res, err := s.w.ExecContext(ctx, `INSERT INTO prompts (id, session_id, content, model, effort, author_name,
+	tx, err := s.w.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `INSERT INTO prompts (id, session_id, content, model, effort, author_name,
 		author_email, source, automation_id, dedup_key, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(dedup_key) DO NOTHING`,
 		p.ID, p.SessionID, p.Content, p.Model, p.Effort, p.Author.Name, p.Author.Email, p.Source, null(p.AutomationID),
@@ -337,14 +345,28 @@ func (s *Store) CreatePrompt(ctx context.Context, p *Prompt) (created bool, err 
 		return false, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		*p, err = scanPrompt(s.w.QueryRowContext(ctx, `SELECT `+promptCols+` FROM prompts WHERE dedup_key=?`, p.DedupKey))
+		if *p, err = scanPrompt(tx.QueryRowContext(ctx, `SELECT `+promptCols+` FROM prompts WHERE dedup_key=?`,
+			p.DedupKey)); err != nil {
+			return false, err
+		}
+		files, err := promptAttachments(ctx, tx, `prompt_id=?`, p.ID)
+		p.Attachments = files[p.ID]
 		return false, err
 	}
-	return true, nil
+	if err := addAttachments(ctx, tx, p); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 
 func (s *Store) Prompt(ctx context.Context, id string) (Prompt, error) {
-	return scanPrompt(s.r.QueryRowContext(ctx, `SELECT `+promptCols+` FROM prompts WHERE id=?`, id))
+	p, err := scanPrompt(s.r.QueryRowContext(ctx, `SELECT `+promptCols+` FROM prompts WHERE id=?`, id))
+	if err != nil {
+		return p, err
+	}
+	files, err := promptAttachments(ctx, s.r, `prompt_id=?`, id)
+	p.Attachments = files[id]
+	return p, err
 }
 
 func (s *Store) PromptByDedupKey(ctx context.Context, key string) (Prompt, error) {
@@ -352,8 +374,16 @@ func (s *Store) PromptByDedupKey(ctx context.Context, key string) (Prompt, error
 }
 
 func (s *Store) Prompts(ctx context.Context, sessionID string) ([]Prompt, error) {
-	return query(ctx, s.r, scanPrompt, `SELECT `+promptCols+` FROM prompts WHERE session_id=?
+	ps, err := query(ctx, s.r, scanPrompt, `SELECT `+promptCols+` FROM prompts WHERE session_id=?
 		ORDER BY created_at, rowid`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	files, err := promptAttachments(ctx, s.r, `session_id=?`, sessionID)
+	for i := range ps {
+		ps[i].Attachments = files[ps[i].ID]
+	}
+	return ps, err
 }
 
 // ClaimNext marks the oldest queued prompt of a session running and returns it.
@@ -518,8 +548,13 @@ func (s *Store) AdvanceSchedule(ctx context.Context, id string, prev, next time.
 
 type scanner interface{ Scan(...any) error }
 
+// queryer is a database or a transaction.
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 // query runs q on db and scans every row with scan.
-func query[T any](ctx context.Context, db *sql.DB, scan func(scanner) (T, error), q string, args ...any) ([]T, error) {
+func query[T any](ctx context.Context, db queryer, scan func(scanner) (T, error), q string, args ...any) ([]T, error) {
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err

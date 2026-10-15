@@ -122,6 +122,62 @@ func TestDedupAndCancel(t *testing.T) {
 	}
 }
 
+func TestPromptAttachments(t *testing.T) {
+	s := open(t)
+	x, other := session(t, s), session(t, s)
+	png := []byte("\x89PNG\r\n\x1a\n")
+	p := Prompt{ID: NewID(), SessionID: x.ID, Content: "look", Source: "test", DedupKey: "k1", Attachments: []Attachment{
+		{Name: "shot.png", ContentType: "image/png", Data: png},
+		{Name: "empty.txt", ContentType: "text/plain"},
+	}}
+	if created, err := s.CreatePrompt(ctx, &p); !created || err != nil {
+		t.Fatalf("create: %v, %v", created, err)
+	}
+	if a := p.Attachments[0]; a.ID == "" || a.Size != int64(len(png)) || a.Data != nil {
+		t.Errorf("after creating: %+v, want an id, the size and no data", a)
+	}
+	plain := Prompt{ID: NewID(), SessionID: x.ID, Content: "no files", Source: "test"}
+	s.CreatePrompt(ctx, &plain)
+
+	ps, err := s.Prompts(ctx, x.ID)
+	if err != nil || len(ps) != 2 {
+		t.Fatalf("Prompts = %+v, %v", ps, err)
+	}
+	if got := ps[0].Attachments; len(got) != 2 || got[0].Name != "shot.png" || got[1].Name != "empty.txt" || got[0].Data != nil {
+		t.Errorf("listed attachments = %+v, want both, in order, without data", got)
+	}
+	if ps[1].Attachments != nil {
+		t.Errorf("a prompt without files lists %+v", ps[1].Attachments)
+	}
+	if one, _ := s.Prompt(ctx, p.ID); len(one.Attachments) != 2 {
+		t.Errorf("Prompt lists %+v", one.Attachments)
+	}
+
+	files, err := s.PromptFiles(ctx, p.ID)
+	if err != nil || len(files) != 2 || string(files[0].Data) != string(png) || len(files[1].Data) != 0 {
+		t.Fatalf("PromptFiles = %+v, %v", files, err)
+	}
+	a, err := s.Attachment(ctx, x.ID, p.Attachments[0].ID)
+	if err != nil || a.Name != "shot.png" || a.ContentType != "image/png" || string(a.Data) != string(png) {
+		t.Errorf("Attachment = %+v, %v", a, err)
+	}
+	if _, err := s.Attachment(ctx, other.ID, p.Attachments[0].ID); err != ErrNotFound {
+		t.Errorf("through another session: err = %v, want not found", err)
+	}
+
+	// A redelivered prompt stores nothing more and answers with the first.
+	dup := Prompt{ID: NewID(), SessionID: x.ID, Content: "again", Source: "test", DedupKey: "k1",
+		Attachments: []Attachment{{Name: "other.png", Data: png}}}
+	if created, err := s.CreatePrompt(ctx, &dup); created || err != nil || dup.ID != p.ID || len(dup.Attachments) != 2 {
+		t.Fatalf("duplicate: created=%v err=%v prompt=%+v", created, err, dup)
+	}
+	var n int
+	s.r.QueryRow(`SELECT count(*) FROM attachments`).Scan(&n)
+	if n != 2 {
+		t.Errorf("%d attachments stored, want 2", n)
+	}
+}
+
 func TestEventSequenceIsDensePerSession(t *testing.T) {
 	s := open(t)
 	x, y := session(t, s), session(t, s)
