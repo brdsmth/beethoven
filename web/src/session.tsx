@@ -1,6 +1,9 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'preact/hooks';
-import { api, get, onGlobal, subscribe, type Environment, type Ev, type Prompt, type PullRequest, type Session } from './api';
+import {
+  api, get, onGlobal, subscribe, withFiles, type Environment, type Ev, type Prompt, type PullRequest, type Session,
+} from './api';
+import { AttachButton, Attachments, PendingFiles, useFiles } from './attach';
 import { span } from './insights';
 import { Link, Markdown, safeHref } from './markdown';
 import { Chip, Dot, EffortSelect, Spinner, ago, dur, fail, modEnter, money, useTick } from './util';
@@ -252,7 +255,8 @@ function UserBubble({ p }: { p: Prompt }) {
             onClick={() => api('DELETE', `/api/sessions/${p.session_id}/prompts/${p.id}`).catch(fail)}>✕</button>
         )}
       </div>
-      <div class="pre">{p.content}</div>
+      {p.content && <div class="pre">{p.content}</div>}
+      {!!p.attachments?.length && <Attachments session={p.session_id} files={p.attachments} />}
     </div>
   );
 }
@@ -346,25 +350,31 @@ function Composer({ id, running }: { id: string; running: boolean }) {
   const [text, setText] = useState('');
   const [effort, setEffort] = useState('');
   const [busy, setBusy] = useState(false);
+  const f = useFiles();
+  const empty = !text.trim() && !f.files.length;
   const send = async () => {
-    const content = text.trim();
-    if (!content || busy) return;
+    if (empty || busy) return;
     setBusy(true);
     try {
-      await api('POST', `/api/sessions/${id}/prompts`, { content, effort });
+      await api('POST', `/api/sessions/${id}/prompts`, withFiles({ content: text.trim(), effort }, f.files));
       setText('');
+      f.clear();
     } catch (e) { fail(e); }
     setBusy(false);
   };
   return (
-    <form class="composer" onSubmit={e => { e.preventDefault(); send(); }}>
-      <div class="col composer-row">
-        <textarea rows={2} value={text} placeholder={running ? 'Queue a follow-up…' : 'Send a follow-up…'}
-          onInput={e => setText(e.currentTarget.value)} onKeyDown={modEnter(send)} />
-        <span class="composer-side">
-          <span class="compact" title="Reasoning effort for this prompt"><EffortSelect value={effort} set={setEffort} def="Effort" /></span>
-          <button class="btn primary" disabled={busy || !text.trim()} title="⌘/Ctrl+Enter">{running ? 'Queue' : 'Send'}</button>
-        </span>
+    <form class={'composer' + (f.over ? ' dropping' : '')} onSubmit={e => { e.preventDefault(); send(); }} {...f.drop}>
+      <div class="col">
+        <PendingFiles files={f.files} remove={f.remove} />
+        <div class="composer-row">
+          <textarea rows={2} value={text} placeholder={running ? 'Queue a follow-up…' : 'Send a follow-up…'}
+            onInput={e => setText(e.currentTarget.value)} onKeyDown={modEnter(send)} onPaste={f.onPaste} />
+          <span class="composer-side">
+            <AttachButton add={f.add} />
+            <span class="compact" title="Reasoning effort for this prompt"><EffortSelect value={effort} set={setEffort} def="Effort" /></span>
+            <button class="btn primary" disabled={busy || empty} title="⌘/Ctrl+Enter">{running ? 'Queue' : 'Send'}</button>
+          </span>
+        </div>
       </div>
     </form>
   );

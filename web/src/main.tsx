@@ -1,8 +1,9 @@
 import { render } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import {
-  api, get, onAuthRequired, onGlobal, type Account, type AuthState, type Environment, type Info, type Session,
+  api, get, onAuthRequired, onGlobal, withFiles, type Account, type AuthState, type Environment, type Info, type Session,
 } from './api';
+import { AttachButton, PendingFiles, useFiles } from './attach';
 import { AutomationEdit, Automations } from './automations';
 import { GitHubReturn, GitHubSetup, githubStep } from './github';
 import { Insights } from './insights';
@@ -183,15 +184,17 @@ function NewSession({ info }: { info?: Info }) {
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
   const [busy, setBusy] = useState(false);
+  const f = useFiles();
+  const empty = !prompt.trim() && !f.files.length;
   const problem = targetProblem(target);
   const submit = async () => {
-    if (!prompt.trim() || problem || busy) return;
+    if (empty || problem || busy) return;
     setBusy(true);
     try {
       const t = toTarget(target);
-      const r = await api<{ session: Session }>('POST', '/api/sessions', {
+      const r = await api<{ session: Session }>('POST', '/api/sessions', withFiles({
         prompt, model, effort, ...(t.environment_id ? { environment_id: t.environment_id } : { repos: t.repos }),
-      });
+      }, f.files));
       writePref(TARGET_PREF, target);
       go('/s/' + r.session.id);
     } catch (e) {
@@ -204,8 +207,14 @@ function NewSession({ info }: { info?: Info }) {
       <h1>New session</h1>
       {info && !info.github && <GitHubSetup />}
       <form class="form" onSubmit={e => { e.preventDefault(); submit(); }}>
-        <textarea class="big" rows={8} autoFocus placeholder="What should the agent do?" value={prompt}
-          onInput={e => setPrompt(e.currentTarget.value)} onKeyDown={modEnter(submit)} />
+        <div class={'prompt-box' + (f.over ? ' dropping' : '')} {...f.drop}>
+          <textarea class="big" rows={8} autoFocus placeholder="What should the agent do?" value={prompt}
+            onInput={e => setPrompt(e.currentTarget.value)} onKeyDown={modEnter(submit)} onPaste={f.onPaste} />
+          <div class="prompt-files">
+            <PendingFiles files={f.files} remove={f.remove} />
+            <AttachButton add={f.add} label="Attach files" />
+          </div>
+        </div>
         <div class="field">
           <span class="field-label">Workspace</span>
           <TargetPicker v={target} set={setTarget} />
@@ -221,7 +230,7 @@ function NewSession({ info }: { info?: Info }) {
         )}
         <div class="form-foot">
           <span class="hint">{problem || '⌘/Ctrl+Enter to start.'}</span>
-          <button class="btn primary" disabled={busy || !prompt.trim() || !!problem}>{busy ? 'Starting…' : 'Start session'}</button>
+          <button class="btn primary" disabled={busy || empty || !!problem}>{busy ? 'Starting…' : 'Start session'}</button>
         </div>
       </form>
     </div>

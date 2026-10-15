@@ -11,7 +11,11 @@ export type Prompt = {
   id: string; session_id: string; content: string; model?: string; effort?: string; author: Author; source: string;
   automation_id?: string; status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
   error?: string; result?: string; cost_usd: number; created_at: string; started_at?: string; finished_at?: string;
+  attachments?: Attachment[];
 };
+/** A file attached to a prompt. */
+export type Attachment = { id: string; name: string; content_type: string; size: number };
+export const attachmentURL = (session: string, a: Attachment) => `/api/sessions/${session}/attachments/${a.id}`;
 export type Ev = { session: string; seq?: number; type: string; prompt?: string; data?: any; at: string };
 /** What a session works on: an environment, repositories, or neither (scratch). */
 export type Target = { environment_id: string; repos: RepoRef[] };
@@ -106,10 +110,12 @@ export function onAuthRequired(fn: () => void) {
   return () => { authWaiters.delete(fn); };
 }
 
+/** Sends JSON, or a form made by withFiles. */
 export async function api<T = void>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
-  if (method !== 'GET') headers['Content-Type'] = 'application/json';
-  const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const form = body instanceof FormData;
+  if (method !== 'GET' && !form) headers['Content-Type'] = 'application/json';
+  const res = await fetch(path, { method, headers, body: body === undefined ? undefined : form ? body : JSON.stringify(body) });
   if (res.status === 401) authWaiters.forEach(f => f());
   if (!res.ok) {
     const msg = await res.json().then(j => j?.error, () => '');
@@ -118,6 +124,16 @@ export async function api<T = void>(method: string, path: string, body?: unknown
   return res.status === 204 ? (undefined as T) : res.json();
 }
 export const get = <T>(path: string) => api<T>('GET', path);
+
+/** A request body with files attached: the JSON in a form's "request"
+ * field, each file in a "file" field. Without files, the body itself. */
+export function withFiles(body: unknown, files: File[]) {
+  if (!files.length) return body;
+  const form = new FormData();
+  form.append('request', JSON.stringify(body));
+  for (const f of files) form.append('file', f, f.name);
+  return form;
+}
 
 /** Follows a server-sent event stream. The browser resumes dropped streams on
  * its own (with Last-Event-ID); if the server refuses one outright, it is
