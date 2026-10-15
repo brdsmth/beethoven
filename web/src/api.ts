@@ -90,14 +90,15 @@ export type GitHubStatus = {
   error?: string;
 };
 
-const KEY = 'beethoven.token';
-let token = '';
-try { token = localStorage.getItem(KEY) || ''; } catch { /* storage unavailable */ }
-
-export function setToken(t: string) {
-  token = t;
-  try { localStorage.setItem(KEY, t); } catch { /* keep it in memory only */ }
-}
+/** A person who signs in to the web UI. */
+export type Account = { id: string; email: string; name: string; owner: boolean };
+/** Whether this server asks people to sign in, and who is signed in. */
+export type AuthState = {
+  required: boolean;
+  /** No account exists yet: the first one created owns the server. */
+  setup: boolean;
+  account: Account | null;
+};
 
 const authWaiters = new Set<() => void>();
 export function onAuthRequired(fn: () => void) {
@@ -107,7 +108,6 @@ export function onAuthRequired(fn: () => void) {
 
 export async function api<T = void>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
-  if (token) headers.Authorization = 'Bearer ' + token;
   if (method !== 'GET') headers['Content-Type'] = 'application/json';
   const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   if (res.status === 401) authWaiters.forEach(f => f());
@@ -121,12 +121,12 @@ export const get = <T>(path: string) => api<T>('GET', path);
 
 /** Follows a server-sent event stream. The browser resumes dropped streams on
  * its own (with Last-Event-ID); if the server refuses one outright, it is
- * reopened from path() after a pause, and a probe surfaces a 401. */
+ * reopened from path() after a pause, and a probe surfaces a 401 (signed out). */
 export function subscribe(path: () => string, onEvent: (e: Ev) => void, onOpen?: () => void) {
   let es: EventSource | undefined, timer = 0, done = false;
   const open = () => {
     const p = path();
-    es = new EventSource(token ? `${p}${p.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : p);
+    es = new EventSource(p);
     es.onopen = () => onOpen?.();
     es.onmessage = m => { try { onEvent(JSON.parse(m.data)); } catch (err) { console.error(err); } };
     es.onerror = () => {

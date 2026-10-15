@@ -1,6 +1,8 @@
 import { render } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { api, get, onAuthRequired, onGlobal, setToken, type Environment, type Info, type Session } from './api';
+import {
+  api, get, onAuthRequired, onGlobal, type Account, type AuthState, type Environment, type Info, type Session,
+} from './api';
 import { AutomationEdit, Automations } from './automations';
 import { GitHubReturn, GitHubSetup, githubStep } from './github';
 import { Insights } from './insights';
@@ -13,12 +15,78 @@ import {
   writePref,
 } from './util';
 
-function App() {
+// Root asks who is signed in before showing anything; a 401 later (signed
+// out elsewhere, or the login expired) asks again.
+function Root() {
+  const [auth, setAuth] = useState<AuthState>();
+  const [error, setError] = useState('');
+  useEffect(() => {
+    const load = () => get<AuthState>('/api/auth').then(a => { setAuth(a); setError(''); }, e => setError(e.message));
+    load();
+    return onAuthRequired(load);
+  }, []);
+  if (!auth) return error ? <div class="auth"><p class="auth-error" role="alert">Can't reach the server: {error}</p></div> : null;
+  if (auth.required && !auth.account) return <SignIn setup={auth.setup} done={setAuth} />;
+  return <App account={auth.account} />;
+}
+
+function SignIn({ setup, done }: { setup: boolean; done: (a: AuthState) => void }) {
+  const [f, setF] = useState({ name: '', email: '', password: '' });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const field = (k: keyof typeof f) => (e: Event) => {
+    const v = (e.currentTarget as HTMLInputElement).value;
+    setF(p => ({ ...p, [k]: v }));
+  };
+  const submit = async (e: Event) => {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      done(await api<AuthState>('POST', setup ? '/api/auth/setup' : '/api/auth/login',
+        setup ? f : { email: f.email, password: f.password }));
+    } catch (err) {
+      const msg = (err as Error).message;
+      setError(msg.charAt(0).toUpperCase() + msg.slice(1) + '.');
+      setBusy(false);
+    }
+  };
+  document.title = (setup ? 'Create your account' : 'Sign in') + ' · Beethoven';
+  return (
+    <div class="auth">
+      <form class="auth-card" onSubmit={submit}>
+        <div class="brand">Beethoven</div>
+        <div class="auth-head">
+          <h1>{setup ? 'Create your account' : 'Sign in'}</h1>
+          {setup && <p class="muted">This server is new. The account you create now owns it; you'll sign in with it from then on.</p>}
+        </div>
+        {setup && (
+          <label class="field"><span class="field-label">Name</span>
+            <input id="auth-name" name="name" autoFocus autoComplete="name" value={f.name} onInput={field('name')} />
+          </label>
+        )}
+        <label class="field"><span class="field-label">Email</span>
+          <input id="auth-email" name="email" type="email" required autoFocus={!setup} autoComplete="username" value={f.email}
+            onInput={field('email')} />
+        </label>
+        <label class="field"><span class="field-label">Password</span>
+          <input id="auth-password" name="password" type="password" required minLength={setup ? 8 : undefined}
+            autoComplete={setup ? 'new-password' : 'current-password'} value={f.password} onInput={field('password')} />
+          {setup && <span class="hint">At least 8 characters.</span>}
+        </label>
+        {error && <p class="auth-error" role="alert">{error}</p>}
+        <button class="btn primary block" disabled={busy}>
+          {busy ? (setup ? 'Creating…' : 'Signing in…') : setup ? 'Create account' : 'Sign in'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function App({ account }: { account: Account | null }) {
   const route = useRoute();
   const [info, setInfo] = useState<Info>();
-  const [needToken, setNeedToken] = useState(false);
   const [drawer, setDrawer] = useState(false);
-  useEffect(() => onAuthRequired(() => setNeedToken(true)), []);
   useEffect(() => { get<Info>('/api/info').then(i => { setEfforts(i.efforts); setInfo(i); }, () => {}); }, [route[0]]);
   useEffect(() => setDrawer(false), [route.join('/')]);
 
@@ -39,16 +107,15 @@ function App() {
         <button class="icon-btn" aria-label="Menu" onClick={() => setDrawer(!drawer)}>☰</button>
         <a class="brand" href="#/">Beethoven</a>
       </header>
-      <Sidebar current={page === 's' ? arg : page || ''} />
+      <Sidebar current={page === 's' ? arg : page || ''} account={account} />
       <div class="scrim" onClick={() => setDrawer(false)} />
       <main class="main">{view}</main>
       <Toasts />
-      {needToken && <TokenPrompt />}
     </div>
   );
 }
 
-function Sidebar({ current }: { current: string }) {
+function Sidebar({ current, account }: { current: string; account: Account | null }) {
   const [archived, setArchived] = useState(false);
   const [list, setList] = useState<Session[]>();
   const [envs, setEnvs] = useState<Environment[]>();
@@ -88,6 +155,14 @@ function Sidebar({ current }: { current: string }) {
           </a>
         ))}
       </div>
+      {account && (
+        <div class="side-account">
+          <span class="ellipsis" title={account.email}>{account.name || account.email}</span>
+          <button class="btn sm" onClick={() => api('POST', '/api/auth/logout').then(() => location.reload(), fail)}>
+            Sign out
+          </button>
+        </div>
+      )}
       <div class="side-foot">
         <a href="#/automations" class={current === 'automations' ? 'active' : ''}>Automations</a>
         <a href="#/insights" class={current === 'insights' ? 'active' : ''}>Insights</a>
@@ -153,18 +228,4 @@ function NewSession({ info }: { info?: Info }) {
   );
 }
 
-function TokenPrompt() {
-  const [v, setV] = useState('');
-  return (
-    <div class="modal-bg">
-      <form class="modal" onSubmit={e => { e.preventDefault(); setToken(v.trim()); location.reload(); }}>
-        <h2>Access token</h2>
-        <p class="muted">This server requires a token (the value of BEETHOVEN_TOKEN).</p>
-        <input type="password" autoFocus value={v} onInput={e => setV(e.currentTarget.value)} />
-        <button class="btn primary" disabled={!v.trim()}>Continue</button>
-      </form>
-    </div>
-  );
-}
-
-render(<App />, document.getElementById('app')!);
+render(<Root />, document.getElementById('app')!);
