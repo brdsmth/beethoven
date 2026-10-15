@@ -16,6 +16,7 @@ import (
 	"github.com/brdsmth/beethoven/internal/automation"
 	"github.com/brdsmth/beethoven/internal/fake"
 	"github.com/brdsmth/beethoven/internal/github"
+	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/store"
 )
 
@@ -160,5 +161,24 @@ func TestSecretsAPI(t *testing.T) {
 	resp.Body.Close()
 	if !strings.Contains(string(body), "API_KEY") || strings.Contains(string(body), "super-secret") {
 		t.Errorf("list = %s", body)
+	}
+}
+
+func TestInsights(t *testing.T) {
+	srv, env := server(t, "")
+	s, p, err := env.M.Submit(context.Background(), session.Request{Prompt: "hello", Source: "web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.WaitFor(t, "prompt done", func() bool { got, _ := env.DB.Prompt(context.Background(), p.ID); return got.Status == store.Done })
+	code, out := do(t, "GET", srv.URL+"/api/insights?days=7&tz=America/New_York", "")
+	if code != 200 || out["sessions"] != 1.0 || out["first_try_rate"] != 1.0 || len(out["days"].([]any)) != 7 {
+		t.Errorf("insights: %d %v", code, out)
+	}
+	if code, _ := do(t, "GET", srv.URL+"/api/insights?days=1000", ""); code != http.StatusBadRequest {
+		t.Errorf("1000 days: %d", code)
+	}
+	if code, out = do(t, "GET", srv.URL+"/api/sessions/"+s.ID, ""); code != 200 || out["pull_requests"] == nil {
+		t.Errorf("session: %d %v", code, out)
 	}
 }
