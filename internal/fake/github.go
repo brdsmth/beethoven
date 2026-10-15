@@ -36,6 +36,8 @@ type GitHub struct {
 	Refreshes  int
 	PRAuth     []string // the Authorization of every pull request opened
 	Revoked    []string
+	pulls      map[string]map[string]any // "repo#number" → what GET pulls/{number} says
+	PullReads  map[string]int            // "200" or "304" → count
 }
 
 const fakeAppID = 4242
@@ -47,7 +49,8 @@ func NewGitHub(t testing.TB) *GitHub {
 		t.Fatal(err)
 	}
 	g := &GitHub{Key: key, ClientID: "Iv1.fake", installs: map[string]int64{}, userCan: map[int64]bool{},
-		public: map[string]bool{}, userTokens: map[string]bool{}, refresh: map[string]bool{}}
+		public: map[string]bool{}, userTokens: map[string]bool{}, refresh: map[string]bool{},
+		pulls: map[string]map[string]any{}, PullReads: map[string]int{}}
 	srv := httptest.NewServer(g.handler(t))
 	t.Cleanup(srv.Close)
 	g.URL = srv.URL
@@ -66,6 +69,13 @@ func (g *GitHub) SetPublic(repo string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.public[repo] = true
+}
+
+// SetPull sets what GitHub says about a pull request.
+func (g *GitHub) SetPull(repo string, number int, pr map[string]any) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pulls[fmt.Sprintf("%s#%d", repo, number)] = pr
 }
 
 // AppJSON is the app's credentials as the manifest conversion returns them.
@@ -212,6 +222,29 @@ func (g *GitHub) handler(t testing.TB) http.Handler {
 			return
 		}
 		reply(w, 200, map[string]any{"full_name": repo, "private": !public, "default_branch": "main"})
+	})
+	mux.HandleFunc("GET /repos/{owner}/{name}/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
+		if !asUser(w, r) {
+			return
+		}
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		pr, ok := g.pulls[r.PathValue("owner")+"/"+r.PathValue("name")+"#"+r.PathValue("number")]
+		if !ok {
+			reply(w, 404, map[string]string{"message": "Not Found"})
+			return
+		}
+		body, _ := json.Marshal(pr)
+		etag := fmt.Sprintf(`"%x"`, sha256.Sum256(body))
+		if r.Header.Get("If-None-Match") == etag {
+			g.PullReads["304"]++
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		g.PullReads["200"]++
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(body)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{name}/pulls", func(w http.ResponseWriter, r *http.Request) {
 		if asUser(w, r) {
