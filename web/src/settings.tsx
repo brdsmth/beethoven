@@ -5,11 +5,12 @@ import { EnvironmentEdit, Environments } from './environments';
 import { ConnectGitHub } from './github';
 import { MCPServers } from './mcp';
 import { SecretsPage } from './secrets';
+import { SlackPage } from './slack';
 import { ConfirmButton, EffortSelect, Group, Head, ModelField, SaveBar, errText, fail, num, str, toast, useLoad } from './util';
 
 const SECTIONS: [string, [string, string][]][] = [
   ['Agent', [['general', 'General'], ['credentials', 'Credentials']]],
-  ['Workspace', [['github', 'GitHub'], ['environments', 'Environments'], ['secrets', 'Secrets'], ['mcp', 'MCP servers']]],
+  ['Workspace', [['github', 'GitHub'], ['slack', 'Slack'], ['environments', 'Environments'], ['secrets', 'Secrets'], ['mcp', 'MCP servers']]],
   ['Server', [['about', 'About']]],
 ];
 
@@ -21,6 +22,7 @@ export function Settings({ info, route }: { info?: Info; route: string[] }) {
   const body = section === 'general' ? <General />
     : section === 'credentials' ? <CredentialsPage />
     : section === 'github' ? <GitHubPage />
+    : section === 'slack' ? <SlackPage />
     : section === 'environments' ? (id ? <EnvironmentEdit key={id} id={id} tab={tab} /> : <Environments />)
     : section === 'secrets' ? <SecretsPage scope={id || ''} />
     : section === 'mcp' ? <MCPServers />
