@@ -9,6 +9,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"io"
 )
 
@@ -42,3 +43,14 @@ type Provider interface {
 	// Destroy removes the sandbox and its filesystem.
 	Destroy(ctx context.Context, id string) error
 }
+
+// Unavailable is the Provider of a server with no way to run sandboxes:
+// sessions fail with Reason until one is configured.
+type Unavailable struct{ Reason string }
+
+func (u Unavailable) Start(context.Context, Spec) (string, bool, error) {
+	return "", false, errors.New(u.Reason)
+}
+func (u Unavailable) Exec(context.Context, string, Cmd) (int, error) { return -1, errors.New(u.Reason) }
+func (u Unavailable) Stop(context.Context, string) error             { return nil }
+func (u Unavailable) Destroy(context.Context, string) error          { return nil }
