@@ -247,3 +247,31 @@ func TestGitHubAccounts(t *testing.T) {
 		t.Errorf("another app's account went too: %v", err)
 	}
 }
+
+func TestTrackNewPullRequests(t *testing.T) {
+	s := open(t)
+	x := Session{ID: NewID(), Title: "t", Branch: "b", Source: "web", Status: "idle", Sandbox: "none", Repos: []RepoRef{
+		{Repo: "acme/app", PRURL: "https://github.com/acme/app/pull/7"},
+		{Repo: "acme/web"}, // no pull request yet
+		{Repo: "acme/odd", PRURL: "https://example.com/not-github"},
+	}}
+	if err := s.CreateSession(ctx, &x); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		n, err := s.TrackNewPullRequests(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prs, _ := s.SessionPullRequests(ctx, x.ID); len(prs) != 1 || prs[0].Number != 7 || prs[0].Repo != "acme/app" || prs[0].State != "open" {
+			t.Fatalf("tracked %+v (added %d)", prs, n)
+		}
+	}
+	now := time.Now()
+	if prs, _ := s.PullRequestsOf(ctx, now.Add(-time.Hour), now.Add(time.Hour)); len(prs) != 1 {
+		t.Errorf("in the window: %d", len(prs))
+	}
+	if prs, _ := s.PullRequestsOf(ctx, now.Add(-48*time.Hour), now.Add(-24*time.Hour)); len(prs) != 0 {
+		t.Errorf("outside the window: %d", len(prs))
+	}
+}

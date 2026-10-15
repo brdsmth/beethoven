@@ -200,6 +200,7 @@ func serve(args []string) error {
 		return err
 	}
 	go auto.Run(ctx)
+	go gh.TrackPullRequests(ctx, 10*time.Minute, log)
 
 	if model := os.Getenv("BEETHOVEN_MODEL"); model != "" {
 		if s, err := db.Settings(ctx); err == nil && s.Model == "" { // seed the setting from the environment once

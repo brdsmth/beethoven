@@ -233,7 +233,12 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 		replyErr(w, err)
 		return
 	}
-	reply(w, http.StatusOK, map[string]any{"session": sess, "prompts": orEmpty(prompts)})
+	pulls, err := s.M.Store().SessionPullRequests(r.Context(), sess.ID)
+	if err != nil {
+		replyErr(w, err)
+		return
+	}
+	reply(w, http.StatusOK, map[string]any{"session": sess, "prompts": orEmpty(prompts), "pull_requests": orEmpty(pulls)})
 }
 
 func (s *Server) postPrompt(w http.ResponseWriter, r *http.Request) {
