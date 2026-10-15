@@ -115,6 +115,7 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/secrets/effective", s.effectiveSecrets)
 	api("DELETE /api/secrets", s.deleteSecret)
 
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok\n") })
 	mux.HandleFunc("POST /hooks/{id}", s.hook)
 	mux.HandleFunc("GET /github/{step}", returnTo("github"))
 	if s.Slack != nil && s.SlackBot != nil {
