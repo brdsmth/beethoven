@@ -143,17 +143,7 @@ func (c *modalClient) exec(ctx context.Context, id string, args []string, dir st
 	if err != nil {
 		return -1, err
 	}
-	var wg sync.WaitGroup
-	pump := func(w io.Writer, r io.ReadCloser) {
-		defer wg.Done()
-		if w == nil {
-			w = io.Discard
-		}
-		io.Copy(w, r)
-	}
-	wg.Add(2)
-	go pump(stdout, p.Stdout)
-	go pump(stderr, p.Stderr)
+	copied := copyOutput(stdout, stderr, p.Stdout, p.Stderr)
 	if stdin != nil {
 		go func() {
 			io.Copy(p.Stdin, stdin)
@@ -163,8 +153,47 @@ func (c *modalClient) exec(ctx context.Context, id string, args []string, dir st
 		p.Stdin.Close()
 	}
 	code, err := p.Wait(ctx, nil)
-	wg.Wait()
+	copied.Wait()
 	return code, err
+}
+
+// copyOutput copies a process's stdout and stderr as they arrive. As with
+// os/exec, when both go to the same writer, one goroutine at a time writes
+// to it: callers pass one writer for both and expect no interleaved Writes.
+func copyOutput(stdout, stderr io.Writer, outR, errR io.Reader) *sync.WaitGroup {
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	if sameWriter(stdout, stderr) {
+		w := &lockedWriter{w: stdout}
+		stdout, stderr = w, w
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); io.Copy(stdout, outR) }()
+	go func() { defer wg.Done(); io.Copy(stderr, errR) }()
+	return &wg
+}
+
+// sameWriter compares writers as os/exec does: writers of an uncomparable
+// type are never the same.
+func sameWriter(a, b io.Writer) (same bool) {
+	defer func() { recover() }()
+	return a == b
+}
+
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 func (c *modalClient) nameOf(ctx context.Context, id string) (string, error) {

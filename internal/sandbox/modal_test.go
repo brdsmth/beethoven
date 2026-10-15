@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -276,5 +279,36 @@ func TestDockerfileCommands(t *testing.T) {
 	}
 	if !strings.HasPrefix(cmds[0], "RUN apt-get update") || !strings.Contains(cmds[0], "rm -rf /var/lib/apt/lists/*") {
 		t.Errorf("first command %q, want the whole RUN joined", cmds[0])
+	}
+}
+
+// overlapWriter notices Writes that overlap.
+type overlapWriter struct {
+	inside, overlaps atomic.Int32
+	n                int
+}
+
+func (w *overlapWriter) Write(p []byte) (int, error) {
+	if w.inside.Add(1) > 1 {
+		w.overlaps.Add(1)
+	}
+	runtime.Gosched()
+	w.n += len(p) // unsynchronized on purpose: the race detector sees overlaps too
+	w.inside.Add(-1)
+	return len(p), nil
+}
+
+func TestCopyOutputWritesASharedWriterOneAtATime(t *testing.T) {
+	w := &overlapWriter{}
+	out := iotest.OneByteReader(strings.NewReader(strings.Repeat("o", 2000)))
+	errs := iotest.OneByteReader(strings.NewReader(strings.Repeat("e", 2000)))
+	copyOutput(w, w, out, errs).Wait()
+	if w.overlaps.Load() != 0 || w.n != 4000 {
+		t.Errorf("%d overlapping writes, %d bytes", w.overlaps.Load(), w.n)
+	}
+	var a, b bytes.Buffer // different writers stay unlocked and separate
+	copyOutput(&a, &b, strings.NewReader("out"), strings.NewReader("err")).Wait()
+	if a.String() != "out" || b.String() != "err" {
+		t.Errorf("separate writers: %q %q", a.String(), b.String())
 	}
 }
