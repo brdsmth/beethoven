@@ -277,11 +277,6 @@ func (s *Store) Sessions(ctx context.Context, f SessionFilter) ([]Session, error
 	return query(ctx, s.r, scanSession, q, args...)
 }
 
-func (s *Store) DeleteSession(ctx context.Context, id string) error {
-	_, err := s.w.ExecContext(ctx, `DELETE FROM sessions WHERE id=?`, id)
-	return err
-}
-
 // ----------------------------------------------------------------- prompts
 
 const (

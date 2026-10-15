@@ -56,7 +56,6 @@ function Sidebar({ current }: { current: string }) {
     const load = () => get<Session[]>(`/api/sessions?limit=200${archived ? '&archived=1' : ''}`).then(setList, fail);
     load();
     return onGlobal(e => {
-      if (e.type === 'deleted') setList(l => l?.filter(s => s.id !== e.data.id));
       if (e.type === 'session') {
         const s: Session = e.data;
         setList(l => {

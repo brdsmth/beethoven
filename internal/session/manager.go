@@ -312,7 +312,8 @@ func (m *Manager) CancelPrompt(ctx context.Context, sessionID, promptID string) 
 }
 
 // Archive hides a session from the default list, stopping its work and its
-// sandbox. Prompting an archived session unarchives it.
+// sandbox. Prompting an archived session unarchives it. Sessions are never
+// deleted: an archived one keeps its history, for the insights.
 func (m *Manager) Archive(ctx context.Context, sessionID string, archived bool) error {
 	r, err := m.runner(ctx, sessionID)
 	if err != nil {
@@ -323,23 +324,6 @@ func (m *Manager) Archive(ctx context.Context, sessionID string, archived bool) 
 		go r.stopSandbox("archived")
 	}
 	r.update(func(s *store.Session) { s.Archived = archived })
-	return nil
-}
-
-// Delete removes a session, its sandbox and its history.
-func (m *Manager) Delete(ctx context.Context, sessionID string) error {
-	r, err := m.runner(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	if err := r.destroy(ctx); err != nil {
-		return err
-	}
-	m.mu.Lock()
-	delete(m.runners, sessionID)
-	m.mu.Unlock()
-	m.hub.Publish(AllSessions, store.Event{Session: sessionID, Type: EvDeleted, At: time.Now(),
-		Data: mustJSON(map[string]string{"id": sessionID})})
 	return nil
 }
 

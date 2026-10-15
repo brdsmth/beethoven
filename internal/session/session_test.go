@@ -352,7 +352,7 @@ func TestTokens(t *testing.T) {
 	}
 }
 
-func TestDeleteAndArchive(t *testing.T) {
+func TestArchiveKeepsTheSession(t *testing.T) {
 	env := fake.NewEnv(t)
 	s, p := submit(t, env, "x")
 	waitStatus(t, env, p.ID, store.Done)
@@ -367,14 +367,14 @@ func TestDeleteAndArchive(t *testing.T) {
 		t.Error("prompting did not unarchive")
 	}
 
-	if err := env.M.Delete(ctx, s.ID); err != nil {
+	if err := env.M.Archive(ctx, s.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.M.Session(ctx, s.ID); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("session still exists: %v", err)
+	if ps, _ := env.DB.Prompts(ctx, s.ID); len(ps) != 2 {
+		t.Errorf("an archived session kept %d of its 2 prompts", len(ps))
 	}
-	if !slices.Contains(env.Box.Calls(), "destroy beethoven-"+s.ID) {
-		t.Error("sandbox not destroyed")
+	if slices.Contains(env.Box.Calls(), "destroy beethoven-"+s.ID) {
+		t.Error("archiving destroyed the sandbox; it should only stop it")
 	}
 }
 

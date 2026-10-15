@@ -10,7 +10,6 @@ import (
 // (agent.Text, agent.Delta, agent.Thinking, agent.ToolCall, agent.ToolResult).
 const (
 	EvSession  = "session"      // ephemeral: the session's current state (store.Session)
-	EvDeleted  = "deleted"      // ephemeral: {id}
 	EvPrompt   = "prompt"       // a prompt was queued (store.Prompt)
 	EvStart    = "prompt.start" // {id}
 	EvEnd      = "prompt.end"   // {id, status, error, cost_usd, duration_ms}
@@ -21,8 +20,8 @@ const (
 	EvWarning  = "warning"      // {message}
 )
 
-// AllSessions is the hub key whose subscribers see every session's EvSession
-// and EvDeleted events, for live session lists.
+// AllSessions is the hub key whose subscribers see every session's
+// EvSession events, for live session lists.
 const AllSessions = "*"
 
 // Hub fans events out to live subscribers. It never blocks: a subscriber
