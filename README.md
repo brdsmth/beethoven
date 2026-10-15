@@ -30,6 +30,47 @@ bin/beethoven send <session> "Also add a regression test"
 bin/beethoven secret import -scope env:"web stack" < .env
 ```
 
+## Self-hosting
+
+Beethoven is one server plus a sandbox per session. The server can run anywhere; sandboxes run on
+the server's own Docker or on [Modal](https://modal.com), which suits hosts without Docker such as
+Railway. Everything lives in one data directory: back it up, `secret.key` included, since it
+encrypts the stored secrets.
+
+### On Railway, with sandboxes on Modal
+
+Railway runs the server, Modal runs the sandboxes. You need a Railway account and a Modal account
+(Modal's free monthly credit covers light use). A coding agent can run every step; signing in and
+creating the Modal token need you.
+
+1. Create a Modal token: Modal's dashboard, **Settings › API Tokens**, or `modal token new`.
+2. From a clone of this repository:
+
+   ```sh
+   railway init --name beethoven
+   railway up --detach                     # builds the Dockerfile and deploys it
+   railway volume add --mount-path /data   # keeps the database across deploys
+   railway domain                          # a public HTTPS address
+   railway variable set BEETHOVEN_TOKEN="$(openssl rand -hex 24)" MODAL_TOKEN_ID=<id> MODAL_TOKEN_SECRET=<secret>
+   ```
+
+3. Open the domain, enter the token (`railway variable list` shows it), then connect GitHub and Slack
+   and add an Anthropic key in **Settings**.
+
+Railway assigns the port and the domain; Beethoven listens on that port and uses the domain as its
+address for GitHub, Slack and its sandboxes. Optionally, `railway environment edit --service-config
+<service> deploy.healthcheckPath /healthz` (the service name is in `railway status`) makes deploys
+wait until the server is up. The first
+session waits a few minutes while Modal builds the sandbox image; Beethoven starts building it as soon
+as the server starts. Until Modal is configured the server runs, and sessions explain what's missing.
+
+### On a machine with Docker
+
+Use the [quick start](#quick-start) on a Mac or Linux machine with Docker, or run the server's image
+with the Docker socket mounted. To reach it from the internet, put it behind HTTPS (for testing, a
+tunnel such as `cloudflared tunnel --url http://localhost:7070` works) and set `BEETHOVEN_URL`,
+`BEETHOVEN_TOKEN` and `BEETHOVEN_HOSTS`.
+
 ## How it works
 
 ```
@@ -66,7 +107,10 @@ stored.
 the next prompt with its workspace, installed dependencies and agent conversation intact. Nothing of
 ours runs inside it: the server drives it with `exec`, so a finished process is a finished turn and
 there are no bridges, heartbeats or connection watchdogs to keep alive. Stop kills the agent's whole
-process tree inside the container.
+process tree inside the container. Two providers implement it: **Docker** on the server's machine,
+where a stop keeps the container, and **Modal**, where a stop snapshots the filesystem and the next
+start creates a sandbox from the snapshot. Modal builds the same sandbox image from the Dockerfile,
+and keeps snapshots for its default 30 days; a session idle longer starts over from a fresh clone.
 
 **Agent.** A harness is two functions: build the command for a turn, and decode its output into
 events. The Claude Code harness runs `claude -p --output-format stream-json` and resumes the previous
@@ -200,12 +244,17 @@ keep their history.
 
 | Variable | Default | |
 |---|---|---|
-| `BEETHOVEN_ADDR` | `127.0.0.1:7070` | listen address |
+| `BEETHOVEN_ADDR` | `127.0.0.1:7070`, or `0.0.0.0:$PORT` when `PORT` is set | listen address |
+| `BEETHOVEN_URL` | Railway's domain, if any | the server's public HTTPS address |
 | `BEETHOVEN_DATA` | `~/.beethoven` | database and encryption key |
-| `BEETHOVEN_TOKEN` | — | require a bearer token on the API |
+| `BEETHOVEN_TOKEN` | — | require a bearer token on the API; required to listen beyond localhost |
 | `BEETHOVEN_HOSTS` | — | extra `Host` names to accept (for access through a proxy) |
-| `BEETHOVEN_IMAGE` | `beethoven-sandbox:latest` | sandbox image |
-| `BEETHOVEN_SANDBOX_URL` | `http://host.docker.internal:<port>` | the server as seen from sandboxes |
+| `BEETHOVEN_SANDBOX` | `modal` when `MODAL_TOKEN_ID` is set, else `docker` | sandbox provider |
+| `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | `~/.modal.toml` | Modal credentials |
+| `BEETHOVEN_MODAL_APP` | `beethoven` | the Modal app sandboxes belong to |
+| `BEETHOVEN_DOCKER_NETWORK` | — | a Docker network for sandboxes, e.g. one shared with the server |
+| `BEETHOVEN_IMAGE` | `beethoven-sandbox:latest` | sandbox image (built from the Dockerfile; any other name is pulled) |
+| `BEETHOVEN_SANDBOX_URL` | Docker: `http://host.docker.internal:<port>`; Modal: `BEETHOVEN_URL` | the server as seen from sandboxes |
 | `BEETHOVEN_IDLE` | `10m` | stop idle sandboxes after |
 | `BEETHOVEN_TURN_TIMEOUT` | `2h` | limit for one prompt |
 | `BEETHOVEN_MODEL` | — | initial default model; then edit it in Settings |
@@ -269,6 +318,7 @@ make test-short       # unit tests, no Docker
 make test             # plus the Docker end-to-end test
 make fake-image       # a sandbox image whose `claude` is a script: no API calls
 BEETHOVEN_IMAGE=beethoven-fake:latest bin/beethoven serve
+BEETHOVEN_TEST_MODAL=1 go test -run TestModalLive ./internal/sandbox/   # real Modal sandboxes; costs cents
 ```
 
 The fake agent understands `COMMIT`, `SLEEP n` and `FAIL` in prompts.
@@ -276,7 +326,7 @@ The fake agent understands `COMMIT`, `SLEEP n` and `FAIL` in prompts.
 ```
 cmd/beethoven        server and CLI
 internal/session     sessions: queue, event log, sandbox lifecycle, PRs, boot script
-internal/sandbox     Provider interface, Docker implementation, sandbox Dockerfile
+internal/sandbox     Provider interface, Docker and Modal implementations, sandbox Dockerfile
 internal/agent       Harness interface, Claude Code implementation
 internal/tools       MCP tool server
 internal/automation  schedules, webhooks, failure policy
