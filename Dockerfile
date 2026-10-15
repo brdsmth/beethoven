@@ -22,8 +22,9 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=server /beethoven /usr/local/bin/beethoven
+# Mount a volume at /data (docker run -v, or a Railway volume). No VOLUME
+# instruction: Railway refuses images that declare one.
 ENV BEETHOVEN_DATA=/data
-VOLUME /data
 EXPOSE 7070
 ENTRYPOINT ["beethoven"]
 CMD ["serve"]
