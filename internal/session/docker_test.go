@@ -73,6 +73,14 @@ func TestDocker(t *testing.T) {
 		t.Errorf("result after restart = %q, want the conversation resumed at turn 3", got.Result)
 	}
 
+	// Attachments: saved in the agent's home, byte for byte.
+	p4, _ := m.Enqueue(ctx, s.ID, session.PromptInput{Content: "look", Source: "test",
+		Attachments: []store.Attachment{{Name: "notes.txt", Data: []byte("line one\nline two\n")}}})
+	slowWait(t, env, p4.ID, store.Done)
+	if got := run(t, "", "docker", "exec", "beethoven-"+s.ID, "sh", "-c", `cat "$HOME/attachments/$0/notes.txt"`, p4.ID); got != "line one\nline two\n" {
+		t.Errorf("attachment in the sandbox = %q", got)
+	}
+
 	run(t, "", "docker", "rm", "-f", "-v", "beethoven-"+s.ID)
 }
 
