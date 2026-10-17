@@ -243,7 +243,7 @@ function SessionCapabilities({ id, caps }: { id: string; caps: Model['caps'] }) 
     setBusy(c);
     try {
       const r = await api<AddedCapability>('POST', `/api/sessions/${id}/capabilities`, { id: c });
-      toast(`Added ${r.name}` + (r.kept === 'environment' ? ` to the ${r.where} environment` : r.kept === 'repository' ? '; the agent should commit .beethoven/capabilities' : ''));
+      toast(`Added ${r.name}` + (r.kept === 'environment' ? ` to the ${r.where} project` : r.kept === 'repository' ? '; the agent should commit .beethoven/capabilities' : ''));
       r.warnings?.forEach(w => toast(w, true));
     } catch (e) { fail(e); }
     setBusy('');
@@ -342,7 +342,7 @@ function Item({ e, m, live, sub }: { e: Ev; m: Model; live: boolean; sub?: Recor
       return (
         <div class="line dim">
           Added the {d.name} capability{d.by === 'agent' ? ' (by the agent)' : ''}
-          {d.kept === 'environment' ? `, kept in the ${d.where} environment` : d.kept === 'repository' ? `, recorded in ${d.where}` : ', for this session'}
+          {d.kept === 'environment' ? `, kept in the ${d.where} project` : d.kept === 'repository' ? `, recorded in ${d.where}` : ', for this session'}
         </div>
       );
     case 'artifact':

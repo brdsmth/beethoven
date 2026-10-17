@@ -120,7 +120,7 @@ function General() {
           <label>Author email<input type="email" placeholder={d.author_email || 'Email'} {...bind('author_email')} /></label>
         </div>
       </Group>
-      <Group title="Capabilities" hint={<>Toolchains every sandbox installs, each with instructions for the agent. Environments add their
+      <Group title="Capabilities" hint={<>Toolchains every sandbox installs, each with instructions for the agent. Projects add their
         own, a repository can name more in <code>.beethoven/capabilities</code>, and the agent can add them during a session.</>}>
         <CapabilityPicker value={f.capabilities} set={v => set('capabilities', v)} secrets={secrets?.map(s => s.name)} />
       </Group>
