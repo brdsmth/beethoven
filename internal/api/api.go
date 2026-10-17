@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/brdsmth/beethoven/internal/access"
 	"github.com/brdsmth/beethoven/internal/automation"
 	"github.com/brdsmth/beethoven/internal/github"
 	"github.com/brdsmth/beethoven/internal/insights"
@@ -71,6 +72,8 @@ func (s *Server) Handler() http.Handler {
 	open("POST /api/auth/setup", s.setup)
 	open("POST /api/auth/login", s.login)
 	open("POST /api/auth/logout", s.logout)
+	open("GET /api/auth/invite", s.inviteInfo)
+	open("POST /api/auth/invite", s.acceptInvite)
 	api("GET /api/info", s.info)
 	api("GET /api/sessions", s.listSessions)
 	api("POST /api/sessions", s.createSession)
@@ -80,9 +83,29 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/sessions/{id}/stop", s.stop)
 	api("POST /api/sessions/{id}/archive", s.archive)
 	api("POST /api/sessions/{id}/pr", s.openPR)
+	api("PUT /api/sessions/{id}/visibility", s.setVisibility)
 	api("GET /api/sessions/{id}/attachments/{aid}", s.attachment)
 	api("GET /api/sessions/{id}/events", s.sessionEvents)
 	api("GET /api/events", s.allEvents)
+
+	api("PUT /api/me", s.updateMe)
+	api("GET /api/tokens", s.listTokens)
+	api("POST /api/tokens", s.createToken)
+	api("DELETE /api/tokens/{id}", s.deleteToken)
+	api("GET /api/people", s.listPeople)
+	api("PUT /api/people/{id}", s.updatePerson)
+	api("GET /api/invites", s.listInvites)
+	api("POST /api/invites", s.createInvite)
+	api("DELETE /api/invites/{id}", s.deleteInvite)
+	api("GET /api/teams", s.listTeams)
+	api("POST /api/teams", s.createTeam)
+	api("GET /api/teams/{id}", s.getTeam)
+	api("PUT /api/teams/{id}", s.updateTeam)
+	api("POST /api/teams/{id}/archive", s.archiveTeam)
+	api("POST /api/teams/{id}/join", s.joinTeam)
+	api("PUT /api/teams/{id}/members/{account}", s.setMember)
+	api("DELETE /api/teams/{id}/members/{account}", s.removeMember)
+	api("GET /api/audit", s.auditLog)
 
 	api("GET /api/settings", s.getSettings)
 	api("PUT /api/settings", s.putSettings)
@@ -133,6 +156,7 @@ func (s *Server) Handler() http.Handler {
 		api("POST /api/slack/installed", s.slackInstalled)
 		api("DELETE /api/slack/installations/{team}", s.uninstallSlack)
 		api("DELETE /api/slack/channels/{team}/{channel}", s.deleteSlackChannel)
+		api("PUT /api/slack/channels/{team}/{channel}/team", s.bindSlackChannel)
 		mux.HandleFunc("POST /slack/events", s.SlackBot.Events) // signed by Slack
 		mux.HandleFunc("POST /slack/interactions", s.SlackBot.Interactions)
 		mux.HandleFunc("GET /slack/{step}", returnTo("slack"))
@@ -147,11 +171,16 @@ func (s *Server) Handler() http.Handler {
 // asks for it, come from a signed-in browser or carry the token.
 func (s *Server) guard(h http.Handler) http.Handler {
 	return s.checked(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.signedIn(r) {
+		who, err := s.actorFor(r)
+		if errors.Is(err, errSignIn) {
 			fail(w, http.StatusUnauthorized, "sign in required")
 			return
 		}
-		h.ServeHTTP(w, r)
+		if err != nil {
+			replyErr(w, err)
+			return
+		}
+		h.ServeHTTP(w, r.WithContext(access.With(r.Context(), who)))
 	}))
 }
 
@@ -185,16 +214,96 @@ func (s *Server) hostAllowed(hostport string) bool {
 
 // ---------------------------------------------------------------- sessions
 
+// listSessions lists the sessions the viewer may read, newest activity
+// first. ?team= narrows to teams (comma separated; "workspace" for the
+// workspace's own), ?mine=1 to the viewer's own.
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	who := actor(r)
 	archived := q.Get("archived") == "1"
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	list, err := s.M.Store().Sessions(r.Context(), store.SessionFilter{Archived: &archived, ParentID: q.Get("parent"), Limit: limit})
+	viewer := who.Viewer()
+	f := store.SessionFilter{Archived: &archived, ParentID: q.Get("parent"), Limit: limit, Viewer: &viewer}
+	if v := q.Get("team"); v != "" {
+		f.Teams = []string{}
+		for _, t := range strings.Split(v, ",") {
+			if t == "workspace" {
+				t = ""
+			}
+			f.Teams = append(f.Teams, t)
+		}
+	}
+	if q.Get("mine") == "1" {
+		f.Account = firstOf(who.AccountID, "-")
+	}
+	list, err := s.M.Store().Sessions(r.Context(), f)
 	if err != nil {
 		replyErr(w, err)
 		return
 	}
 	reply(w, http.StatusOK, orEmpty(list))
+}
+
+// session loads the session a request names, if the viewer may read it,
+// and checks they may do what may asks; otherwise it replies.
+func (s *Server) session(w http.ResponseWriter, r *http.Request, may func(access.Actor, store.Session) bool, what string) (store.Session, bool) {
+	sess, err := s.M.Session(r.Context(), r.PathValue("id"))
+	if err != nil {
+		replyErr(w, err)
+		return sess, false
+	}
+	who := actor(r)
+	if !access.ReadSession(who, sess) {
+		hidden(w)
+		return sess, false
+	}
+	if may != nil && !may(who, sess) {
+		if sess.TeamID != "" && !who.Member(sess.TeamID) {
+			what += ": it belongs to a team you're not in"
+		}
+		forbid(w, what)
+		return sess, false
+	}
+	return sess, true
+}
+
+// target checks the viewer may start work owned by teamID in environmentID
+// (either may be empty), and returns the team the work will belong to.
+func (s *Server) target(w http.ResponseWriter, r *http.Request, teamID, environmentID string) (string, bool) {
+	who := actor(r)
+	if environmentID != "" {
+		e, err := s.M.Store().Environment(r.Context(), environmentID)
+		if err != nil || !access.UseEnvironment(who, e) {
+			fail(w, http.StatusBadRequest, "no such project")
+			return "", false
+		}
+		teamID = firstOf(teamID, e.TeamID)
+	}
+	if teamID == "" {
+		return "", true
+	}
+	t, err := s.M.Store().Team(r.Context(), teamID)
+	switch {
+	case err != nil:
+		fail(w, http.StatusBadRequest, "no such team")
+		return "", false
+	case !access.UseTeam(who, teamID):
+		forbid(w, "start work for "+t.Name+": you're not in it")
+		return "", false
+	case t.ArchivedAt != nil:
+		fail(w, http.StatusConflict, t.Name+" is archived")
+		return "", false
+	}
+	return teamID, true
+}
+
+// accountOf is the person a request's work is for: the viewer, unless the
+// server itself is acting.
+func accountOf(r *http.Request) string {
+	if who := actor(r); who.IsPerson() {
+		return who.AccountID
+	}
+	return ""
 }
 
 // createReq targets an environment, repositories (repo/base_branch is a
@@ -210,6 +319,8 @@ type createReq struct {
 	Effort        string          `json:"effort"`
 	Title         string          `json:"title"`
 	Source        string          `json:"source"`
+	TeamID        string          `json:"team_id"`    // the owning team; a team project's by default
+	Visibility    string          `json:"visibility"` // workspace, team or private; the team's default otherwise
 }
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
@@ -224,9 +335,13 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(in.Repo) != "" {
 		in.Repos = append([]store.RepoRef{{Repo: in.Repo, BaseBranch: in.BaseBranch}}, in.Repos...)
 	}
+	team, ok := s.target(w, r, in.TeamID, in.EnvironmentID)
+	if !ok {
+		return
+	}
 	sess, p, err := s.M.Submit(r.Context(), session.Request{Prompt: in.Prompt, Attachments: files,
 		EnvironmentID: in.EnvironmentID, Repos: in.Repos, Model: in.Model, Effort: in.Effort, Title: in.Title,
-		Author: s.author(r), Source: in.Source})
+		Author: s.author(r), AccountID: accountOf(r), TeamID: team, Visibility: in.Visibility, Source: in.Source})
 	if err != nil {
 		replyErr(w, err)
 		return
@@ -235,9 +350,8 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
-	sess, err := s.M.Session(r.Context(), r.PathValue("id"))
-	if err != nil {
-		replyErr(w, err)
+	sess, ok := s.session(w, r, nil, "")
+	if !ok {
 		return
 	}
 	prompts, err := s.M.Store().Prompts(r.Context(), sess.ID)
@@ -268,7 +382,11 @@ func (s *Server) insights(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		loc = time.UTC
 	}
-	report, err := insights.Compute(r.Context(), s.M.Store(), days, time.Now(), loc)
+	who, team := actor(r), r.URL.Query().Get("team") // "" = all, "workspace" = the workspace's own
+	keep := func(sess store.Session) bool {
+		return access.ReadSession(who, sess) && (team == "" || sess.TeamID == strings.TrimPrefix(team, "workspace"))
+	}
+	report, err := insights.Compute(r.Context(), s.M.Store(), days, time.Now(), loc, keep)
 	if err != nil {
 		replyErr(w, err)
 		return
@@ -283,6 +401,9 @@ func (s *Server) postPrompt(w http.ResponseWriter, r *http.Request) {
 		Effort  string `json:"effort"`
 		Source  string `json:"source"`
 	}
+	if _, ok := s.session(w, r, access.PromptSession, "prompt this session"); !ok {
+		return
+	}
 	files, ok := decodeWithFiles(w, r, &in)
 	if !ok {
 		return
@@ -291,7 +412,7 @@ func (s *Server) postPrompt(w http.ResponseWriter, r *http.Request) {
 		in.Source = "web"
 	}
 	p, err := s.M.Enqueue(r.Context(), r.PathValue("id"), session.PromptInput{Content: in.Content, Attachments: files,
-		Model: in.Model, Effort: in.Effort, Author: s.author(r), Source: in.Source})
+		Model: in.Model, Effort: in.Effort, Author: s.author(r), AccountID: accountOf(r), Source: in.Source})
 	if err != nil {
 		replyErr(w, err)
 		return
@@ -300,6 +421,9 @@ func (s *Server) postPrompt(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) cancelPrompt(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.session(w, r, access.PromptSession, "cancel prompts here"); !ok {
+		return
+	}
 	if err := s.M.CancelPrompt(r.Context(), r.PathValue("id"), r.PathValue("pid")); err != nil {
 		replyErr(w, err)
 		return
@@ -308,6 +432,9 @@ func (s *Server) cancelPrompt(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.session(w, r, access.PromptSession, "stop this session"); !ok {
+		return
+	}
 	if err := s.M.Stop(r.Context(), r.PathValue("id")); err != nil {
 		replyErr(w, err)
 		return
@@ -320,6 +447,9 @@ func (s *Server) archive(w http.ResponseWriter, r *http.Request) {
 		Archived bool `json:"archived"`
 	}
 	if !decode(w, r, &in) {
+		return
+	}
+	if _, ok := s.session(w, r, access.ManageSession, "archive this session"); !ok {
 		return
 	}
 	if err := s.M.Archive(r.Context(), r.PathValue("id"), in.Archived); err != nil {
@@ -339,6 +469,9 @@ func (s *Server) openPR(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
+	if _, ok := s.session(w, r, access.PromptSession, "open pull requests for this session"); !ok {
+		return
+	}
 	url, err := s.M.OpenPR(r.Context(), r.PathValue("id"), in.Repo, in.Title, in.Body, in.Draft)
 	warning := ""
 	if session.IsUncommittedWarning(err) {
@@ -351,6 +484,32 @@ func (s *Server) openPR(w http.ResponseWriter, r *http.Request) {
 	reply(w, http.StatusOK, map[string]string{"url": url, "warning": warning})
 }
 
+// setVisibility changes who may read a session.
+func (s *Server) setVisibility(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Visibility string `json:"visibility"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	before, ok := s.session(w, r, access.ManageSession, "change who sees this session")
+	if !ok {
+		return
+	}
+	if in.Visibility == store.VisibilityPrivate && before.AccountID != accountOf(r) {
+		fail(w, http.StatusBadRequest, "only the person who started a session can make it private")
+		return
+	}
+	sess, err := s.M.SetVisibility(r.Context(), before.ID, in.Visibility)
+	if err != nil {
+		replyErr(w, err)
+		return
+	}
+	s.audit(r, sess.TeamID, "session.visibility_changed", sess.ID,
+		map[string]string{"title": sess.Title, "from": before.Visibility, "to": sess.Visibility})
+	reply(w, http.StatusOK, sess)
+}
+
 // ------------------------------------------------------------------ streams
 
 // sessionEvents streams a session's timeline as server-sent events: the
@@ -359,9 +518,8 @@ func (s *Server) openPR(w http.ResponseWriter, r *http.Request) {
 // returns the stored log as a JSON array instead.
 func (s *Server) sessionEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	sess, err := s.M.Session(r.Context(), id)
-	if err != nil {
-		replyErr(w, err)
+	sess, ok := s.session(w, r, nil, "")
+	if !ok {
 		return
 	}
 	after, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
@@ -396,24 +554,53 @@ func (s *Server) sessionEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	stream.flush()
-	stream.follow(r, sub, func(e store.Event) bool {
+	stream.follow(r, sub, func(e store.Event) (store.Event, bool) {
 		if e.Seq != 0 && e.Seq <= after {
-			return false // already replayed
+			return e, false // already replayed
 		}
 		if e.Seq != 0 {
 			after = e.Seq
 		}
-		return true
+		return e, true
 	})
 }
 
-// allEvents streams state changes of every session, for live lists.
+// EvHidden tells a live list that a session it showed is no longer the
+// viewer's to see.
+const EvHidden = "session_hidden"
+
+// allEvents streams state changes of the sessions the viewer may read, for
+// live lists. Their teams are looked up again every minute.
 func (s *Server) allEvents(w http.ResponseWriter, r *http.Request) {
 	sub := s.M.Hub().Subscribe(session.AllSessions)
 	defer s.M.Hub().Unsubscribe(sub)
 	stream := startStream(w)
 	stream.flush()
-	stream.follow(r, sub, func(store.Event) bool { return true })
+	who, checked := actor(r), time.Now()
+	shown := map[string]bool{}
+	stream.follow(r, sub, func(e store.Event) (store.Event, bool) {
+		if time.Since(checked) > time.Minute {
+			if again, err := s.actorFor(r); err == nil {
+				who = again
+			}
+			checked = time.Now()
+		}
+		var sess store.Session
+		if json.Unmarshal(e.Data, &sess) != nil || sess.ID == "" {
+			return e, false
+		}
+		if access.ReadSession(who, sess) {
+			shown[sess.ID] = true
+			return e, true
+		}
+		if !shown[sess.ID] {
+			return e, false
+		}
+		// Hidden since: tell the list that showed it, without its details.
+		delete(shown, sess.ID)
+		gone := store.Event{Session: sess.ID, Type: EvHidden, Data: mustJSON(map[string]string{"id": sess.ID}), At: e.At}
+		return gone, true
+	})
 }
 
 type sseStream struct {
@@ -446,7 +633,7 @@ func (s *sseStream) flush() {
 
 // follow forwards live events until the client leaves or the hub drops a
 // slow subscriber; either way the client reconnects with Last-Event-ID.
-func (s *sseStream) follow(r *http.Request, sub *session.Sub, keep func(store.Event) bool) {
+func (s *sseStream) follow(r *http.Request, sub *session.Sub, keep func(store.Event) (store.Event, bool)) {
 	ping := time.NewTicker(20 * time.Second)
 	defer ping.Stop()
 	for {
@@ -455,7 +642,7 @@ func (s *sseStream) follow(r *http.Request, sub *session.Sub, keep func(store.Ev
 			if !ok {
 				return
 			}
-			if keep(e) {
+			if e, ok := keep(e); ok {
 				s.send(e)
 				s.flush()
 			}
@@ -470,22 +657,47 @@ func (s *sseStream) follow(r *http.Request, sub *session.Sub, keep func(store.Ev
 
 // -------------------------------------------------------------- automations
 
+// listAutomations lists the automations the viewer may see.
 func (s *Server) listAutomations(w http.ResponseWriter, r *http.Request) {
 	list, err := s.M.Store().Automations(r.Context())
 	if err != nil {
 		replyErr(w, err)
 		return
 	}
-	reply(w, http.StatusOK, orEmpty(list))
+	who := actor(r)
+	out := []store.Automation{}
+	for _, a := range list {
+		if access.UseAutomation(who, a) {
+			out = append(out, a)
+		}
+	}
+	reply(w, http.StatusOK, out)
 }
 
-func (s *Server) getAutomation(w http.ResponseWriter, r *http.Request) {
+// automation loads the automation a request names, if the viewer may see
+// it, and checks they may manage it when manage is set.
+func (s *Server) automation(w http.ResponseWriter, r *http.Request, manage bool) (store.Automation, bool) {
 	a, err := s.M.Store().Automation(r.Context(), r.PathValue("id"))
 	if err != nil {
 		replyErr(w, err)
-		return
+		return a, false
 	}
-	reply(w, http.StatusOK, a)
+	who := actor(r)
+	if !access.UseAutomation(who, a) {
+		hidden(w)
+		return a, false
+	}
+	if manage && !access.ManageAutomation(who, a) {
+		forbid(w, "change this automation")
+		return a, false
+	}
+	return a, true
+}
+
+func (s *Server) getAutomation(w http.ResponseWriter, r *http.Request) {
+	if a, ok := s.automation(w, r, false); ok {
+		reply(w, http.StatusOK, a)
+	}
 }
 
 func (s *Server) createAutomation(w http.ResponseWriter, r *http.Request) {
@@ -493,7 +705,12 @@ func (s *Server) createAutomation(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &spec) {
 		return
 	}
-	a, token, err := s.Auto.Create(r.Context(), spec, "")
+	team, ok := s.target(w, r, spec.TeamID, spec.EnvironmentID)
+	if !ok {
+		return
+	}
+	spec.TeamID = team
+	a, token, err := s.Auto.Create(r.Context(), spec, accountOf(r))
 	if err != nil {
 		replyErr(w, err)
 		return
@@ -506,6 +723,17 @@ func (s *Server) updateAutomation(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &spec) {
 		return
 	}
+	before, ok := s.automation(w, r, true)
+	if !ok {
+		return
+	}
+	if spec.TeamID != "" && spec.TeamID != before.TeamID {
+		fail(w, http.StatusBadRequest, "an automation's team can't change")
+		return
+	}
+	if _, ok := s.target(w, r, before.TeamID, spec.EnvironmentID); !ok {
+		return
+	}
 	a, err := s.Auto.Update(r.Context(), r.PathValue("id"), spec)
 	if err != nil {
 		replyErr(w, err)
@@ -515,6 +743,9 @@ func (s *Server) updateAutomation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteAutomation(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.automation(w, r, true); !ok {
+		return
+	}
 	if err := s.M.Store().DeleteAutomation(r.Context(), r.PathValue("id")); err != nil {
 		replyErr(w, err)
 		return
@@ -523,9 +754,8 @@ func (s *Server) deleteAutomation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request) {
-	a, err := s.M.Store().Automation(r.Context(), r.PathValue("id"))
-	if err != nil {
-		replyErr(w, err)
+	a, ok := s.automation(w, r, true)
+	if !ok {
 		return
 	}
 	a.Enabled = true // a manual run works on paused automations too
@@ -538,6 +768,9 @@ func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) automationRuns(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.automation(w, r, false); !ok {
+		return
+	}
 	runs, err := s.M.Store().AutomationRuns(r.Context(), r.PathValue("id"), 50)
 	if err != nil {
 		replyErr(w, err)

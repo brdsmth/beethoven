@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
@@ -15,13 +16,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/brdsmth/beethoven/internal/access"
 	"github.com/brdsmth/beethoven/internal/store"
 )
 
 // Signing in. A server reachable beyond this machine asks people to sign in
 // with an email and password; on a new server, the first visitor creates the
-// account that owns it. A signed-in browser holds a random cookie, stored
-// only as its hash. Scripts and the CLI can use BEETHOVEN_TOKEN instead.
+// account that owns it, and invites the others. A signed-in browser holds a
+// random cookie, stored only as its hash. Scripts and the CLI use a personal
+// API token, or BEETHOVEN_TOKEN, which acts as the server itself.
 
 const (
 	loginCookie = "beethoven_login"
@@ -31,31 +34,67 @@ const (
 
 // AuthState is what the UI needs to know before showing anything.
 type AuthState struct {
-	Required bool           `json:"required"` // the API needs a signed-in account
-	Setup    bool           `json:"setup"`    // no account exists yet: the first becomes the owner
-	Account  *store.Account `json:"account"`  // who is signed in
+	Required bool              `json:"required"`        // the API needs a signed-in account
+	Setup    bool              `json:"setup"`           // no account exists yet: the first becomes the owner
+	Account  *store.Account    `json:"account"`         // who is signed in
+	Teams    map[string]string `json:"teams"`           // their teams: id → lead or member
+	Team     string            `json:"default_team_id"` // where their work goes when nothing else says
+	Admin    bool              `json:"admin"`           // the viewer manages the workspace
+	People   bool              `json:"people"`          // the server has accounts: people and teams apply
 }
 
 func (s *Server) signInRequired() bool { return s.SignIn || s.Token != "" }
 
-// signedIn reports whether a request may use the API.
-func (s *Server) signedIn(r *http.Request) bool {
-	if !s.signInRequired() || s.tokenOK(r) {
-		return true
-	}
-	_, err := s.account(r)
-	return err == nil
-}
-
-func (s *Server) tokenOK(r *http.Request) bool {
-	if s.Token == "" {
-		return false
-	}
+// bearer is the token a request carries, if any.
+func bearer(r *http.Request) string {
 	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if got == "" {
 		got = r.URL.Query().Get("token") // EventSource cannot set headers
 	}
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.Token)) == 1
+	return got
+}
+
+func (s *Server) serverToken(r *http.Request) bool {
+	return s.Token != "" && subtle.ConstantTimeCompare([]byte(bearer(r)), []byte(s.Token)) == 1
+}
+
+// errSignIn means a request names nobody the API may act for.
+var errSignIn = errors.New("sign in required")
+
+// actorFor decides whom a request acts for: a signed-in person (by cookie or
+// personal API token), or the server itself (its own token, or anyone on a
+// server nobody needs to sign in to).
+func (s *Server) actorFor(r *http.Request) (access.Actor, error) {
+	ctx := r.Context()
+	if a, err := s.account(r); err == nil {
+		return s.person(ctx, a)
+	}
+	if tok := bearer(r); strings.HasPrefix(tok, store.TokenPrefix) {
+		a, err := s.M.Store().APITokenAccount(ctx, tok)
+		if err != nil {
+			return access.Actor{}, errSignIn
+		}
+		return s.person(ctx, a)
+	}
+	if s.serverToken(r) || !s.signInRequired() {
+		owner, _ := s.M.Store().FirstOwner(ctx)
+		return access.Server(owner.ID), nil
+	}
+	return access.Actor{}, errSignIn
+}
+
+func (s *Server) person(ctx context.Context, a store.Account) (access.Actor, error) {
+	teams, err := s.M.Store().Memberships(ctx, a.ID)
+	if err != nil {
+		return access.Actor{}, err
+	}
+	return access.Person(a, teams), nil
+}
+
+// actor is whom a guarded request acts for.
+func actor(r *http.Request) access.Actor {
+	a, _ := access.From(r.Context())
+	return a
 }
 
 // account is the account a request's cookie is signed in as.
@@ -77,13 +116,24 @@ func (s *Server) authState(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) state(r *http.Request) (AuthState, error) {
-	st := AuthState{Required: s.signInRequired()}
+	ctx := r.Context()
+	st := AuthState{Required: s.signInRequired(), Teams: map[string]string{}}
+	has, err := s.M.Store().HasAccounts(ctx)
+	if err != nil {
+		return st, err
+	}
+	st.Setup, st.People = st.Required && !has, has
 	if a, err := s.account(r); err == nil {
 		st.Account = &a
 	}
-	has, err := s.M.Store().HasAccounts(r.Context())
-	st.Setup = st.Required && !has
-	return st, err
+	if who, err := s.actorFor(r); err == nil {
+		st.Admin = who.Admin()
+		if who.IsPerson() {
+			st.Teams = who.Teams
+			st.Team, _ = s.M.Store().DefaultTeam(ctx, who.AccountID)
+		}
+	}
+	return st, nil
 }
 
 type credentials struct {
@@ -103,18 +153,12 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.clean()
-	switch {
-	case !s.signInRequired():
+	if !s.signInRequired() {
 		fail(w, http.StatusBadRequest, "this server doesn't ask anyone to sign in")
 		return
-	case !strings.Contains(in.Email, "@") || len(in.Email) > 254:
-		fail(w, http.StatusBadRequest, "enter an email address")
-		return
-	case len(in.Password) < minPassword:
-		fail(w, http.StatusBadRequest, fmt.Sprintf("use a password of at least %d characters", minPassword))
-		return
-	case len(in.Password) > 1024:
-		fail(w, http.StatusBadRequest, "use a password of at most 1024 characters")
+	}
+	if msg := checkCredentials(in); msg != "" {
+		fail(w, http.StatusBadRequest, msg)
 		return
 	}
 	hash, err := hashPassword(in.Password)
@@ -150,7 +194,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		replyErr(w, err)
 		return
 	}
-	if !checkPassword(hash, in.Password) { // checks a dummy hash for unknown emails, to take as long
+	if !checkPassword(hash, in.Password) || a.Disabled { // checks a dummy hash for unknown emails, to take as long
 		s.tries.failed(in.Email)
 		fail(w, http.StatusUnauthorized, "wrong email or password")
 		return
@@ -170,7 +214,8 @@ func (s *Server) signInAs(w http.ResponseWriter, r *http.Request, a store.Accoun
 	}
 	http.SetCookie(w, &http.Cookie{Name: loginCookie, Value: v, Path: "/", Expires: exp, MaxAge: int(loginFor.Seconds()),
 		HttpOnly: true, Secure: secure(r), SameSite: http.SameSiteLaxMode})
-	reply(w, code, AuthState{Required: s.signInRequired(), Account: &a})
+	teams, _ := s.M.Store().Memberships(r.Context(), a.ID)
+	reply(w, code, AuthState{Required: s.signInRequired(), Account: &a, Teams: teams, Admin: a.Admin(), People: true})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {

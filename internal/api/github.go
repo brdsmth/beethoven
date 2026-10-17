@@ -31,10 +31,14 @@ type flows struct {
 type flow struct {
 	kind    string // app, authorize or slack
 	base    string // the server's URL as the browser reaches it
+	account string // who started it: only they can finish it
 	expires time.Time
 }
 
-func (f *flows) start(kind, base string) string {
+func (f *flows) start(kind, base string) string { return f.startFor(kind, base, "") }
+
+// startFor starts a round trip only accountID can complete.
+func (f *flows) startFor(kind, base, accountID string) string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	state := hex.EncodeToString(b)
@@ -48,16 +52,19 @@ func (f *flows) start(kind, base string) string {
 			delete(f.m, k)
 		}
 	}
-	f.m[state] = flow{kind: kind, base: base, expires: time.Now().Add(30 * time.Minute)}
+	f.m[state] = flow{kind: kind, base: base, account: accountID, expires: time.Now().Add(30 * time.Minute)}
 	return state
 }
 
-func (f *flows) take(state, kind string) (string, bool) {
+func (f *flows) take(state, kind string) (string, bool) { return f.takeFor(state, kind, "") }
+
+// takeFor completes a round trip that accountID started.
+func (f *flows) takeFor(state, kind, accountID string) (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	v, ok := f.m[state]
 	delete(f.m, state)
-	return v.base, ok && v.kind == kind && time.Now().Before(v.expires)
+	return v.base, ok && v.kind == kind && v.account == accountID && time.Now().Before(v.expires)
 }
 
 var ownerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
@@ -99,6 +106,9 @@ func (s *Server) registerApp(w http.ResponseWriter, r *http.Request) {
 	}
 	base, ok := baseURL(in.BaseURL)
 	switch {
+	case !actor(r).Admin():
+		forbid(w, "register a GitHub App: ask an admin")
+		return
 	case !ok:
 		fail(w, http.StatusBadRequest, "base_url must be the server's origin, like https://beethoven.example.com")
 		return
@@ -112,7 +122,7 @@ func (s *Server) registerApp(w http.ResponseWriter, r *http.Request) {
 	}
 	manifest, _ := json.Marshal(github.Manifest(base, in.Public))
 	reply(w, http.StatusOK, map[string]string{
-		"url": s.GitHub.ManifestURL(in.Org, s.flows.start("app", base)), "manifest": string(manifest),
+		"url": s.GitHub.ManifestURL(in.Org, s.flows.startFor("app", base, accountOf(r))), "manifest": string(manifest),
 	})
 }
 
@@ -122,7 +132,7 @@ func (s *Server) appCreated(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	base, ok := s.flows.take(in.State, "app")
+	base, ok := s.flows.takeFor(in.State, "app", accountOf(r))
 	if !ok {
 		fail(w, http.StatusBadRequest, "this GitHub link has expired or was already used; start again")
 		return
@@ -132,7 +142,7 @@ func (s *Server) appCreated(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	reply(w, http.StatusOK, map[string]string{"next": s.authorizeURL(app, base)})
+	reply(w, http.StatusOK, map[string]string{"next": s.authorizeURL(r, app, base)})
 }
 
 // authorize returns where to send the browser to authorize the app.
@@ -153,11 +163,12 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "no GitHub App is configured")
 		return
 	}
-	reply(w, http.StatusOK, map[string]string{"url": s.authorizeURL(app, base)})
+	reply(w, http.StatusOK, map[string]string{"url": s.authorizeURL(r, app, base)})
 }
 
-func (s *Server) authorizeURL(app *github.App, base string) string {
-	return s.GitHub.AuthorizeURL(app, base+"/github/authorized", s.flows.start("authorize", base))
+// authorizeURL sends the viewer to authorize the app for themselves.
+func (s *Server) authorizeURL(r *http.Request, app *github.App, base string) string {
+	return s.GitHub.AuthorizeURL(app, base+"/github/authorized", s.flows.startFor("authorize", base, accountOf(r)))
 }
 
 // connectAccount completes an authorization. Its reply says where to send
@@ -168,7 +179,7 @@ func (s *Server) connectAccount(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	base, ok := s.flows.take(in.State, "authorize")
+	base, ok := s.flows.takeFor(in.State, "authorize", accountOf(r))
 	if !ok {
 		fail(w, http.StatusBadRequest, "this GitHub link has expired or was already used; start again")
 		return
@@ -198,6 +209,10 @@ func (s *Server) disconnectAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) forgetApp(w http.ResponseWriter, r *http.Request) {
+	if !actor(r).Admin() {
+		forbid(w, "remove the GitHub App: ask an admin")
+		return
+	}
 	if err := s.GitHub.ForgetApp(r.Context()); err != nil {
 		replyErr(w, err)
 		return
