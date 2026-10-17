@@ -490,6 +490,26 @@ func (s *Store) Events(ctx context.Context, sessionID string, after int64, limit
 		WHERE session_id=? AND seq>? ORDER BY seq LIMIT ?`, sessionID, after, limit)
 }
 
+// EventsOfType returns a session's stored events of the given types, oldest
+// first.
+func (s *Store) EventsOfType(ctx context.Context, sessionID string, types ...string) ([]Event, error) {
+	if len(types) == 0 {
+		return nil, nil
+	}
+	args := []any{sessionID}
+	for _, t := range types {
+		args = append(args, t)
+	}
+	return query(ctx, s.r, func(r scanner) (e Event, err error) {
+		var data string
+		var at int64
+		err = r.Scan(&e.Session, &e.Seq, &e.Type, &e.Prompt, &data, &at)
+		e.Data, e.At = json.RawMessage(data), fromMS(at)
+		return e, err
+	}, `SELECT session_id, seq, type, prompt_id, data, at FROM events
+		WHERE session_id=? AND type IN (?`+strings.Repeat(",?", len(types)-1)+`) ORDER BY seq`, args...)
+}
+
 // ------------------------------------------------------------- automations
 
 type Automation struct {
