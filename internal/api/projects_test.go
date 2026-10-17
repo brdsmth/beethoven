@@ -5,11 +5,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/brdsmth/beethoven/internal/api"
 	"github.com/brdsmth/beethoven/internal/automation"
+	"github.com/brdsmth/beethoven/internal/capability"
 	"github.com/brdsmth/beethoven/internal/fake"
 	"github.com/brdsmth/beethoven/internal/github"
 	"github.com/brdsmth/beethoven/internal/store"
@@ -36,8 +38,16 @@ func TestStartProject(t *testing.T) {
 	if owners, _ := out["owners"].([]any); code != 200 || len(owners) != 1 || owners[0].(map[string]any)["login"] != "acme" {
 		t.Fatalf("options: %d %v", code, out)
 	}
-	if stacks, _ := out["stacks"].([]any); len(stacks) < 2 {
+	stacks, _ := out["stacks"].([]any)
+	if len(stacks) < 2 {
 		t.Errorf("stacks = %v", out["stacks"])
+	}
+	for _, st := range stacks { // each stack's capability is in the catalog
+		if id, _ := st.(map[string]any)["capability"].(string); id != "" {
+			if _, ok := capability.Get(id); !ok {
+				t.Errorf("stack %v names no capability", st)
+			}
+		}
 	}
 
 	// Nothing is created until the whole request checks out.
@@ -69,7 +79,7 @@ func TestStartProject(t *testing.T) {
 	id := e["id"].(string)
 	saved, err := env.DB.Environment(ctx, id)
 	if err != nil || saved.Name != "new-app" || saved.Description != "A CLI" || len(saved.Repos) != 1 ||
-		saved.Repos[0].Repo != "acme/new-app" || !strings.Contains(saved.SetupScript, "go.dev") || !saved.InheritSecrets {
+		saved.Repos[0].Repo != "acme/new-app" || !slices.Equal(saved.Overrides.Capabilities, []string{"go"}) || !saved.InheritSecrets {
 		t.Errorf("environment = %+v, %v", saved, err)
 	}
 	secrets, _ := env.DB.Secrets(ctx, ptr(store.EnvScope(id)))
