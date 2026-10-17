@@ -254,7 +254,7 @@ func (b *Bot) submit(ctx context.Context, r request, base session.Request) {
 	req.Prompt, req.Attachments = text, got.attachments
 	req.Key, req.Author, req.Source, req.DedupKey = r.key(), r.author, "slack", r.dedupKey()
 	if r.who.IsPerson() {
-		req.AccountID = r.who.AccountID
+		req.AccountID, req.Author = r.who.AccountID, b.M.AuthorFor(ctx, r.who.AccountID)
 	}
 	req.TeamID = r.team
 	if req.EnvironmentID != "" {

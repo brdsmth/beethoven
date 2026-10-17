@@ -167,6 +167,25 @@ func (m *Manager) DefaultAuthor(ctx context.Context) store.Author {
 	return m.cfg.Author
 }
 
+// AuthorFor is the commit identity of a person here: their GitHub
+// account's, else their name and email. For nobody in particular, it is the
+// settings' author, or the owner's.
+func (m *Manager) AuthorFor(ctx context.Context, accountID string) store.Author {
+	if accountID != "" {
+		if a := m.scm.Author(access.For(ctx, accountID)); a.Name != "" && a.Email != "" {
+			return a
+		}
+		if acct, err := m.db.Account(ctx, accountID); err == nil {
+			return store.Author{Name: firstOf(acct.Name, acct.Email), Email: acct.Email}
+		}
+	}
+	eff, err := m.Effective(ctx, "")
+	if err != nil {
+		return m.cfg.Author
+	}
+	return eff.Author
+}
+
 // forPerson makes ctx act for the person a session works for, whose GitHub
 // account it uses; a session for nobody in particular acts for the owner.
 func forPerson(ctx context.Context, s store.Session) context.Context {

@@ -20,7 +20,6 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"github.com/brdsmth/beethoven/internal/access"
 	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/store"
 )
@@ -151,14 +150,10 @@ func (s *Service) Fire(ctx context.Context, a store.Automation, source, payload,
 	if err := s.mayRun(ctx, a); err != nil {
 		return store.Session{}, store.Prompt{}, err
 	}
-	eff, err := s.m.Effective(access.For(ctx, a.AccountID), a.EnvironmentID)
-	if err != nil {
-		return store.Session{}, store.Prompt{}, err
-	}
 	req := session.Request{
 		Prompt: prompt, EnvironmentID: a.EnvironmentID, Repos: a.Repos, Model: a.Model, Effort: a.Effort,
 		Title:  a.Name + " · " + time.Now().Format("Jan 2 15:04"),
-		Author: eff.Author, AccountID: a.AccountID, TeamID: a.TeamID, Source: source, AutomationID: a.ID,
+		Author: s.m.AuthorFor(ctx, a.AccountID), AccountID: a.AccountID, TeamID: a.TeamID, Source: source, AutomationID: a.ID,
 	}
 	if a.Reuse {
 		req.Key = "automation:" + a.ID
