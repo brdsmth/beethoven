@@ -125,8 +125,8 @@ conversation with `--resume`. Adding another agent is one file.
 
 **Tools.** The server hosts an MCP server that every agent connects to with its session's token:
 `create_pull_request`, `spawn_session`, `send_prompt`, `get_session` (which can wait for a child to
-finish), `list_sessions` and `stop_session`. Agents only reach their own direct children; children
-nest at most two levels deep.
+finish), `list_sessions`, `stop_session`, and `list_capabilities` and `add_capability` (see
+Capabilities). Agents only reach their own direct children; children nest at most two levels deep.
 
 **Pull requests.** The agent commits; `create_pull_request` makes the server push the session's
 branch (`beethoven/<id>`) from inside the sandbox with a token passed to that one command, then open
@@ -182,6 +182,20 @@ encrypted, separate from secrets, so they reach the agent whatever an environmen
 
 **MCP servers.** Further tool servers for agents — remote over HTTP with headers, or a command run
 in the sandbox with its environment — offered globally, per environment or per repository.
+
+**Capabilities.** Toolchains a sandbox installs on demand, each with a Claude Code skill that tells
+the agent how to use it: `expo` (mobile apps with Expo and React Native; checks with TypeScript,
+Jest and Metro bundles, native builds and phone previews through EAS with an `EXPO_TOKEN` secret),
+`android` (JDK 17 and the Android SDK, for local Gradle builds), `go`, `rust`, `bun` and `python`
+(uv). Switch them on in the global settings, for an environment, or in a repository's
+`.beethoven/capabilities` file; the agent can also add one mid-session with the `add_capability`
+tool, and you can from the session's header. One added during a session is installed at once and
+kept for later: in the session's environment, else in its primary repository's
+`.beethoven/capabilities` (for the agent to commit). A sandbox installs each capability once, in the
+agent's home, after cloning and before the setup scripts; a failed install is a warning. Capabilities
+raise a configured CPU or memory limit to what they need (Android builds want 4 CPUs and 8 GB), and
+suggest themselves when a repository looks like it needs them. The image already has Node 24 and
+Python 3.
 
 ### GitHub
 
@@ -273,6 +287,8 @@ keep their history.
 
 ### Repository hooks
 
+- `.beethoven/capabilities` names capabilities to install, one per line (`#` starts a comment),
+  before the scripts below run.
 - `.beethoven/setup.sh` runs once per sandbox after the clone (dependencies, builds). Failure is a
   warning.
 - `.beethoven/start.sh` runs every time the sandbox starts (services). Failure fails the prompt.
@@ -344,6 +360,8 @@ HTML and SVG included, downloads, so a file can't run script as the person viewi
 | `GET /api/sessions/{id}/attachments/{aid}` | an attached file |
 | `DELETE /api/sessions/{id}/prompts/{pid}` | cancel a prompt |
 | `POST /api/sessions/{id}/stop` · `/archive` · `/pr` | stop; `{archived}`; `{repo, title, body, draft}` |
+| `POST /api/sessions/{id}/capabilities` | install a capability `{id}` now and keep it for the session's environment or repository |
+| `GET /api/capabilities` | the capabilities sandboxes can be given; settings and environments list theirs in `capabilities` |
 | `GET /api/auth` · `POST /api/auth/setup` · `/login` · `/logout` | who is signed in; create the first account; sign in and out |
 | `GET /api/sessions/{id}/events` | server-sent events; `Last-Event-ID` resumes |
 | `GET /api/events` | live state of every session |
