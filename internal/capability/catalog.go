@@ -107,9 +107,12 @@ licenses are accepted. There is no emulator or device, so build and test, but do
   the project already keeps an android/ directory or you were asked to; otherwise prefer EAS builds
   (see the expo skill), since prebuild output is usually not committed.
 - Build: ` + "`cd android && ./gradlew assembleDebug`" + ` (or ` + "`assembleRelease`" + `); unit tests: ` + "`./gradlew test`" + `.
-  The first build downloads Gradle and dependencies and takes several minutes.
-- Release builds need a signing key: never generate or commit one unless asked.
-- If Gradle runs out of memory, add ` + "`org.gradle.jvmargs=-Xmx4g`" + ` to android/gradle.properties.`,
+  The first build downloads Gradle, the NDK and dependencies (several GB) and takes a while.
+- React Native compiles native code for four CPU architectures by default. To check that a debug build
+  works, build one: ` + "`./gradlew assembleDebug -PreactNativeArchitectures=x86_64`" + `.
+- If the Gradle daemon dies or runs out of memory, build with ` + "`--max-workers=2`" + ` and set
+  ` + "`org.gradle.jvmargs=-Xmx3g`" + ` in android/gradle.properties (without committing that unless asked).
+- Release builds need a signing key: never generate or commit one unless asked.`,
 	},
 	{
 		ID:          "go",
