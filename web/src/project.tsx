@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { api, get, resetGitHub, withFiles, type Environment, type Info, type Session } from './api';
 import { AttachButton, PendingFiles, useFiles } from './attach';
+import { useCapabilities } from './capabilities';
 import { GitHubSetup } from './github';
 import { TARGET_PREF } from './pickers';
 import { scopeTeam, setScope, useMe, useScope, useTeams } from './state';
@@ -12,8 +13,8 @@ import { Seg, errText, go, modEnter, toast, writePref } from './util';
 
 /** An account the repository can belong to; problem says why the GitHub App can't create one there. */
 type Owner = { login: string; type: string; problem?: string; fix_url?: string };
-/** What a project is built with: the environment's setup script installs it. */
-type Stack = { id: string; name: string; hint: string; setup: string };
+/** What a project is built with: a capability installs it, or for Node, a setup script its packages. */
+type Stack = { id: string; name: string; hint: string; capability?: string; setup?: string };
 type Options = { owners: Owner[]; stacks: Stack[]; error?: string };
 
 /** GitHub keeps letters, digits, '.', '-' and '_' in a repository name and turns anything else into '-'. */
@@ -39,6 +40,7 @@ export function NewProject({ info }: { info?: Info }) {
   const teamID = team ?? (usable(scopeTeam(scope)) ? scopeTeam(scope) : usable(me?.default_team_id) ? me!.default_team_id : '');
   const teamObj = teams?.find(t => t.id === teamID);
   const f = useFiles();
+  const caps = useCapabilities();
   const load = () => get<Options>('/api/projects/options').then(o => {
     setOpts(o);
     // Keep the choice if it still exists, else the first account that works.
@@ -131,13 +133,14 @@ export function NewProject({ info }: { info?: Info }) {
           <select value={stack} onChange={e => setStack(e.currentTarget.value)}>
             {(opts?.stacks || [{ id: '', name: 'Anything' }]).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
-          {st && <span class="hint">{st.hint}</span>}
+          {st && <span class="hint">{st.hint}{st.capability && <> It switches on the project's
+            {' '}<b>{caps?.find(c => c.id === st.capability)?.name || st.capability}</b> capability; more can be added any time.</>}</span>}
         </label>
         {st?.setup && (
           <details class="peek">
             <summary>Setup script</summary>
             <pre>{st.setup}</pre>
-            <p class="hint">Runs once in each new sandbox. Change it later in the environment's settings.</p>
+            <p class="hint">Runs once in each new sandbox. Change it later in the project's settings.</p>
           </details>
         )}
         <label>Variables
