@@ -493,7 +493,7 @@ func (s *Server) createAutomation(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &spec) {
 		return
 	}
-	a, token, err := s.Auto.Create(r.Context(), spec)
+	a, token, err := s.Auto.Create(r.Context(), spec, "")
 	if err != nil {
 		replyErr(w, err)
 		return
