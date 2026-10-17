@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -25,10 +26,14 @@ type Overrides struct {
 	Image        string  `json:"image,omitempty"`        // sandbox image, used when a sandbox is created
 	CPUs         float64 `json:"cpus,omitempty"`
 	MemoryMB     int     `json:"memory_mb,omitempty"`
+	// Toolchains sandboxes install (package capability), by id. They
+	// accumulate like instructions.
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
-// Over returns o with unset fields taken from base. Instructions accumulate,
-// base first, so global instructions still apply inside an environment.
+// Over returns o with unset fields taken from base. Instructions and
+// capabilities accumulate, base first, so global ones still apply inside an
+// environment.
 func (o Overrides) Over(base Overrides) Overrides {
 	pick := func(v, def string) string {
 		if v != "" {
@@ -47,6 +52,11 @@ func (o Overrides) Over(base Overrides) Overrides {
 		out.MemoryMB = base.MemoryMB
 	}
 	out.Instructions = strings.TrimSpace(base.Instructions + "\n\n" + o.Instructions)
+	for _, id := range append(slices.Clone(base.Capabilities), o.Capabilities...) {
+		if !slices.Contains(out.Capabilities, id) {
+			out.Capabilities = append(out.Capabilities, id)
+		}
+	}
 	return out
 }
 
