@@ -168,9 +168,9 @@ target several repositories without a project, one, or none.
 **New projects.** **New project** (in the team switcher's menu) starts something from nothing:
 Beethoven creates the GitHub repository (private by default) with a first commit holding a README and
 the stack's `.gitignore`, and a project named after it, working on it, in the chosen team. The stack
-(Node.js, Bun, Python, Go, Rust, or anything) gives the project a setup script that installs the
-toolchain in the agent's home, then the dependencies once there are any; a pasted `.env` becomes the
-project's secrets. Given a first task, a session starts there straight away; otherwise new sessions
+(Node.js, Expo, Bun, Python, Go, Rust, or anything) switches on the project's matching capability,
+which installs the toolchain and then the dependencies once there are any (for Node, which the
+sandbox has, a setup script installs the packages); a pasted `.env` becomes the project's secrets. Given a first task, a session starts there straight away; otherwise new sessions
 default to the project. Creating repositories needs the GitHub App's Repository creation permission
 (see below).
 
