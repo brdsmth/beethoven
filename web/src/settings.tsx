@@ -5,7 +5,7 @@ import { EnvironmentEdit, Environments } from './environments';
 import { ConnectGitHub } from './github';
 import { MCPServers } from './mcp';
 import { AccountPage, AuditPage, PeoplePage } from './people';
-import { useMe } from './teams';
+import { NewTeam, TeamPage, TeamsIndex, useMe } from './teams';
 import { SecretsPage } from './secrets';
 import { SlackPage } from './slack';
 import { ConfirmButton, EffortSelect, Group, Head, ModelField, SaveBar, errText, fail, num, str, toast, useLoad } from './util';
@@ -21,11 +21,11 @@ const SECTIONS: [string, [string, string][]][] = [
 export function Settings({ info, route }: { info?: Info; route: string[] }) {
   const [section, id, tab] = route;
   const me = useMe();
-  useEffect(() => { if (section === 'teams') location.replace('#/teams'); }, [section]);
   useEffect(() => { // wide screens open a section; narrow ones show the list first
     if (!section && !matchMedia('(max-width: 900px)').matches) location.replace('#/settings/general');
   }, [section]);
   const body = section === 'account' ? <AccountPage />
+    : section === 'teams' ? (id === 'new' ? <NewTeam /> : id ? <TeamPage key={id} slug={id} tab={tab} /> : <TeamsIndex />)
     : section === 'people' ? <PeoplePage />
     : section === 'audit' ? (me?.admin ? <AuditPage /> : <p class="empty">Only admins see the audit log. Team leads see their team's on its page.</p>)
     : section === 'general' ? <General />
@@ -45,12 +45,12 @@ export function Settings({ info, route }: { info?: Info; route: string[] }) {
           <div key={group} class="nav-group">
             <h3>{group}</h3>
             {items.filter(([k]) => k !== 'audit' || me?.admin).map(([k, label]) =>
-              <a key={k} href={k === 'teams' ? '#/teams' : `#/settings/${k}`} class={k === section ? 'active' : ''}>{label}</a>)}
+              <a key={k} href={`#/settings/${k}`} class={k === section ? 'active' : ''}>{label}</a>)}
           </div>
         ))}
       </nav>
       <div class="settings-body">
-        {!(section === 'environments' && id) && <a class="back narrow-only" href="#/settings">‹ Settings</a>}
+        {!((section === 'environments' || section === 'teams') && id) && <a class="back narrow-only" href="#/settings">‹ Settings</a>}
         {body}
       </div>
     </div>

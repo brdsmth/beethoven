@@ -116,7 +116,7 @@ export function SecretsPage({ scope }: { scope: string }) {
           <div class="scope-group">
             <h3>Teams</h3>
             {teams.filter(t => t.role || t.manages).map(t => (
-              <a key={t.id} class="pill" href={`#/teams/${t.slug}/secrets`} title="Edit on the team's page">
+              <a key={t.id} class="pill" href={`#/settings/teams/${t.slug}/secrets`} title="Edit on the team's page">
                 {t.name}<span class="count">{counts['team:' + t.id] || 0}</span> ↗
               </a>
             ))}

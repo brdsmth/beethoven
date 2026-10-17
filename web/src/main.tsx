@@ -9,7 +9,7 @@ import { AutomationEdit, Automations } from './automations';
 import { GitHubReturn, GitHubSetup, githubStep } from './github';
 import { Insights } from './insights';
 import { InviteAccept } from './people';
-import { NewTeam, TeamMark, TeamPage, TeamSwitcher, TeamsIndex, scopeTeam, useMe, useScope, useTeams } from './teams';
+import { TeamMark, TeamSwitcher, scopeTeam, useMe, useScope, useTeams } from './teams';
 import { SlackReturn, slackStep } from './slack';
 import { TargetPicker, fromTarget, targetProblem, toTarget, type Pick } from './pickers';
 import { SessionView } from './session';
@@ -103,7 +103,7 @@ function App({ account }: { account: Account | null }) {
   else if (page === 's' && arg) view = <SessionView key={arg} id={arg} />;
   else if (page === 'automations') view = arg ? <AutomationEdit key={arg} id={arg} /> : <Automations />;
   else if (page === 'insights') view = <Insights />;
-  else if (page === 'teams') view = arg === 'new' ? <NewTeam /> : arg ? <TeamPage key={arg} slug={arg} tab={route[2]} /> : <TeamsIndex />;
+  else if (page === 'teams') view = <Moved to={'/settings/' + route.join('/')} />; // team pages live in the settings
   else if (page === 'settings') view = <Settings info={info} route={route.slice(1)} />;
   else view = <NewSession info={info} />;
   if (page !== 's') document.title = 'Beethoven';
@@ -315,6 +315,12 @@ function NewSession({ info }: { info?: Info }) {
       </form>
     </div>
   );
+}
+
+/** Sends an old link on to where its page lives now. */
+function Moved({ to }: { to: string }) {
+  useEffect(() => { location.replace('#' + to); }, [to]);
+  return null;
 }
 
 render(<Root />, document.getElementById('app')!);

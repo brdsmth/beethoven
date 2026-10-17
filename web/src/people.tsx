@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { api, get, setMe, type APIToken, type AuditEvent, type AuthState, type Invite, type Person, type Role, type Team } from './api';
-import { TeamMark, useMe, useTeams } from './teams';
+import { TeamMark, teamHref, useMe, useTeams } from './teams';
 import { ConfirmButton, Group, Head, ago, errText, fail, toast, useLoad, when } from './util';
 
 // People: owners and admins invite people and set their roles; everyone
@@ -157,10 +157,10 @@ export function AccountPage() {
         </Group>
       )}
       <Group title="Your teams">
-        {mine.length === 0 && <p class="empty small">You're not in a team. <a href="#/teams">Browse teams</a></p>}
+        {mine.length === 0 && <p class="empty small">You're not in a team. <a href={teamHref()}>Browse teams</a></p>}
         <div class="rows">
           {mine.map((t: Team) => (
-            <a key={t.id} class="row link" href={`#/teams/${t.slug}`}>
+            <a key={t.id} class="row link" href={teamHref(t.slug)}>
               <TeamMark team={t} />
               <span class="row-main"><span class="row-title">{t.name}</span></span>
               <span class="badge plain">{t.role === 'lead' ? 'Lead' : 'Member'}</span>
