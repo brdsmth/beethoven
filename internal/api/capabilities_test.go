@@ -24,9 +24,17 @@ func TestCapabilities(t *testing.T) {
 		Install string
 		Secrets []struct{ Name string }
 	}
-	var catalog []entry
-	json.NewDecoder(resp.Body).Decode(&catalog)
+	var raw []map[string]any
+	json.NewDecoder(resp.Body).Decode(&raw)
 	resp.Body.Close()
+	for _, c := range raw {
+		if _, ok := c["secrets"].([]any); !ok {
+			t.Errorf("%v's secrets are %v, want a list", c["id"], c["secrets"])
+		}
+	}
+	var catalog []entry
+	b, _ := json.Marshal(raw)
+	json.Unmarshal(b, &catalog)
 	i := slices.IndexFunc(catalog, func(c entry) bool { return c.ID == "expo" })
 	if i < 0 || !strings.Contains(catalog[i].Install, "eas-cli") || catalog[i].Secrets[0].Name != "EXPO_TOKEN" {
 		t.Fatalf("catalog = %+v", catalog)

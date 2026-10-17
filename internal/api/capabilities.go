@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/brdsmth/beethoven/internal/access"
@@ -10,7 +11,11 @@ import (
 
 // listCapabilities is the catalog of toolchains sandboxes can be given.
 func (s *Server) listCapabilities(w http.ResponseWriter, r *http.Request) {
-	reply(w, http.StatusOK, capability.Catalog)
+	out := slices.Clone(capability.Catalog)
+	for i := range out {
+		out[i].Secrets = orEmpty(out[i].Secrets) // a list, never null
+	}
+	reply(w, http.StatusOK, out)
 }
 
 // addCapability installs a capability in a session's sandbox now and keeps
