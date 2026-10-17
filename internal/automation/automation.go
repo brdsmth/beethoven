@@ -20,6 +20,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"github.com/brdsmth/beethoven/internal/access"
 	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/store"
 )
@@ -44,9 +45,11 @@ func New(m *session.Manager, log *slog.Logger) *Service {
 }
 
 // Spec is the user-editable part of an automation. Like a session, it
-// targets an environment, repositories, or neither.
+// targets an environment, repositories, or neither, and may belong to a
+// team (fixed once made).
 type Spec struct {
 	Name          string          `json:"name"`
+	TeamID        string          `json:"team_id"`
 	EnvironmentID string          `json:"environment_id"`
 	Repos         []store.RepoRef `json:"repos"`
 	Prompt        string          `json:"prompt"`
@@ -57,11 +60,12 @@ type Spec struct {
 	Enabled       bool            `json:"enabled"`
 }
 
-// Create stores a new automation and returns it with its webhook token,
-// which is shown only this once.
-func (s *Service) Create(ctx context.Context, spec Spec) (store.Automation, string, error) {
+// Create stores a new automation, which runs as accountID ("" for the
+// server's owner), and returns it with its webhook token, which is shown
+// only this once.
+func (s *Service) Create(ctx context.Context, spec Spec, accountID string) (store.Automation, string, error) {
 	token := randomHex(24)
-	a := store.Automation{ID: store.NewID(), HookHash: hash(token)}
+	a := store.Automation{ID: store.NewID(), HookHash: hash(token), TeamID: spec.TeamID, AccountID: accountID}
 	if err := s.apply(ctx, &a, spec, time.Now()); err != nil {
 		return a, "", err
 	}
@@ -97,8 +101,12 @@ func (s *Service) apply(ctx context.Context, a *store.Automation, spec Spec, now
 		if len(repos) > 0 {
 			return fmt.Errorf("%w: choose an environment or repositories, not both", session.ErrInvalid)
 		}
-		if _, err := s.db.Environment(ctx, spec.EnvironmentID); err != nil {
+		e, err := s.db.Environment(ctx, spec.EnvironmentID)
+		if err != nil {
 			return fmt.Errorf("%w: environment %q not found", session.ErrInvalid, spec.EnvironmentID)
+		}
+		if e.TeamID != "" && e.TeamID != a.TeamID {
+			return fmt.Errorf("%w: %s belongs to another team", session.ErrInvalid, e.Name)
 		}
 	}
 	a.Name, a.Repos, a.EnvironmentID, a.Prompt = spec.Name, repos, spec.EnvironmentID, spec.Prompt
@@ -140,20 +148,56 @@ func (s *Service) Fire(ctx context.Context, a store.Automation, source, payload,
 	if payload != "" {
 		prompt += "\n\nThe " + source + " that triggered this run delivered:\n<payload>\n" + payload + "\n</payload>"
 	}
-	eff, err := s.m.Effective(ctx, a.EnvironmentID)
+	if err := s.mayRun(ctx, a); err != nil {
+		return store.Session{}, store.Prompt{}, err
+	}
+	eff, err := s.m.Effective(access.For(ctx, a.AccountID), a.EnvironmentID)
 	if err != nil {
 		return store.Session{}, store.Prompt{}, err
 	}
 	req := session.Request{
 		Prompt: prompt, EnvironmentID: a.EnvironmentID, Repos: a.Repos, Model: a.Model, Effort: a.Effort,
 		Title:  a.Name + " · " + time.Now().Format("Jan 2 15:04"),
-		Author: eff.Author, Source: source, AutomationID: a.ID,
+		Author: eff.Author, AccountID: a.AccountID, TeamID: a.TeamID, Source: source, AutomationID: a.ID,
 	}
 	if a.Reuse {
 		req.Key = "automation:" + a.ID
 	}
 	req.DedupKey = dedupKey
 	return s.m.Submit(ctx, req)
+}
+
+// mayRun checks the person an automation runs as may still run it: their
+// account is active and, for a team's automation, they're still in the
+// team, which isn't archived.
+func (s *Service) mayRun(ctx context.Context, a store.Automation) error {
+	if a.AccountID == "" {
+		return nil
+	}
+	acct, err := s.db.Account(ctx, a.AccountID)
+	if err != nil || acct.Disabled {
+		return fmt.Errorf("%w: the person it runs as is no longer here; recreate it", ErrDisabled)
+	}
+	if a.TeamID == "" {
+		return nil
+	}
+	team, err := s.db.Team(ctx, a.TeamID)
+	if err != nil || team.ArchivedAt != nil {
+		return fmt.Errorf("%w: its team is archived", ErrDisabled)
+	}
+	if m, _ := s.db.Memberships(ctx, a.AccountID); m[a.TeamID] == "" && !acct.Admin() {
+		return fmt.Errorf("%w: %s is no longer in %s", ErrDisabled, firstOf(acct.Name, acct.Email), team.Name)
+	}
+	return nil
+}
+
+func firstOf(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // CheckHook authenticates a webhook delivery for automation id.

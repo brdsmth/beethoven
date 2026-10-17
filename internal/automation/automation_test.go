@@ -27,13 +27,13 @@ func waitIdle(t *testing.T, env *fake.Env, a store.Automation) {
 
 func TestCreateValidates(t *testing.T) {
 	svc, _ := setup(t)
-	if _, _, err := svc.Create(ctx, Spec{Name: "n", Prompt: "p", Schedule: "not cron"}); !errors.Is(err, session.ErrInvalid) {
+	if _, _, err := svc.Create(ctx, Spec{Name: "n", Prompt: "p", Schedule: "not cron"}, ""); !errors.Is(err, session.ErrInvalid) {
 		t.Errorf("bad cron: err = %v", err)
 	}
-	if _, _, err := svc.Create(ctx, Spec{Name: "", Prompt: "p"}); !errors.Is(err, session.ErrInvalid) {
+	if _, _, err := svc.Create(ctx, Spec{Name: "", Prompt: "p"}, ""); !errors.Is(err, session.ErrInvalid) {
 		t.Errorf("no name: err = %v", err)
 	}
-	a, token, err := svc.Create(ctx, Spec{Name: "nightly", Prompt: "p", Schedule: "CRON_TZ=America/New_York 0 9 * * *", Enabled: true})
+	a, token, err := svc.Create(ctx, Spec{Name: "nightly", Prompt: "p", Schedule: "CRON_TZ=America/New_York 0 9 * * *", Enabled: true}, "")
 	if err != nil || a.NextRunAt == nil || a.NextRunAt.Before(time.Now()) || len(token) < 32 {
 		t.Fatalf("create = %+v, %q, %v", a, token, err)
 	}
@@ -47,7 +47,7 @@ func TestCreateValidates(t *testing.T) {
 
 func TestFireBusyAndReuse(t *testing.T) {
 	svc, env := setup(t)
-	a, _, _ := svc.Create(ctx, Spec{Name: "n", Prompt: "block", Reuse: true, Enabled: true})
+	a, _, _ := svc.Create(ctx, Spec{Name: "n", Prompt: "block", Reuse: true, Enabled: true}, "")
 	s1, p1, err := svc.Fire(ctx, a, "manual", "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func TestFireBusyAndReuse(t *testing.T) {
 
 func TestPausesAfterRepeatedFailures(t *testing.T) {
 	svc, env := setup(t)
-	a, _, _ := svc.Create(ctx, Spec{Name: "n", Prompt: "fail", Enabled: true})
+	a, _, _ := svc.Create(ctx, Spec{Name: "n", Prompt: "fail", Enabled: true}, "")
 	for i := 1; i <= MaxFailures; i++ {
 		if _, _, err := svc.Fire(ctx, a, "manual", "", ""); err != nil {
 			t.Fatalf("run %d: %v", i, err)
@@ -104,7 +104,7 @@ func TestPausesAfterRepeatedFailures(t *testing.T) {
 
 func TestTickFiresDueSchedulesOnce(t *testing.T) {
 	svc, env := setup(t)
-	a, _, _ := svc.Create(ctx, Spec{Name: "n", Prompt: "scheduled work", Schedule: "*/5 * * * *", Enabled: true})
+	a, _, _ := svc.Create(ctx, Spec{Name: "n", Prompt: "scheduled work", Schedule: "*/5 * * * *", Enabled: true}, "")
 	past := time.Now().Add(-time.Minute).Truncate(time.Millisecond)
 	a.NextRunAt = &past
 	svc.db.SaveAutomation(ctx, &a)
