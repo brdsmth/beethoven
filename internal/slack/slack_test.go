@@ -363,3 +363,48 @@ func TestFilesWithoutTheScope(t *testing.T) {
 		return strings.Contains(a.Get("text"), "`files:read`") && strings.Contains(a.Get("text"), "https://api.slack.com/apps/A1/oauth")
 	})
 }
+
+// TestRequestsActAsTheirPeople checks Slack requesters are matched to
+// people here by email, and that a channel's team decides who may ask.
+func TestRequestsActAsTheirPeople(t *testing.T) {
+	h := setup(t)
+	db := h.env.DB
+	owner, _ := db.CreateOwner(ctx, store.Account{Email: "o@x.dev"}, "h")
+	in := store.Invite{Role: store.RoleMember, CreatedBy: owner.ID}
+	tok, _ := db.CreateInvite(ctx, &in)
+	jane, _ := db.AcceptInvite(ctx, tok, store.Account{Email: "jane@example.com", Name: "Jane"}, "h")
+	web := store.Team{Name: "Web"}
+	if err := db.CreateTeam(ctx, &web, owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	db.SaveSlackChannel(ctx, &store.SlackChannel{TeamID: "T1", Channel: "C1", Repos: []store.RepoRef{{Repo: "acme/app"}}, OwnerTeamID: web.ID})
+
+	// Jane isn't in the channel's team yet.
+	h.event(t, "Ev1", mention("U1", "<@UBOT> fix it", "100.000001", ""))
+	h.waitCall(t, "chat.postEphemeral", func(a url.Values) bool {
+		return a.Get("user") == "U1" && strings.Contains(a.Get("text"), "belongs to Web")
+	})
+
+	db.SetTeamMember(ctx, web.ID, jane.ID, store.TeamMemberRole)
+	h.event(t, "Ev2", mention("U1", "<@UBOT> fix it", "100.000002", ""))
+	s := h.session(t, "100.000002", 1)
+	if s.AccountID != jane.ID || s.TeamID != web.ID || s.Visibility != store.VisibilityTeam {
+		t.Errorf("jane's session = account %q, team %q, visibility %q", s.AccountID, s.TeamID, s.Visibility)
+	}
+
+	// Bob has no account here: he acts as the owner, within the channel's team.
+	h.event(t, "Ev3", mention("U2", "<@UBOT> and this", "100.000003", "100.000002"))
+	h.session(t, "100.000002", 2)
+	if ps, _ := db.Prompts(ctx, s.ID); len(ps) != 2 || ps[1].AccountID != "" || ps[0].AccountID != jane.ID {
+		t.Errorf("prompts' people: %+v", ps)
+	}
+
+	// Unless only people with accounts may ask.
+	settings, _ := db.Settings(ctx)
+	settings.SlackMembersOnly = true
+	db.SaveSettings(ctx, settings)
+	h.event(t, "Ev4", mention("U2", "<@UBOT> again", "100.000004", ""))
+	h.waitCall(t, "chat.postEphemeral", func(a url.Values) bool {
+		return a.Get("user") == "U2" && strings.Contains(a.Get("text"), "invite bob@example.com")
+	})
+}
