@@ -358,3 +358,21 @@ func TestLiveListsHideOthersSessions(t *testing.T) {
 		}
 	}
 }
+
+func TestCapabilitiesNeedTheSession(t *testing.T) {
+	_, _, who := people(t, map[string]string{"bob": "member", "cy": "member"})
+	owner, bob, cy := who["owner"], who["bob"], who["cy"]
+	_, out := owner.call("POST", "/api/teams", `{"name":"Web"}`)
+	web := field(out, "id").(string)
+	_, list := owner.call("GET", "/api/people", "")
+	for _, p := range list.([]any) {
+		if field(p, "name") == "bob" {
+			owner.call("PUT", "/api/teams/web/members/"+field(p, "id").(string), `{}`)
+		}
+	}
+	_, out = bob.call("POST", "/api/sessions", `{"prompt":"x","team_id":"`+web+`","visibility":"workspace"}`)
+	id := field(out, "session", "id").(string)
+	if code, _ := cy.call("POST", "/api/sessions/"+id+"/capabilities", `{"id":"go"}`); code != 403 {
+		t.Errorf("cy adds a capability to a team's session he can see: %d", code)
+	}
+}
