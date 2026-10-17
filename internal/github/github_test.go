@@ -2,11 +2,13 @@ package github_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/brdsmth/beethoven/internal/access"
 	"github.com/brdsmth/beethoven/internal/fake"
 	"github.com/brdsmth/beethoven/internal/github"
 	"github.com/brdsmth/beethoven/internal/session"
@@ -199,4 +201,78 @@ func TestPullRequestsAreTrackedUntilMerged(t *testing.T) {
 	if gh.PullReads["200"]+gh.PullReads["304"] != reads {
 		t.Error("polled a merged pull request")
 	}
+}
+
+func TestEachPersonUsesTheirOwnGitHub(t *testing.T) {
+	gh := fake.NewGitHub(t)
+	gh.Install("acme/app", 1, true)
+	c := client(t, gh)
+	owner, _ := c.DB.CreateOwner(ctx, store.Account{Email: "o@x.dev"}, "h")
+	in := store.Invite{Role: store.RoleMember, CreatedBy: owner.ID}
+	tok, _ := c.DB.CreateInvite(ctx, &in)
+	ann, _ := c.DB.AcceptInvite(ctx, tok, store.Account{Email: "ann@x.dev"}, "h")
+	cy, _ := c.DB.AcceptInvite(ctx, mustInvite(t, c.DB, owner.ID), store.Account{Email: "cy@x.dev"}, "h")
+	asOwner, asAnn, asCy := access.For(ctx, owner.ID), access.For(ctx, ann.ID), access.For(ctx, cy.ID)
+
+	// Until anyone connects, the personal access token serves everyone.
+	if tok, _ := c.Token(asCy, "acme/app"); tok != "pat" {
+		t.Errorf("before anyone connects: %q", tok)
+	}
+	if _, err := c.RegisterApp(ctx, "manifest-code"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Connect(asOwner, "oauth-code", "http://x/github/authorized"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Connect(asAnn, "oauth-code:annie", "http://x/github/authorized"); err != nil {
+		t.Fatal(err)
+	}
+
+	if a := c.Author(asAnn); a.Name != "annie" || !strings.Contains(a.Email, "+annie@") {
+		t.Errorf("ann commits as %+v", a)
+	}
+	if a := c.Author(asOwner); a.Name != "Octo Cat" {
+		t.Errorf("the owner commits as %+v", a)
+	}
+	if a := c.Author(ctx); a.Name != "Octo Cat" {
+		t.Errorf("work for nobody in particular commits as %+v, want the owner", a)
+	}
+	// Cy hasn't connected: no stand-in, not even the token.
+	if _, err := c.Token(asCy, "acme/app"); !errors.Is(err, github.ErrNotConnected) {
+		t.Errorf("cy's token: %v", err)
+	}
+	if c.Mode(asCy) != "" || c.Mode(asAnn) != "app" {
+		t.Errorf("modes: cy %q, ann %q", c.Mode(asCy), c.Mode(asAnn))
+	}
+	if st := c.Status(asCy); st.Account != nil || st.Token != "" {
+		t.Errorf("cy's status = %+v", st)
+	}
+
+	if _, err := c.OpenPR(asAnn, session.PullRequest{Repo: "acme/app", Head: "b", Base: "main", Title: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.OpenPR(asOwner, session.PullRequest{Repo: "acme/app", Head: "c", Base: "main", Title: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(gh.PRAuth) != 2 || gh.PRAuth[0] == gh.PRAuth[1] {
+		t.Errorf("pull requests opened with %v; want each person's own token", gh.PRAuth)
+	}
+
+	// Disconnecting is per person.
+	if err := c.Disconnect(asAnn); err != nil {
+		t.Fatal(err)
+	}
+	if c.Mode(asAnn) != "" || c.Mode(asOwner) != "app" {
+		t.Errorf("after ann disconnects: ann %q, owner %q", c.Mode(asAnn), c.Mode(asOwner))
+	}
+}
+
+func mustInvite(t *testing.T, db *store.Store, by string) string {
+	t.Helper()
+	in := store.Invite{Role: store.RoleMember, CreatedBy: by}
+	tok, err := db.CreateInvite(ctx, &in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
 }

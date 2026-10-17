@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/brdsmth/beethoven/internal/access"
 	"github.com/brdsmth/beethoven/internal/store"
 )
 
@@ -42,12 +43,30 @@ func (c *Client) SyncPullRequests(ctx context.Context) error {
 	if err != nil || len(open) == 0 {
 		return err
 	}
-	tok, err := c.bearer(ctx)
-	if err != nil || tok == "" {
-		return err // nothing to ask GitHub with yet
+	// Each pull request is read as the person whose session opened it, who
+	// can see its repository; failing that, as the server's owner.
+	tokens := map[string]string{}
+	tokenFor := func(sessionID string) string {
+		person := ""
+		if s, err := c.DB.Session(ctx, sessionID); err == nil {
+			person = s.AccountID
+		}
+		if tok, ok := tokens[person]; ok {
+			return tok
+		}
+		tok, err := c.bearer(access.For(ctx, person))
+		if (err != nil || tok == "") && person != "" {
+			tok, _ = c.bearer(ctx)
+		}
+		tokens[person] = tok
+		return tok
 	}
 	var errs []error
 	for _, p := range open {
+		tok := tokenFor(p.SessionID)
+		if tok == "" {
+			continue // nothing to ask GitHub with yet
+		}
 		if err := c.syncPull(ctx, tok, p); err != nil {
 			errs = append(errs, err)
 		}

@@ -30,6 +30,7 @@ type GitHub struct {
 	userCan    map[int64]bool   // installations the user can access
 	public     map[string]bool
 	userTokens map[string]bool
+	tokenUser  map[string]string // user token → login; octo unless the code named another
 	refresh    map[string]bool
 	n          int
 	Minted     []string // "installation:repository" for every installation token
@@ -49,7 +50,7 @@ func NewGitHub(t testing.TB) *GitHub {
 		t.Fatal(err)
 	}
 	g := &GitHub{Key: key, ClientID: "Iv1.fake", installs: map[string]int64{}, userCan: map[int64]bool{},
-		public: map[string]bool{}, userTokens: map[string]bool{}, refresh: map[string]bool{},
+		public: map[string]bool{}, userTokens: map[string]bool{}, tokenUser: map[string]string{}, refresh: map[string]bool{},
 		pulls: map[string]map[string]any{}, PullReads: map[string]int{}}
 	srv := httptest.NewServer(g.handler(t))
 	t.Cleanup(srv.Close)
@@ -135,13 +136,17 @@ func (g *GitHub) handler(t testing.TB) http.Handler {
 			}
 			delete(g.refresh, r.Form.Get("refresh_token")) // single use
 			g.Refreshes++
-		case r.Form.Get("code") != "oauth-code":
+		case r.Form.Get("code") != "oauth-code" && !strings.HasPrefix(r.Form.Get("code"), "oauth-code:"):
 			reply(w, 200, map[string]string{"error": "bad_verification_code"})
 			return
 		}
 		g.n++
 		access, refresh := fmt.Sprintf("ghu_%d", g.n), fmt.Sprintf("ghr_%d", g.n)
 		g.userTokens[access], g.refresh[refresh] = true, true
+		// "oauth-code:<login>" authorizes another user than octo.
+		if _, login, ok := strings.Cut(r.Form.Get("code"), ":"); ok {
+			g.tokenUser[access] = login
+		}
 		out := map[string]any{"access_token": access, "token_type": "bearer"}
 		if g.ExpiresIn > 0 {
 			out["expires_in"], out["refresh_token"], out["refresh_token_expires_in"] = g.ExpiresIn, refresh, 15897600
@@ -149,9 +154,17 @@ func (g *GitHub) handler(t testing.TB) http.Handler {
 		reply(w, 200, out)
 	})
 	mux.HandleFunc("GET /user", func(w http.ResponseWriter, r *http.Request) {
-		if asUser(w, r) {
-			reply(w, 200, map[string]any{"id": 7, "login": "octo", "name": "Octo Cat"})
+		if !asUser(w, r) {
+			return
 		}
+		g.mu.Lock()
+		login := g.tokenUser[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+		g.mu.Unlock()
+		if login != "" {
+			reply(w, 200, map[string]any{"id": 100 + len(login), "login": login, "name": login})
+			return
+		}
+		reply(w, 200, map[string]any{"id": 7, "login": "octo", "name": "Octo Cat"})
 	})
 	mux.HandleFunc("GET /user/installations", func(w http.ResponseWriter, r *http.Request) {
 		if !asUser(w, r) {

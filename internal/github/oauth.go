@@ -22,8 +22,8 @@ func (c *Client) AuthorizeURL(app *App, redirect, state string) string {
 	return c.web() + "/login/oauth/authorize?" + q.Encode()
 }
 
-// Connect completes an authorization: it trades the code for the person's
-// tokens and makes them the account the server acts for.
+// Connect completes an authorization: it trades the code for the tokens of
+// the person ctx acts for, and makes that GitHub account theirs.
 func (c *Client) Connect(ctx context.Context, code, redirect string) (store.GitHubAccount, error) {
 	app, _ := c.App(ctx)
 	if app == nil {
@@ -41,12 +41,13 @@ func (c *Client) Connect(ctx context.Context, code, redirect string) (store.GitH
 	if err := c.call(ctx, tokens.Access, "GET", "/user", nil, &u); err != nil {
 		return store.GitHubAccount{}, err
 	}
-	acct := store.GitHubAccount{AppID: app.ID, ID: u.ID, Login: u.Login, Name: u.Name, Tokens: tokens}
+	person, _ := c.person(ctx)
+	acct := store.GitHubAccount{AppID: app.ID, ID: u.ID, AccountID: person, Login: u.Login, Name: u.Name, Tokens: tokens}
 	return acct, c.DB.SaveGitHubAccount(ctx, &acct)
 }
 
-// Disconnect forgets the connected account and revokes its authorization
-// on GitHub, as far as GitHub can be reached.
+// Disconnect forgets the GitHub account of the person ctx acts for and
+// revokes its authorization on GitHub, as far as GitHub can be reached.
 func (c *Client) Disconnect(ctx context.Context) error {
 	cn, err := c.connection(ctx)
 	if err != nil || cn == nil {
@@ -72,7 +73,7 @@ func (c *Client) userToken(ctx context.Context, cn *conn) (string, error) {
 	}
 	c.refresh.Lock()
 	defer c.refresh.Unlock()
-	acct, err := c.DB.GitHubAccount(ctx, cn.app.ID) // another call may have refreshed it meanwhile
+	acct, err := c.DB.GitHubAccountByID(ctx, cn.app.ID, cn.acct.ID) // another call may have refreshed it meanwhile
 	if err != nil {
 		return "", err
 	}
@@ -147,9 +148,9 @@ func (c *Client) exchange(ctx context.Context, app *App, form url.Values) (store
 // Status describes how the server reaches GitHub.
 type Status struct {
 	App           *AppStatus     `json:"app"`     // nil without an app
-	Account       *AccountStatus `json:"account"` // nil until someone connects
+	Account       *AccountStatus `json:"account"` // the viewer's GitHub account; nil until they connect
 	Installations []Installation `json:"installations"`
-	Token         string         `json:"token"` // where a personal access token comes from; used until someone connects
+	Token         string         `json:"token"` // where a personal access token comes from; used until anyone connects
 	Error         string         `json:"error,omitempty"`
 }
 
@@ -169,7 +170,10 @@ type AccountStatus struct {
 }
 
 func (c *Client) Status(ctx context.Context) Status {
-	st := Status{Installations: []Installation{}, Token: c.TokenSource(ctx)}
+	st := Status{Installations: []Installation{}}
+	if c.tokenAllowed(ctx) {
+		st.Token = c.TokenSource(ctx)
+	}
 	app, source := c.App(ctx)
 	if app == nil {
 		return st

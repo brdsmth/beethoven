@@ -2,12 +2,14 @@
 //
 // The server acts on GitHub as a GitHub App: a preconfigured one, shared by
 // every server an operator runs, or one registered from the server itself
-// with GitHub's app manifest flow. A person connects by authorizing the
-// app. The server then clones and pushes with one-hour installation tokens,
-// each for a single repository, and calls the API, opening pull requests
-// included, as that person. Until someone connects, a personal access token
-// (stored in the settings, GITHUB_TOKEN, or the gh CLI's) is used for
-// everything.
+// with GitHub's app manifest flow. Each person connects their own GitHub by
+// authorizing the app. Work done for a person (named by access.With in its
+// context) then clones and pushes with one-hour installation tokens, each
+// for a single repository the person can reach, and calls the API, opening
+// pull requests included, as that person. Work done for nobody in
+// particular acts as the server's owner. Until anyone connects, a personal
+// access token (stored in the settings, GITHUB_TOKEN, or the gh CLI's) is
+// used for everything.
 package github
 
 import (
@@ -25,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/brdsmth/beethoven/internal/access"
 	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/store"
 )
@@ -44,9 +47,7 @@ type Client struct {
 	parsed    *App   // the app registered here, parsed from parsedRaw
 	parsedRaw string
 	minted    map[string]minted
-	repos     []Repo
-	reposFor  string // the token the cached repos were listed with
-	reposAt   time.Time
+	repos     map[string]cachedRepos // by the token they were listed with
 
 	refresh sync.Mutex // serializes token refreshes: a refresh token works once
 }
@@ -57,20 +58,52 @@ func New(token string) *Client {
 	return &Client{token: token, gh: token == ""}
 }
 
+type cachedRepos struct {
+	list []Repo
+	at   time.Time
+}
+
 // conn is a connected app: the app and the account it acts for.
 type conn struct {
 	app  *App
 	acct store.GitHubAccount
 }
 
-// connection returns the app and its connected account, or nil if nobody
-// has connected one.
+// ErrNotConnected means the person work is done for hasn't connected their
+// GitHub account.
+var ErrNotConnected = errors.New("connect your GitHub account first, in Settings › GitHub")
+
+// person is whom ctx acts for: the person access.With named, or else the
+// server's first owner. named reports which.
+func (c *Client) person(ctx context.Context) (id string, named bool) {
+	if a, ok := access.From(ctx); ok && a.AccountID != "" {
+		return a.AccountID, true
+	}
+	if c.DB != nil {
+		if o, err := c.DB.FirstOwner(ctx); err == nil {
+			return o.ID, false
+		}
+	}
+	return "", false
+}
+
+// connection returns the app and the GitHub account of the person ctx acts
+// for, or nil if they haven't connected one. Connections made before there
+// were people count as the owner's; work for nobody in particular falls
+// back on the most recent connection.
 func (c *Client) connection(ctx context.Context) (*conn, error) {
 	app, _ := c.App(ctx)
 	if app == nil || c.DB == nil {
 		return nil, nil
 	}
-	acct, err := c.DB.GitHubAccount(ctx, app.ID)
+	id, named := c.person(ctx)
+	acct, err := c.DB.GitHubAccountOf(ctx, app.ID, id)
+	if errors.Is(err, store.ErrNotFound) && id != "" && c.firstOwner(ctx, id) {
+		acct, err = c.DB.GitHubAccountOf(ctx, app.ID, "")
+	}
+	if errors.Is(err, store.ErrNotFound) && !named {
+		acct, err = c.DB.GitHubAccount(ctx, app.ID)
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, nil
 	}
@@ -80,20 +113,37 @@ func (c *Client) connection(ctx context.Context) (*conn, error) {
 	return &conn{app: app, acct: acct}, nil
 }
 
-// Mode says how the server reaches GitHub: "app" through a connected
-// GitHub App, "token" with a personal access token, or "" not at all.
+func (c *Client) firstOwner(ctx context.Context, id string) bool {
+	o, err := c.DB.FirstOwner(ctx)
+	return err == nil && o.ID == id
+}
+
+// tokenAllowed reports whether the personal access token may stand in: only
+// while nobody has connected the app, since it is the operator's own.
+func (c *Client) tokenAllowed(ctx context.Context) bool {
+	app, _ := c.App(ctx)
+	if app == nil || c.DB == nil {
+		return true
+	}
+	_, err := c.DB.GitHubAccount(ctx, app.ID)
+	return errors.Is(err, store.ErrNotFound)
+}
+
+// Mode says how the server reaches GitHub for the person ctx acts for:
+// "app" through their connected GitHub App account, "token" with a personal
+// access token, or "" not at all.
 func (c *Client) Mode(ctx context.Context) string {
 	if cn, _ := c.connection(ctx); cn != nil {
 		return "app"
 	}
-	if c.personalToken(ctx) != "" {
+	if c.tokenAllowed(ctx) && c.personalToken(ctx) != "" {
 		return "token"
 	}
 	return ""
 }
 
-// bearer is the token for API calls made for the person: theirs when the
-// app is connected, otherwise the personal access token.
+// bearer is the token for API calls made for the person: theirs when they
+// connected the app, otherwise, while nobody has, the personal access token.
 func (c *Client) bearer(ctx context.Context) (string, error) {
 	cn, err := c.connection(ctx)
 	if err != nil {
@@ -101,6 +151,9 @@ func (c *Client) bearer(ctx context.Context) (string, error) {
 	}
 	if cn != nil {
 		return c.userToken(ctx, cn)
+	}
+	if !c.tokenAllowed(ctx) {
+		return "", ErrNotConnected
 	}
 	return c.personalToken(ctx), nil
 }
@@ -163,6 +216,9 @@ func (c *Client) Token(ctx context.Context, repo string) (string, error) {
 		return "", err
 	}
 	if cn == nil {
+		if !c.tokenAllowed(ctx) {
+			return "", ErrNotConnected
+		}
 		return c.personalToken(ctx), nil
 	}
 	return c.repoToken(ctx, cn, repo)
@@ -234,9 +290,9 @@ func (c *Client) Repos(ctx context.Context) ([]Repo, error) {
 		return nil, err
 	}
 	c.mu.Lock()
-	if c.reposFor == tok && time.Since(c.reposAt) < 5*time.Minute {
+	if hit, ok := c.repos[tok]; ok && time.Since(hit.at) < 5*time.Minute {
 		defer c.mu.Unlock()
-		return c.repos, nil
+		return hit.list, nil
 	}
 	c.mu.Unlock()
 	var out []Repo
@@ -250,7 +306,10 @@ func (c *Client) Repos(ctx context.Context) ([]Repo, error) {
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].pushed.After(out[j].pushed) })
 	c.mu.Lock()
-	c.repos, c.reposFor, c.reposAt = out, tok, time.Now()
+	if c.repos == nil || len(c.repos) > 100 {
+		c.repos = map[string]cachedRepos{}
+	}
+	c.repos[tok] = cachedRepos{list: out, at: time.Now()}
 	c.mu.Unlock()
 	return out, nil
 }
