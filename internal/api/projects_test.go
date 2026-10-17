@@ -94,6 +94,19 @@ func TestStartProject(t *testing.T) {
 	if code, out := do(t, "POST", srv.URL+"/api/projects", `{"owner":"octo","name":"mine"}`); code != 502 {
 		t.Errorf("where the app can't create repositories: %d %v", code, out)
 	}
+
+	// A team's project: its environment and first session are the team's.
+	team := store.Team{Name: "Web"}
+	if err := env.DB.CreateTeam(ctx, &team, ""); err != nil {
+		t.Fatal(err)
+	}
+	code, out = do(t, "POST", srv.URL+"/api/projects", `{"owner":"acme","name":"team-app","team_id":"`+team.ID+`","prompt":"go"}`)
+	if code != 201 || out["environment"].(map[string]any)["team_id"] != team.ID || out["session"].(map[string]any)["team_id"] != team.ID {
+		t.Errorf("a team's project: %d %v", code, out)
+	}
+	if code, _ := do(t, "POST", srv.URL+"/api/projects", `{"owner":"acme","name":"x","team_id":"nope"}`); code != 400 {
+		t.Errorf("a made-up team: %d", code)
+	}
 }
 
 func ptr[T any](v T) *T { return &v }
