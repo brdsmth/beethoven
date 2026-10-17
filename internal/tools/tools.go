@@ -34,7 +34,7 @@ func Handler(m *session.Manager) http.Handler {
 	mcp.AddTool(srv, &mcp.Tool{Name: "list_capabilities", Description: "List the toolchains this sandbox can be given (mobile apps with Expo, " +
 		"Android builds, Go, Rust, Bun, Python with uv): which are set up, which the repositories look like they need, and the secrets each uses."}, t.listCapabilities)
 	mcp.AddTool(srv, &mcp.Tool{Name: "add_capability", Description: "Install a toolchain in this sandbox now, with a skill that explains how to use it, " +
-		"and keep it for later sessions: in the session's environment, or in the repository's .beethoven/capabilities file, which you then commit."}, t.addCapability)
+		"and keep it for later sessions: in the session's project (environment), or in the repository's .beethoven/capabilities file, which you then commit."}, t.addCapability)
 
 	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{
 		Stateless:    true,
@@ -293,11 +293,11 @@ func (t *tools) addCapability(ctx context.Context, req *mcp.CallToolRequest, in 
 	fmt.Fprintf(&b, "Installed %s. Read ~/.claude/skills/%s/SKILL.md before you continue.\n", added.Name, added.ID)
 	switch added.Kept {
 	case "environment":
-		fmt.Fprintf(&b, "It is kept in the %q environment, so its later sessions have it too.\n", added.Where)
+		fmt.Fprintf(&b, "It is kept in the %q project, so its later sessions have it too.\n", added.Where)
 	case "repository":
 		b.WriteString("It is recorded in .beethoven/capabilities in the primary repository: commit that file with your work so later sessions have it too.\n")
 	default:
-		b.WriteString("It is kept for this session only: there is no environment or repository to record it in.\n")
+		b.WriteString("It is kept for this session only: there is no project or repository to record it in.\n")
 	}
 	for _, w := range added.Warnings {
 		fmt.Fprintf(&b, "Warning: %s\n", w)
