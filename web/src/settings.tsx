@@ -1,6 +1,9 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { api, get, getMe, resetGitHub, type Credentials, type GitHubStatus, type Info, type Settings as S, type SettingsInfo } from './api';
+import {
+  api, get, getMe, resetGitHub, type Credentials, type GitHubStatus, type Info, type Secret, type Settings as S, type SettingsInfo,
+} from './api';
+import { CapabilityPicker } from './capabilities';
 import { EnvironmentEdit, Environments } from './environments';
 import { ConnectGitHub } from './github';
 import { MCPServers } from './mcp';
@@ -61,17 +64,19 @@ export function Settings({ info, route }: { info?: Info; route: string[] }) {
 
 const TEXT = ['model', 'effort', 'instructions', 'image', 'branch_prefix', 'author_name', 'author_email'] as const;
 const NUMS = ['cpus', 'memory_mb', 'idle_minutes', 'turn_minutes'] as const;
-type GF = Record<(typeof TEXT)[number] | (typeof NUMS)[number], string> & { draft_prs: boolean };
+type GF = Record<(typeof TEXT)[number] | (typeof NUMS)[number], string> & { draft_prs: boolean; capabilities: string[] };
 const toGF = (s: S) => ({
   ...Object.fromEntries(TEXT.map(k => [k, s[k] || ''])), ...Object.fromEntries(NUMS.map(k => [k, str(s[k])])), draft_prs: !!s.draft_prs,
+  capabilities: s.capabilities || [],
 }) as GF;
 const fromGF = (f: GF): S => ({
   ...Object.fromEntries(TEXT.map(k => [k, k === 'instructions' ? f[k] : f[k].trim()])),
-  ...Object.fromEntries(NUMS.map(k => [k, num(f[k])])), draft_prs: f.draft_prs,
+  ...Object.fromEntries(NUMS.map(k => [k, num(f[k])])), draft_prs: f.draft_prs, capabilities: f.capabilities,
 });
 
 function General() {
   const [data, , setData] = useLoad<SettingsInfo>('/api/settings');
+  const [secrets] = useLoad<Secret[]>('/api/secrets?scope=');
   const [f, setF] = useState<GF>();
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -79,7 +84,7 @@ function General() {
   if (!data || !f) return <p class="empty">Loading…</p>;
   const d = data.defaults;
   const dirty = JSON.stringify(fromGF(f)) !== JSON.stringify(fromGF(toGF(data.settings)));
-  const set = (k: keyof GF, v: string | boolean) => { setF({ ...f, [k]: v }); setErr(''); };
+  const set = (k: keyof GF, v: string | boolean | string[]) => { setF({ ...f, [k]: v }); setErr(''); };
   const bind = (k: keyof GF) => ({ value: f[k] as string, onInput: (e: Event) => set(k, (e.currentTarget as HTMLInputElement).value) });
   const save = async (e: Event) => {
     e.preventDefault();
@@ -115,7 +120,11 @@ function General() {
           <label>Author email<input type="email" placeholder={d.author_email || 'Email'} {...bind('author_email')} /></label>
         </div>
       </Group>
-      <Group title="Sandbox" hint="Image, CPUs and memory apply when a session's sandbox is first created.">
+      <Group title="Capabilities" hint={<>Toolchains every sandbox installs, each with instructions for the agent. Environments add their
+        own, a repository can name more in <code>.beethoven/capabilities</code>, and the agent can add them during a session.</>}>
+        <CapabilityPicker value={f.capabilities} set={v => set('capabilities', v)} secrets={secrets?.map(s => s.name)} />
+      </Group>
+      <Group title="Sandbox" hint="Image, CPUs and memory apply when a session's sandbox is first created. Capabilities raise a CPU or memory limit to what they need.">
         <label>Image<input class="mono" placeholder={d.image} spellcheck={false} {...bind('image')} /></label>
         <div class="grid2">
           <label>CPUs<input type="number" min="0" max="64" step="any" placeholder="No limit" {...bind('cpus')} /></label>

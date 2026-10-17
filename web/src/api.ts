@@ -32,7 +32,16 @@ export type Automation = Spec & { id: string; failures: number; next_run_at?: st
 export type Info = {
   version: string; author: Author; github: boolean; anthropic: boolean; model: string; effort: string; efforts: string[];
 };
-export type Overrides = { model?: string; effort?: string; instructions?: string; image?: string; cpus?: number; memory_mb?: number };
+export type Overrides = {
+  model?: string; effort?: string; instructions?: string; image?: string; cpus?: number; memory_mb?: number; capabilities?: string[];
+};
+/** A toolchain sandboxes can be given: installed when one boots, with a skill that tells the agent how to use it. */
+export type Capability = {
+  id: string; name: string; description: string; install: string; prepare?: string;
+  secrets: { name: string; required: boolean; why: string }[]; env?: Record<string, string>; cpus?: number; memory_mb?: number;
+};
+/** What adding a capability to a session did: where it is kept for later. */
+export type AddedCapability = { id: string; name: string; kept: 'environment' | 'repository' | 'session'; where?: string; warnings?: string[] };
 export type Settings = Overrides & {
   idle_minutes?: number; turn_minutes?: number; draft_prs?: boolean; branch_prefix?: string;
   author_name?: string; author_email?: string; slack_members_only?: boolean;

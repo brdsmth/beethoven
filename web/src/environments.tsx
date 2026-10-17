@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { api, get, type Effective, type Environment, type RepoRef, type Secret, type SettingsInfo } from './api';
+import { CapabilityPicker } from './capabilities';
 import { RepoRows, cleanRepos } from './pickers';
 import { SecretsEditor } from './secrets';
 import { TeamLabel, TeamMark, useMe, useTeamIndex, useTeams } from './teams';
@@ -40,14 +41,14 @@ export function Environments() {
   );
 }
 
-type OF = { model: string; effort: string; instructions: string; image: string; cpus: string; memory_mb: string };
+type OF = { model: string; effort: string; instructions: string; image: string; cpus: string; memory_mb: string; capabilities: string[] };
 type EF = {
   name: string; description: string; repos: RepoRef[]; setup_script: string; start_script: string;
   inherit_secrets: boolean; overrides: OF;
 };
 const BLANK: EF = {
   name: '', description: '', repos: [], setup_script: '', start_script: '', inherit_secrets: true,
-  overrides: { model: '', effort: '', instructions: '', image: '', cpus: '', memory_mb: '' },
+  overrides: { model: '', effort: '', instructions: '', image: '', cpus: '', memory_mb: '', capabilities: [] },
 };
 const toEF = (e: Environment): EF => {
   const o = e.overrides;
@@ -56,7 +57,7 @@ const toEF = (e: Environment): EF => {
     setup_script: e.setup_script, start_script: e.start_script, inherit_secrets: e.inherit_secrets,
     overrides: {
       model: o.model || '', effort: o.effort || '', instructions: o.instructions || '', image: o.image || '',
-      cpus: str(o.cpus), memory_mb: str(o.memory_mb),
+      cpus: str(o.cpus), memory_mb: str(o.memory_mb), capabilities: o.capabilities || [],
     },
   };
 };
@@ -143,7 +144,7 @@ export function EnvironmentEdit({ id, tab = 'configuration' }: { id: string; tab
       {tab !== 'secrets' ? (
         <form class="form" onSubmit={save}>
           {tab === 'overrides' ? <Overrides o={f.overrides} set={o => set({ overrides: { ...f.overrides, ...o } })} />
-            : <Configuration f={f} set={set} />}
+            : <Configuration f={f} set={set} secrets={eff?.secrets.map(s => s.name)} />}
           {saveBar}
         </form>
       ) : !isNew && (
@@ -178,7 +179,8 @@ export function EnvironmentEdit({ id, tab = 'configuration' }: { id: string; tab
   );
 }
 
-function Configuration({ f, set }: { f: EF; set: (v: Partial<EF>) => void }) {
+function Configuration({ f, set, secrets }: { f: EF; set: (v: Partial<EF>) => void; secrets?: string[] }) {
+  const [g] = useLoad<SettingsInfo>('/api/settings');
   const bind = (k: 'name' | 'description' | 'setup_script' | 'start_script') =>
     ({ value: f[k], onInput: (e: Event) => set({ [k]: (e.currentTarget as HTMLInputElement).value }) });
   return (
@@ -189,6 +191,11 @@ function Configuration({ f, set }: { f: EF; set: (v: Partial<EF>) => void }) {
       </div>
       <Group title="Repositories" hint={<>Each is cloned to <code>/workspace/&lt;name&gt;</code>. The first is the primary. A session copies this list when it starts.</>}>
         <RepoRows repos={f.repos} set={repos => set({ repos })} />
+      </Group>
+      <Group title="Capabilities" hint={<>Toolchains the sandbox installs before the scripts run, each with instructions for the agent. A
+        repository can name more in <code>.beethoven/capabilities</code>, and the agent can add them during a session.</>}>
+        <CapabilityPicker value={f.overrides.capabilities} set={capabilities => set({ overrides: { ...f.overrides, capabilities } })}
+          inherited={g?.settings.capabilities} secrets={secrets} />
       </Group>
       <Group title="Scripts" hint={<>Both run with <code>sh -e</code> in the agent's working directory: the repository with one, <code>/workspace</code> otherwise.</>}>
         <label>Setup script
@@ -208,7 +215,8 @@ function Overrides({ o, set }: { o: OF; set: (v: Partial<OF>) => void }) {
   const [g] = useLoad<SettingsInfo>('/api/settings');
   const s = g?.settings;
   const global = (v?: string | number, none = 'agent default') => `Global (${v || none})`;
-  const bind = (k: keyof OF) => ({ value: o[k], onInput: (e: Event) => set({ [k]: (e.currentTarget as HTMLInputElement).value }) });
+  const bind = (k: Exclude<keyof OF, 'capabilities'>) =>
+    ({ value: o[k], onInput: (e: Event) => set({ [k]: (e.currentTarget as HTMLInputElement).value }) });
   return (
     <>
       <p class="hint flush">Applied on top of the <a href="#/settings/general">global settings</a>. Leave a field empty to use the global value.</p>
