@@ -165,6 +165,15 @@ copies its repositories and checks each out at `/workspace/<name>`; editing the 
 move existing sessions, but its scripts, secrets and settings are read live. A session can also
 target several repositories without a project, one, or none.
 
+**New projects.** **New project** (in the team switcher's menu) starts something from nothing:
+Beethoven creates the GitHub repository (private by default) with a first commit holding a README and
+the stack's `.gitignore`, and a project named after it, working on it, in the chosen team. The stack
+(Node.js, Bun, Python, Go, Rust, or anything) gives the project a setup script that installs the
+toolchain in the agent's home, then the dependencies once there are any; a pasted `.env` becomes the
+project's secrets. Given a first task, a session starts there straight away; otherwise new sessions
+default to the project. Creating repositories needs the GitHub App's Repository creation permission
+(see below).
+
 **Secrets.** Environment variables for sandboxes, encrypted with AES-256-GCM under a key in the data
 directory. Every secret has a scope — global, a repository, a team, or a project — and a session gets,
 lowest precedence first: global secrets, its team's, then either its project's secrets (a project is
@@ -210,20 +219,26 @@ either:
   if it should be installable on several accounts or organizations, and to create the shared app
   for a preconfigured setup.
 
-Either way the app asks for contents, pull requests and workflows (write) and metadata (read), and
-connecting takes the browser to GitHub and back: create (only without a preconfigured app; an admin
-does this), authorize, install. **Everyone connects their own GitHub account**, and a session works as
-the person who started it: the server clones and pushes with installation tokens it creates for one
-repository at a time, valid for an hour, and only through installations that person can access;
-public repositories the app isn't installed on are cloned anonymously. Pull requests, branch and
-repository lists use the person's own token, which refreshes itself. Someone who hasn't connected
-GitHub can't work on repositories; nobody borrows another person's access. Work no person asked for
-(the server's own token, a server nobody signs in to) acts as the owner.
+Either way the app asks for contents, pull requests and workflows (write), repository creation
+(write, for new projects; the app gets access to the repositories it creates and nothing else) and
+metadata (read), and connecting takes the browser to GitHub and back: create (only without a
+preconfigured app; an admin does this), authorize, install. **Everyone connects their own GitHub
+account**, and a session works as the person who started it: the server clones and pushes with
+installation tokens it creates for one repository at a time, valid for an hour, and only through
+installations that person can access; public repositories the app isn't installed on are cloned
+anonymously. Pull requests, branch and repository lists use the person's own token, which refreshes
+itself. Someone who hasn't connected GitHub can't work on repositories; nobody borrows another
+person's access. Work no person asked for (the server's own token, a server nobody signs in to) acts
+as the owner.
 
 `BEETHOVEN_GITHUB_APP` holds the app's credentials as JSON, the way GitHub's manifest conversion
 returns them (`id`, `slug`, `client_id`, `client_secret`, `pem`, optional `name`, `owner.login`), or
 the path of a file containing it. Its callback URL must be the server's URL plus `/github/authorized`,
 and its setup URL the server's URL plus `/github/installed`.
+
+An app registered before Beethoven asked for repository creation can't start projects until its
+owner sets **Repository creation** to *Read and write* in the app's permissions and each account
+accepts the change on its installation; **New project** links to both.
 
 Until anyone connects, a personal access token is used instead, for everyone: one saved under
 **Settings › GitHub**, `GITHUB_TOKEN`, or the GitHub CLI's (`gh auth token`).
@@ -380,6 +395,8 @@ HTML and SVG included, downloads, so a file can't run script as the person viewi
 | `PUT /api/sessions/{id}/visibility` | `{visibility: workspace \| team \| private}` |
 | `PUT /api/slack/channels/{team}/{channel}/team` | `{owner_team_id}`: the team a channel belongs to |
 | `GET /api/audit?team=&before=` | changes to who may do what |
+| `GET /api/projects/options` | where a new project's repository can go, and the stacks |
+| `POST /api/projects` | start a project `{owner, name, description, public, stack, variables, prompt, team_id}`; files as for sessions |
 | `GET/PUT /api/settings` · `/api/credentials` | global settings; write-only credentials |
 | `GET /api/github` | the GitHub App, the connected account and its installations |
 | `POST /api/github/app` · `/app/created` · `DELETE /api/github/app` | register an app (manifest flow); forget it |
