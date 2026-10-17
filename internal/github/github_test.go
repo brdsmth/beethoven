@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -275,4 +276,51 @@ func mustInvite(t *testing.T, db *store.Store, by string) string {
 		t.Fatal(err)
 	}
 	return tok
+}
+
+func TestCreatingRepositories(t *testing.T) {
+	gh := fake.NewGitHub(t)
+	gh.Install("octo/old", 1, true) // on the user's account, without the permission
+	gh.SetAccount(2, "acme", "Organization", map[string]string{"contents": "write", "repository_creation": "write"})
+	c := connected(t, gh)
+
+	owners, err := c.Owners(ctx)
+	if err != nil || len(owners) != 2 {
+		t.Fatalf("owners = %+v, %v", owners, err)
+	}
+	if o := owners[0]; o.Login != "octo" || o.FixURL != gh.URL+"/settings/apps/beethoven-test/permissions" ||
+		!strings.Contains(o.Problem, "Repository creation to Read and write") {
+		t.Errorf("the user's account, where the app can't create repositories: %+v", o)
+	}
+	if o := owners[1]; o.Login != "acme" || o.Type != "Organization" || o.Problem != "" {
+		t.Errorf("the organization, where it can: %+v", o)
+	}
+	gh.AskFor(map[string]string{"repository_creation": "write"}) // the app asks; the user's account hasn't accepted
+	if owners, _ := c.Owners(ctx); !strings.Contains(owners[0].Problem, "hasn't accepted") ||
+		owners[0].FixURL != gh.URL+"/settings/installations/1" {
+		t.Errorf("after the app asks: %+v", owners[0])
+	}
+
+	if _, err := c.CreateRepo(ctx, github.NewRepo{Owner: "octo", Name: "nope"}); err == nil ||
+		!strings.Contains(err.Error(), "Resource not accessible") {
+		t.Errorf("created a repository where the app may not: %v", err)
+	}
+	c.Repos(ctx) // cached until a repository is created
+	repo, err := c.CreateRepo(ctx, github.NewRepo{Owner: "acme", Name: "new-app", Description: "d", Private: true, Gitignore: "Go"})
+	if err != nil || repo.Repo != "acme/new-app" || !repo.Private || repo.DefaultBranch != "main" {
+		t.Fatalf("created %+v, %v", repo, err)
+	}
+	if got := gh.Created[0]; got["auto_init"] != true || got["gitignore_template"] != "Go" || got["description"] != "d" {
+		t.Errorf("asked GitHub for %v", got)
+	}
+	if tok, err := c.Token(ctx, "acme/new-app"); err != nil || tok == "" {
+		t.Errorf("token for the new repository: %q, %v", tok, err)
+	}
+	if repos, _ := c.Repos(ctx); !slices.ContainsFunc(repos, func(r github.Repo) bool { return r.Repo == "acme/new-app" }) {
+		t.Errorf("repos = %v; the new one is missing", repos)
+	}
+	if _, err := c.CreateRepo(ctx, github.NewRepo{Owner: "acme", Name: "new-app"}); !errors.Is(err, store.ErrInvalid) ||
+		!strings.Contains(err.Error(), "already exists") {
+		t.Errorf("created a repository twice: %v", err)
+	}
 }

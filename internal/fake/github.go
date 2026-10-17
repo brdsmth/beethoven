@@ -39,7 +39,14 @@ type GitHub struct {
 	Revoked    []string
 	pulls      map[string]map[string]any // "repo#number" → what GET pulls/{number} says
 	PullReads  map[string]int            // "200" or "304" → count
+	accounts   map[int64][2]string       // installation → the login and type of its account; octo, User by default
+	perms      map[int64]map[string]string
+	appPerms   map[string]string // what the app asks of installations
+	Created    []map[string]any  // the body of every repository created
 }
+
+// basePerms are an installation's permissions unless SetAccount says otherwise.
+var basePerms = map[string]string{"contents": "write", "pull_requests": "write", "metadata": "read"}
 
 const fakeAppID = 4242
 
@@ -51,7 +58,8 @@ func NewGitHub(t testing.TB) *GitHub {
 	}
 	g := &GitHub{Key: key, ClientID: "Iv1.fake", installs: map[string]int64{}, userCan: map[int64]bool{},
 		public: map[string]bool{}, userTokens: map[string]bool{}, tokenUser: map[string]string{}, refresh: map[string]bool{},
-		pulls: map[string]map[string]any{}, PullReads: map[string]int{}}
+		pulls: map[string]map[string]any{}, PullReads: map[string]int{}, accounts: map[int64][2]string{},
+		perms: map[int64]map[string]string{}, appPerms: basePerms}
 	srv := httptest.NewServer(g.handler(t))
 	t.Cleanup(srv.Close)
 	g.URL = srv.URL
@@ -64,6 +72,30 @@ func (g *GitHub) Install(repo string, id int64, userCan bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.installs[repo], g.userCan[id] = id, userCan
+}
+
+// SetAccount says which account installation id is on, a User or an
+// Organization, and what that account granted the app.
+func (g *GitHub) SetAccount(id int64, login, typ string, perms map[string]string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.accounts[id], g.perms[id], g.userCan[id] = [2]string{login, typ}, perms, true
+}
+
+// AskFor sets the permissions the app asks of the accounts that install it.
+func (g *GitHub) AskFor(perms map[string]string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.appPerms = perms
+}
+
+// account returns the login, type and permissions of an installation.
+func (g *GitHub) account(id int64) (string, string, map[string]string) {
+	a, ok := g.accounts[id]
+	if !ok {
+		return "octo", "User", basePerms
+	}
+	return a[0], a[1], g.perms[id]
 }
 
 func (g *GitHub) SetPublic(repo string) {
@@ -175,8 +207,10 @@ func (g *GitHub) handler(t testing.TB) http.Handler {
 		list := []map[string]any{}
 		for id, ok := range g.userCan {
 			if ok {
-				list = append(list, map[string]any{"id": id, "account": map[string]string{"login": "octo", "type": "User"},
-					"repository_selection": "selected", "html_url": fmt.Sprintf("%s/settings/installations/%d", g.URL, id)})
+				login, typ, perms := g.account(id)
+				list = append(list, map[string]any{"id": id, "account": map[string]string{"login": login, "type": typ},
+					"repository_selection": "selected", "html_url": fmt.Sprintf("%s/settings/installations/%d", g.URL, id),
+					"permissions": perms})
 			}
 		}
 		reply(w, 200, map[string]any{"total_count": len(list), "installations": list})
@@ -273,6 +307,49 @@ func (g *GitHub) handler(t testing.TB) http.Handler {
 		g.mu.Unlock()
 		reply(w, 201, map[string]string{"html_url": "https://github.com/" + r.PathValue("owner") + "/" + r.PathValue("name") + "/pull/1"})
 	})
+	mux.HandleFunc("GET /app", func(w http.ResponseWriter, r *http.Request) {
+		if asApp(w, r) {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			reply(w, 200, map[string]any{"id": fakeAppID, "slug": "beethoven-test", "permissions": g.appPerms,
+				"owner": map[string]string{"login": "octo", "type": "User"}})
+		}
+	})
+	// Creating a repository needs an installation on its account that may
+	// create repositories; the new repository joins that installation.
+	create := func(w http.ResponseWriter, r *http.Request, owner string) {
+		if !asUser(w, r) {
+			return
+		}
+		var in map[string]any
+		json.NewDecoder(r.Body).Decode(&in)
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		var inst int64
+		for id, ok := range g.userCan {
+			login, _, perms := g.account(id)
+			if ok && login == owner && (perms["repository_creation"] == "write" || perms["administration"] == "write") {
+				inst = id
+			}
+		}
+		repo := owner + "/" + fmt.Sprint(in["name"])
+		if _, exists := g.installs[repo]; exists {
+			reply(w, 422, map[string]any{"message": "Repository creation failed.",
+				"errors": []map[string]string{{"message": "name already exists on this account"}}})
+			return
+		}
+		if inst == 0 {
+			reply(w, 403, map[string]string{"message": "Resource not accessible by integration"})
+			return
+		}
+		g.installs[repo] = inst
+		g.public[repo] = in["private"] == false
+		g.Created = append(g.Created, in)
+		reply(w, 201, map[string]any{"full_name": repo, "private": in["private"], "default_branch": "main",
+			"permissions": map[string]bool{"push": true}})
+	}
+	mux.HandleFunc("POST /user/repos", func(w http.ResponseWriter, r *http.Request) { create(w, r, "octo") })
+	mux.HandleFunc("POST /orgs/{org}/repos", func(w http.ResponseWriter, r *http.Request) { create(w, r, r.PathValue("org")) })
 	mux.HandleFunc("DELETE /applications/{client}/grant", func(w http.ResponseWriter, r *http.Request) {
 		id, secret, _ := r.BasicAuth()
 		var in struct {
