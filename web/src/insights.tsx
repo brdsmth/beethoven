@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { get, type InsightDay, type InsightGroup, type Insights as Report } from './api';
+import { useTeams } from './state';
 import { Seg, errText, money, plural, readPref, writePref } from './util';
 
 // How sessions go: quality first (cycles and the first-try rate), then pull
@@ -25,15 +26,17 @@ const shortDate = (d: string) => new Date(d + 'T12:00:00').toLocaleDateString(un
 
 export function Insights() {
   const [days, setDays] = useState<'7' | '30' | '90'>(() => readPref<'7' | '30' | '90'>(DAYS_PREF) ?? '30');
+  const [team, setTeam] = useState('');
+  const teams = useTeams();
   const [r, setR] = useState<Report>();
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   useEffect(() => {
     setLoading(true);
-    get<Report>(`/api/insights?days=${days}&tz=${encodeURIComponent(tz)}`)
+    get<Report>(`/api/insights?days=${days}&tz=${encodeURIComponent(tz)}&team=${team}`)
       .then(x => { setR(x); setErr(''); }, e => setErr(errText(e)))
       .finally(() => setLoading(false));
-  }, [days]);
+  }, [days, team]);
   const pick = (v: '7' | '30' | '90') => { setDays(v); writePref(DAYS_PREF, v); };
 
   return (
@@ -41,6 +44,13 @@ export function Insights() {
       <div class="page-head"><h1>Insights</h1></div>
       <div class="filters">
         <Seg value={days} set={pick} options={[['7', '7 days'], ['30', '30 days'], ['90', '90 days']]} />
+        {!!teams?.length && (
+          <select aria-label="Team" value={team} onChange={e => setTeam(e.currentTarget.value)}>
+            <option value="">Every team</option>
+            {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            <option value="workspace">Workspace: no team</option>
+          </select>
+        )}
       </div>
       {err && <p class="err" role="alert">{err}</p>}
       {!r ? !err && <p class="empty">Loading…</p> : (

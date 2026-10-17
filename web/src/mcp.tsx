@@ -1,5 +1,6 @@
 import { useState } from 'preact/hooks';
 import { api, type Environment, type MCPServer } from './api';
+import { useTeams } from './teams';
 import { KeyValueEditor, RepoInput, type KV } from './pickers';
 import { ConfirmButton, Head, Seg, errText, fail, toast, useLoad } from './util';
 
@@ -29,9 +30,11 @@ export const joinArgs = (args: string[]) => args.map(quoteArg).join(' ');
 export function MCPServers() {
   const [list, reload] = useLoad<MCPServer[]>('/api/mcp-servers');
   const [envs] = useLoad<Environment[]>('/api/environments');
+  const teams = useTeams();
   const [editing, setEditing] = useState('');
   const scopeLabel = (s: string) => !s ? 'Global'
-    : s.startsWith('env:') ? `Environment: ${envs?.find(e => 'env:' + e.id === s)?.name ?? 'deleted'}` : s;
+    : s.startsWith('env:') ? `Project: ${envs?.find(e => 'env:' + e.id === s)?.name ?? 'deleted'}`
+    : s.startsWith('team:') ? `Team: ${teams?.find(t => 'team:' + t.id === s)?.name ?? 'deleted'}` : s;
   const toggle = (m: MCPServer) => api('PUT', `/api/mcp-servers/${m.id}`, {
     name: m.name, scope: m.scope, type: m.type, url: m.url, command: m.command, enabled: !m.enabled,
   }).then(reload, fail);
@@ -41,7 +44,7 @@ export function MCPServers() {
     <>
       <Head title="MCP servers" actions={!editing && <button class="btn primary" onClick={() => setEditing('new')}>Add server</button>}>
         Extra tool servers offered to agents alongside Beethoven's own. A server applies to every session, to sessions in
-        one environment, or to sessions working on one repository.
+        one team or project, or to sessions working on one repository.
       </Head>
       {editing === 'new' && form()}
       {list?.length === 0 && editing !== 'new' && <p class="empty">No MCP servers yet.</p>}
@@ -73,6 +76,7 @@ export function MCPServers() {
 }
 
 function MCPForm({ server, envs, done, cancel }: { server?: MCPServer; envs: Environment[]; done: () => void; cancel: () => void }) {
+  const teams = useTeams();
   const [name, setName] = useState(server?.name || '');
   const [type, setType] = useState<'http' | 'stdio'>(server?.type || 'http');
   const [url, setUrl] = useState(server?.url || '');
@@ -115,7 +119,8 @@ function MCPForm({ server, envs, done, cancel }: { server?: MCPServer; envs: Env
             setScope(v === 'repo' ? '' : v);
           }}>
             <option value="">Global: every session</option>
-            {envs.length > 0 && <optgroup label="Environment">{envs.map(e => <option key={e.id} value={'env:' + e.id}>{e.name}</option>)}</optgroup>}
+            {!!teams?.length && <optgroup label="Team">{teams.filter(t => t.manages).map(t => <option key={t.id} value={'team:' + t.id}>{t.name}</option>)}</optgroup>}
+            {envs.length > 0 && <optgroup label="Project">{envs.map(e => <option key={e.id} value={'env:' + e.id}>{e.name}</option>)}</optgroup>}
             <option value="repo">A repository…</option>
           </select>
           {repoMode && <RepoInput value={scope} set={setScope} />}

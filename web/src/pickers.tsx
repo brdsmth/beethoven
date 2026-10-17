@@ -86,12 +86,15 @@ export const fromTarget = (t?: Partial<Target>): Pick => {
 };
 /** Why a target cannot be used yet, if it cannot. */
 export const targetProblem = (p: Pick) =>
-  p.kind === 'env' && !p.environment_id ? 'Choose an environment.'
+  p.kind === 'env' && !p.environment_id ? 'Choose a project.'
     : p.kind === 'repos' && !cleanRepos(p.repos).length ? 'Add a repository, or choose Scratch.' : '';
 
-/** Where a session works: a scratch workspace, repositories, or an environment. */
-export function TargetPicker({ v, set }: { v: Pick; set: (v: Pick) => void }) {
-  const [envs] = useLoad<Environment[]>('/api/environments');
+/** Where a session works: a scratch workspace, repositories, or an
+ * environment (a project). With team, only the team's and the workspace's
+ * projects are offered. */
+export function TargetPicker({ v, set, team }: { v: Pick; set: (v: Pick) => void; team?: string }) {
+  const [all] = useLoad<Environment[]>('/api/environments');
+  const envs = team === undefined ? all : all?.filter(e => !e.team_id || e.team_id === team);
   const env = envs?.find(e => e.id === v.environment_id);
   const [eff] = useLoad<Effective>(v.kind === 'env' && env ? `/api/secrets/effective?environment=${env.id}` : false);
   useEffect(() => { // a remembered environment may have been deleted
@@ -100,15 +103,15 @@ export function TargetPicker({ v, set }: { v: Pick; set: (v: Pick) => void }) {
   return (
     <div class="target">
       <Seg value={v.kind} set={kind => set({ ...v, kind })}
-        options={[['scratch', 'Scratch'], ['repos', 'Repositories'], ['env', 'Environment']]} />
+        options={[['scratch', 'Scratch'], ['repos', 'Repositories'], ['env', 'Project']]} />
       {v.kind === 'scratch' && <p class="hint">An empty workspace without a repository.</p>}
       {v.kind === 'repos' && <RepoRows repos={v.repos} set={repos => set({ ...v, repos })} />}
       {v.kind === 'env' && envs?.length === 0 && (
-        <p class="hint">No environments yet. <a href="#/settings/environments/new">Create one</a> to reuse repositories, scripts and secrets.</p>
+        <p class="hint">No projects yet. <a href="#/settings/environments/new">Create one</a> to reuse repositories, scripts and secrets.</p>
       )}
       {v.kind === 'env' && !!envs?.length && (
         <div class="env-pick">
-          <select aria-label="Environment" value={v.environment_id} onChange={e => set({ ...v, environment_id: e.currentTarget.value })}>
+          <select aria-label="Project" value={v.environment_id} onChange={e => set({ ...v, environment_id: e.currentTarget.value })}>
             {envs.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
           {env && (
@@ -116,7 +119,7 @@ export function TargetPicker({ v, set }: { v: Pick; set: (v: Pick) => void }) {
               {env.description && <div>{env.description}</div>}
               <span class="mono">{env.repos.length ? env.repos.map(r => r.repo).join(', ') : 'No repositories'}</span>
               {eff && ` · ${plural(eff.secrets.length, 'secret')} apply`}
-              {' · '}<a href={`#/settings/environments/${env.id}`}>Edit environment</a>
+              {' · '}<a href={`#/settings/environments/${env.id}`}>Edit project</a>
             </div>
           )}
         </div>

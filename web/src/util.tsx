@@ -9,8 +9,11 @@ export function useRoute(): string[] {
     addEventListener('hashchange', f);
     return () => removeEventListener('hashchange', f);
   }, []);
-  return hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+  return hash.replace(/^#\/?/, '').split('?')[0].split('/').filter(Boolean).map(decodeURIComponent);
 }
+
+/** A parameter of the hash route's query: #/path?name=value. */
+export const hashParam = (name: string) => new URLSearchParams(location.hash.split('?')[1] || '').get(name) || '';
 
 export const go = (path: string) => { location.hash = path; };
 

@@ -6,6 +6,7 @@ import {
 import { AttachButton, Attachments, PendingFiles, useFiles } from './attach';
 import { span } from './insights';
 import { Link, Markdown, safeHref } from './markdown';
+import { TeamLabel, VisibilityBadge, useTeamIndex } from './teams';
 import { Chip, Dot, EffortSelect, Spinner, ago, dur, fail, modEnter, money, useTick } from './util';
 
 type End = { id: string; status: string; error?: string; cost_usd: number; duration_ms?: number };
@@ -99,7 +100,7 @@ export function SessionView({ id }: { id: string }) {
   if (!s) return <div class="page"><p class="empty">Loading…</p></div>;
   return (
     <div class="session">
-      <Header s={s} kids={kids} stats={<Stats m={m} prs={prs} />} />
+      <Header s={s} kids={kids} stats={<Stats m={m} prs={prs} />} changed={x => { m.session = x; rerender(0); }} />
       <div class="timeline" ref={scroller} onScroll={() => {
         const el = scroller.current!;
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -141,7 +142,8 @@ function Stats({ m, prs }: { m: Model; prs: PullRequest[] }) {
   );
 }
 
-function Header({ s, kids, stats }: { s: Session; kids: Session[]; stats: ComponentChildren }) {
+function Header({ s, kids, stats, changed }: { s: Session; kids: Session[]; stats: ComponentChildren; changed: (s: Session) => void }) {
+  const team = useTeamIndex()(s.team_id);
   const [pr, setPr] = useState<{ url: string; warning: string }>();
   const [env, setEnv] = useState<string>(); // its name; "" once known to be deleted
   const [busy, setBusy] = useState(false);
@@ -157,6 +159,15 @@ function Header({ s, kids, stats }: { s: Session; kids: Session[]; stats: Compon
   return (
     <header class="s-head">
       <div class="col">
+        {(s.team_id || s.environment_id) && (
+          <div class="crumbs">
+            {s.team_id && <TeamLabel team={team} />}
+            {s.team_id && s.environment_id && <span class="dim">›</span>}
+            {s.environment_id && env !== undefined && (env
+              ? <a href={`#/settings/environments/${s.environment_id}`}>{env}</a>
+              : <span class="dim">project deleted</span>)}
+          </div>
+        )}
         <div class="s-top">
           <h1 class="s-title">{s.title || 'Untitled'}</h1>
           <div class="actions">
@@ -168,9 +179,8 @@ function Header({ s, kids, stats }: { s: Session; kids: Session[]; stats: Compon
         </div>
         <div class="meta">
           <Chip status={s.status} />
-          {s.environment_id && env !== undefined && (env
-            ? <a href={`#/settings/environments/${s.environment_id}`}>environment {env}</a>
-            : <span class="dim">environment deleted</span>)}
+          <VisibilityBadge s={s} onChange={changed} />
+          {s.author.name && <span>by {s.author.name}</span>}
           {!s.repos.length && <span>scratch workspace</span>}
           <span>sandbox {s.sandbox}</span>
           {s.effort && <span>effort {s.effort}</span>}

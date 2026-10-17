@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
-import { api, type Environment, type SlackStatus } from './api';
-import { ConfirmButton, Head, Spinner, ago, errText, fail, useLoad } from './util';
+import { api, type Environment, type SettingsInfo, type SlackStatus } from './api';
+import { useMe, useTeams } from './teams';
+import { ConfirmButton, Head, Spinner, ago, errText, fail, toast, useLoad } from './util';
 
 // Connecting Slack: create the server's Slack app from a configuration
 // token (unless one is preconfigured), then add it to a workspace. Slack
@@ -68,11 +69,23 @@ function CreateApp() {
 export function SlackPage() {
   const [st, reload] = useLoad<SlackStatus>('/api/slack');
   const [envs] = useLoad<Environment[]>('/api/environments');
+  const [settings, reloadSettings] = useLoad<SettingsInfo>('/api/settings');
   const [busy, setBusy] = useState(false);
+  const teams = useTeams();
+  const me = useMe();
   if (!st || !envs) return <p class="empty">Loading…</p>;
+  const bind = (c: SlackStatus['channels'][number], team: string) =>
+    api('PUT', `/api/slack/channels/${c.team_id}/${c.channel}/team`, { owner_team_id: team }).then(reload, fail);
+  const membersOnly = async (on: boolean) => {
+    try {
+      await api('PUT', '/api/settings', { ...settings!.settings, slack_members_only: on });
+      reloadSettings();
+      toast(on ? 'Only people with an account can ask now' : 'Anyone in the workspace can ask now');
+    } catch (e) { fail(e); }
+  };
   const add = async () => { setBusy(true); try { await addToSlack(); } catch (e) { fail(e); setBusy(false); } };
   const target = (c: SlackStatus['channels'][number]) => c.environment_id
-    ? `${envs.find(e => e.id === c.environment_id)?.name ?? 'a deleted environment'} (environment)`
+    ? `${envs.find(e => e.id === c.environment_id)?.name ?? 'a deleted project'} (project)`
     : c.repos.length ? c.repos.map(r => r.repo).join(', ') : 'No repository';
   return (
     <>
@@ -122,10 +135,27 @@ export function SlackPage() {
           <p><a href={st.app.settings_url} target="_blank" rel="noreferrer">Slack app settings</a> <span class="muted mono">{st.app.app_id}</span></p>
         </section>
       )}
+      {st.app && me?.people && settings && (
+        <section class="card">
+          <div class="card-head"><h2>Who can ask</h2></div>
+          <label class="toggle">
+            <input type="checkbox" checked={!!settings.settings.slack_members_only} disabled={!me.admin}
+              onChange={e => membersOnly(e.currentTarget.checked)} />
+            Only people with a Beethoven account
+          </label>
+          <p class="hint">
+            People are matched by their Slack email. Off, anyone in the Slack workspace can ask: someone without an account here
+            works as the server's owner, with the owner's GitHub. On, they're asked to get an invitation.
+          </p>
+        </section>
+      )}
       {st.channels.length > 0 && (
         <section class="card">
           <div class="card-head"><h2>Channels</h2></div>
-          <p class="hint">What a request works on when it names no repository or environment. Set when someone answers the bot's question.</p>
+          <p class="hint">
+            What a request works on when it names no repository or project, set when someone answers the bot's question; and the
+            team its sessions belong to. Only a team's members may ask in its channels.
+          </p>
           <div class="rows">
             {st.channels.map(c => (
               <div key={c.team_id + c.channel} class="row">
@@ -133,6 +163,12 @@ export function SlackPage() {
                   <span class="row-title">{c.name || c.channel}</span>
                   <span class="row-desc">{target(c)}</span>
                 </span>
+                {!!teams?.length && (
+                  <select aria-label="Team" value={c.owner_team_id || ''} onChange={e => bind(c, e.currentTarget.value)}>
+                    <option value="">Workspace</option>
+                    {teams.filter(t => !t.archived_at || t.id === c.owner_team_id).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                )}
                 <ConfirmButton small label="Forget" onConfirm={() => api('DELETE', `/api/slack/channels/${c.team_id}/${c.channel}`).then(reload)} />
               </div>
             ))}
