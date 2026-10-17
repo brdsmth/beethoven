@@ -138,6 +138,9 @@ func Manifest(base string, public bool) map[string]any {
 			"pull_requests": "write",
 			"workflows":     "write", // push changes to .github/workflows
 			"metadata":      "read",
+			// Start new projects. Unlike administration, it allows nothing
+			// else, and the app gets access to the repositories it creates.
+			"repository_creation": "write",
 		},
 	}
 }
@@ -283,6 +286,8 @@ type Installation struct {
 	Type      string `json:"type"`      // User or Organization
 	Selection string `json:"selection"` // all or selected
 	URL       string `json:"url"`       // where it is managed
+
+	permissions map[string]string // what the account granted the app
 }
 
 // installations lists the app's installations the connected person can access.
@@ -298,8 +303,9 @@ func (c *Client) installations(ctx context.Context, cn *conn) ([]Installation, e
 				Login string `json:"login"`
 				Type  string `json:"type"`
 			} `json:"account"`
-			Selection string `json:"repository_selection"`
-			HTMLURL   string `json:"html_url"`
+			Selection   string            `json:"repository_selection"`
+			HTMLURL     string            `json:"html_url"`
+			Permissions map[string]string `json:"permissions"`
 		} `json:"installations"`
 	}
 	if err := c.call(ctx, tok, "GET", "/user/installations?per_page=100", nil, &out); err != nil {
@@ -307,7 +313,8 @@ func (c *Client) installations(ctx context.Context, cn *conn) ([]Installation, e
 	}
 	list := make([]Installation, 0, len(out.Installations))
 	for _, in := range out.Installations {
-		list = append(list, Installation{ID: in.ID, Account: in.Account.Login, Type: in.Account.Type, Selection: in.Selection, URL: in.HTMLURL})
+		list = append(list, Installation{ID: in.ID, Account: in.Account.Login, Type: in.Account.Type, Selection: in.Selection,
+			URL: in.HTMLURL, permissions: in.Permissions})
 	}
 	return list, nil
 }
