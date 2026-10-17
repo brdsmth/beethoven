@@ -1,7 +1,12 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
+	"io/fs"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -237,3 +242,57 @@ func TestSessionVisibility(t *testing.T) {
 }
 
 func ownerExpiry() time.Time { return time.Now().Add(time.Hour) }
+
+// TestMigratingKeepsData upgrades a database made before people and teams:
+// the owner keeps owning, projects and GitHub connections carry over, and
+// sessions stay visible to everyone.
+func TestMigratingKeepsData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, _ := fs.Glob(migrations, "migrations/*.sql")
+	for i, name := range names[:7] { // up to attachments
+		body, _ := migrations.ReadFile(name)
+		if _, err := db.Exec(string(body)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, i+1))
+	}
+	for _, q := range []string{
+		`INSERT INTO accounts (id, email, name, password_hash, owner, created_at) VALUES ('own', 'o@x.dev', 'O', 'h', 1, 1)`,
+		`INSERT INTO environments (id, name, repos, created_at, updated_at) VALUES ('e1', 'Web', '[{"repo":"acme/web"}]', 1, 1)`,
+		`INSERT INTO environments (id, name, created_at, updated_at) VALUES ('e2', 'api', 1, 1)`,
+		`INSERT INTO github_accounts (app_id, id, login, tokens, connected_at, updated_at) VALUES (1, 7, 'octo', x'00', 1, 1)`,
+		`INSERT INTO sessions (id, title, branch, source, created_at, updated_at) VALUES ('s1', 't', 'b', 'web', 1, 1)`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	db.Close()
+
+	s, err := Open(path, []byte(strings.Repeat("k", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if a, _ := s.Account(ctx, "own"); a.Role != RoleOwner || !a.Owner {
+		t.Errorf("the owner = %+v", a)
+	}
+	if envs, _ := s.Environments(ctx); len(envs) != 2 || envs[0].TeamID != "" || len(envs[1].Repos) != 1 && len(envs[0].Repos) != 1 {
+		t.Errorf("projects = %+v", envs)
+	}
+	var account string
+	s.r.QueryRow(`SELECT account_id FROM github_accounts WHERE id=7`).Scan(&account)
+	if account != "own" {
+		t.Errorf("the GitHub connection belongs to %q, want the owner", account)
+	}
+	if x, _ := s.Session(ctx, "s1"); x.Visibility != VisibilityWorkspace || x.TeamID != "" || x.AccountID != "" {
+		t.Errorf("session = %+v", x)
+	}
+	if err := s.CreateEnvironment(ctx, &Environment{ID: "e3", Name: "WEB"}); !errors.Is(err, ErrConflict) {
+		t.Errorf("names stay unique in the workspace: %v", err)
+	}
+}
