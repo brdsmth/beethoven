@@ -89,8 +89,18 @@ func TestDocker(t *testing.T) {
 // second repository.
 func TestDockerEnvironment(t *testing.T) {
 	env, remote := dockerEnv(t)
-	bareRepo(t, remote, "acme/api")
+	api := bareRepo(t, remote, "acme/api")
 	web := bareRepo(t, remote, "acme/web")
+	// A repository that names a capability the catalog lacks, and looks
+	// like it needs Go.
+	seed := t.TempDir()
+	run(t, "", "git", "clone", "-q", api, seed)
+	os.MkdirAll(filepath.Join(seed, ".beethoven"), 0o755)
+	os.WriteFile(filepath.Join(seed, ".beethoven/capabilities"), []byte("# toolchains\nnope\n"), 0o644)
+	os.WriteFile(filepath.Join(seed, "go.mod"), []byte("module example.com/api\n"), 0o644)
+	run(t, seed, "git", "add", ".")
+	run(t, seed, "git", "-c", "user.name=seed", "-c", "user.email=seed@example.com", "commit", "-q", "-m", "capabilities")
+	run(t, seed, "git", "push", "-q", "origin", "main")
 	e := environment(t, env, store.Environment{
 		Name:        "Stack",
 		Repos:       []store.RepoRef{{Repo: "acme/api"}, {Repo: "acme/web", BaseBranch: "main"}},
@@ -115,6 +125,19 @@ func TestDockerEnvironment(t *testing.T) {
 		t.Errorf("setup script saw %q", got)
 	}
 	sh("test -f /tmp/started")
+	// Capabilities: the catalog arrived, the unknown one was reported and Go was suggested.
+	sh(`test -f "$HOME/.beethoven/catalog/expo/SKILL.md"`)
+	evs, _ := env.DB.Events(ctx, s.ID, 0, 1000)
+	if !slices.ContainsFunc(evs, func(e store.Event) bool {
+		return e.Type == "warning" && strings.Contains(string(e.Data), `unknown capability \"nope\"`)
+	}) {
+		t.Error("the unknown capability wasn't reported")
+	}
+	if !slices.ContainsFunc(evs, func(e store.Event) bool {
+		return e.Type == session.EvCapabilities && strings.Contains(string(e.Data), `"suggested":["go"]`)
+	}) {
+		t.Errorf("go wasn't suggested: %v", evs)
+	}
 	if got := strings.TrimSpace(run(t, "", "docker", "inspect", "-f", "{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}}", name)); got != "1500000000 536870912" {
 		t.Errorf("resources = %s", got)
 	}

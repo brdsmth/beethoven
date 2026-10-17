@@ -29,6 +29,42 @@ type Provider struct {
 	Pushes  []sandbox.Cmd
 	Files   map[string][]byte // files written into sandboxes, by path; read with File
 	BootErr bool              // make boot fail
+	// Capabilities: what the repositories name and suggest, which ones fail
+	// to install, and every capability script run besides boot.
+	RepoCapabilities []string
+	Suggest          []string
+	CapabilityErr    map[string]bool
+	CapabilityRuns   []sandbox.Cmd
+}
+
+// capabilities answers the capability scripts: each id in CAPABILITIES
+// (and, booting, those the repositories name) installs, unless it is set to
+// fail, and the suggestions are printed.
+func (p *Provider) capabilities(c sandbox.Cmd, boot bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ids := strings.Fields(c.Env["CAPABILITIES"])
+	if boot {
+		ids = append(ids, p.RepoCapabilities...)
+	}
+	for _, id := range ids {
+		fmt.Fprintf(c.Stdout, "::phase capability %s\n", id)
+		if p.CapabilityErr[id] {
+			fmt.Fprintf(c.Stdout, "::warn the %s capability failed to install\n", id)
+			continue
+		}
+		if id == "android" {
+			fmt.Fprintln(c.Stdout, "::env ANDROID_HOME=/home/agent/android-sdk")
+		}
+		fmt.Fprintf(c.Stdout, "::capability %s\n", id)
+		if rec := c.Env["CAP_RECORD"]; rec != "" {
+			p.Files[rec] = append(p.Files[rec], []byte(id+"\n")...)
+			fmt.Fprintf(c.Stdout, "::recorded %s\n", rec)
+		}
+	}
+	for _, id := range p.Suggest {
+		fmt.Fprintf(c.Stdout, "::suggest %s\n", id)
+	}
 }
 
 func NewProvider() *Provider {
@@ -104,6 +140,21 @@ func (p *Provider) Exec(ctx context.Context, id string, c sandbox.Cmd) (int, err
 		return -1, fmt.Errorf("sandbox %s is not running", id)
 	}
 	switch {
+	case len(c.Args) == 3 && c.Args[0] == "sh" && (strings.HasSuffix(c.Args[2], "\ncap_add\n") || strings.HasSuffix(c.Args[2], "\ncap_detect\n")):
+		p.record("capabilities " + id)
+		p.mu.Lock()
+		p.CapabilityRuns = append(p.CapabilityRuns, c)
+		p.mu.Unlock()
+		if strings.HasSuffix(c.Args[2], "\ncap_add\n") {
+			p.capabilities(c, false)
+		} else {
+			p.mu.Lock()
+			for _, s := range p.Suggest {
+				fmt.Fprintf(c.Stdout, "::suggest %s\n", s)
+			}
+			p.mu.Unlock()
+		}
+		return 0, nil
 	case len(c.Args) == 3 && c.Args[0] == "sh" && strings.Contains(c.Args[2], "::phase"):
 		p.record("boot " + id)
 		p.mu.Lock()
@@ -113,7 +164,9 @@ func (p *Provider) Exec(ctx context.Context, id string, c sandbox.Cmd) (int, err
 			fmt.Fprintln(c.Stdout, "::phase clone\nfatal: repository not found")
 			return 128, nil
 		}
-		fmt.Fprintln(c.Stdout, "::phase clone\ncloning…\n::phase ready")
+		fmt.Fprintln(c.Stdout, "::phase clone\ncloning…")
+		p.capabilities(c, true)
+		fmt.Fprintln(c.Stdout, "::phase ready")
 		return 0, nil
 	case len(c.Args) == 3 && c.Args[0] == "sh" && strings.Contains(c.Args[2], "push --force"):
 		p.mu.Lock()

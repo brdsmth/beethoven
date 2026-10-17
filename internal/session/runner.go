@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/brdsmth/beethoven/internal/agent"
+	"github.com/brdsmth/beethoven/internal/capability"
 	"github.com/brdsmth/beethoven/internal/sandbox"
 	"github.com/brdsmth/beethoven/internal/store"
 )
@@ -319,9 +321,17 @@ func (r *runner) ensure(ctx context.Context) (string, error) {
 		return "", err
 	}
 	// Image and resources apply when the sandbox is created; an existing
-	// sandbox keeps what it was created with.
+	// sandbox keeps what it was created with. Capabilities may need more.
+	caps, err := r.m.enabledCapabilities(ctx, s, eff)
+	if err != nil {
+		return "", err
+	}
+	if state, _, err := r.m.loggedCapabilities(ctx, s.ID); err == nil {
+		caps = capability.Union(caps, state.Enabled)
+	}
+	cpus, mem := capability.Resources(caps, eff.CPUs, eff.MemoryMB)
 	id, started, err := r.m.box.Start(ctx, sandbox.Spec{Name: "beethoven-" + s.ID, Image: eff.Image,
-		CPUs: eff.CPUs, MemoryMB: eff.MemoryMB, Env: map[string]string{"BEETHOVEN_SESSION": s.ID}})
+		CPUs: cpus, MemoryMB: mem, Env: map[string]string{"BEETHOVEN_SESSION": s.ID}})
 	if err != nil {
 		r.setSandbox("failed", "", err.Error())
 		return "", err
@@ -362,14 +372,24 @@ func (r *runner) boot(ctx context.Context, id string, s store.Session, eff Effec
 	if e := eff.Environment; e != nil {
 		env["ENV_SETUP"], env["ENV_SETUP_ID"], env["ENV_START"] = e.SetupScript, shortHash(e.SetupScript), e.StartScript
 	}
+	caps, err := r.m.enabledCapabilities(ctx, s, eff)
+	if err != nil {
+		return err
+	}
+	env["CAPABILITIES"] = strings.Join(caps, " ")
 	out := &bootOutput{r: r, phase: "start"}
-	code, err := r.m.box.Exec(ctx, id, sandbox.Cmd{Args: []string{"sh", "-c", bootScript}, Env: env, Stdout: out, Stderr: out})
+	code, err := r.m.box.Exec(ctx, id, sandbox.Cmd{Args: []string{"sh", "-c", capabilityScript + "\n" + bootScript}, Env: env,
+		Stdin: bytes.NewReader(capability.Archive()), Stdout: out, Stderr: out})
 	out.Flush()
 	if err != nil {
 		return err
 	}
 	if code != 0 {
 		return fmt.Errorf("boot failed during %s (exit %d): %s", out.phase, code, clip(out.tail.String(), 2000))
+	}
+	rep := out.caps.report()
+	if prev, _, err := r.m.loggedCapabilities(ctx, s.ID); err != nil || !prev.same(rep) {
+		r.emit(r.currentPrompt(), EvCapabilities, rep)
 	}
 	return nil
 }
@@ -598,6 +618,9 @@ func (m *Manager) turnEnv(ctx context.Context, s store.Session, p store.Prompt, 
 	env["GIT_AUTHOR_NAME"], env["GIT_AUTHOR_EMAIL"] = author.Name, author.Email
 	env["GIT_COMMITTER_NAME"], env["GIT_COMMITTER_EMAIL"] = committer.Name, committer.Email
 	env["BEETHOVEN_SESSION"] = s.ID
+	if err := m.capabilityEnv(ctx, s.ID, env); err != nil {
+		return nil, err
+	}
 	return env, nil
 }
 
@@ -636,6 +659,8 @@ func systemPrompt(s store.Session, eff Effective) string {
 		b.WriteString(".\n")
 	}
 	b.WriteString("For independent pieces of work that can proceed in parallel, you can start child sessions with spawn_session and follow them with get_session.\n")
+	b.WriteString("If the work needs a toolchain the sandbox lacks (a mobile app with Expo, Android builds, Go, Rust, Bun, Python with uv), " +
+		"call list_capabilities and add_capability instead of installing it by hand: a capability comes with instructions, and later sessions get it too.\n")
 	b.WriteString("Finish with a short summary of what you did and anything left undone.")
 	if eff.Instructions != "" {
 		b.WriteString("\n\n" + eff.Instructions)
@@ -708,6 +733,19 @@ type bootOutput struct {
 	phase   string
 	partial []byte
 	tail    tail
+	caps    capabilityLines
+}
+
+// capabilityPhase reports whether the boot is still before its hooks and
+// scripts, the only part whose capability lines count: a repository's
+// scripts could print anything.
+func (o *bootOutput) capabilityPhase() bool {
+	for _, p := range []string{"start", "clone", "fetch", "capability"} {
+		if o.phase == p || strings.HasPrefix(o.phase, p+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 func (o *bootOutput) Write(p []byte) (int, error) {
@@ -739,6 +777,7 @@ func (o *bootOutput) line(l string) {
 		}
 	case strings.HasPrefix(l, "::warn "):
 		o.r.emit(o.r.currentPrompt(), EvWarning, map[string]string{"message": strings.TrimPrefix(l, "::warn ")})
+	case o.capabilityPhase() && o.caps.line(l):
 	default:
 		if o.tail.max == 0 {
 			o.tail.max = 8 << 10

@@ -12,6 +12,7 @@ import (
 
 	"github.com/brdsmth/beethoven/internal/access"
 	"github.com/brdsmth/beethoven/internal/agent"
+	"github.com/brdsmth/beethoven/internal/capability"
 	"github.com/brdsmth/beethoven/internal/store"
 )
 
@@ -63,6 +64,8 @@ func ValidateOverrides(o store.Overrides) error {
 		return fmt.Errorf("%w: CPUs must be 0–64 and memory at least 256 MB", ErrInvalid)
 	case strings.ContainsAny(o.Image, " \t\n"):
 		return fmt.Errorf("%w: %q is not an image name", ErrInvalid, o.Image)
+	case len(capability.Unknown(o.Capabilities)) > 0:
+		return fmt.Errorf("%w: no capability %q", ErrInvalid, capability.Unknown(o.Capabilities)[0])
 	}
 	return nil
 }
