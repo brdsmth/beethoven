@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/brdsmth/beethoven/internal/access"
 	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/store"
 )
@@ -74,8 +75,10 @@ type request struct {
 	in      store.SlackInstallation
 	msg     message
 	author  store.Author
-	text    string // the message without the mention
-	root    string // the timestamp of the thread's first message
+	who     access.Actor // whom it acts as: the person with the author's email here, if any
+	team    string       // the team its session belongs to: the channel's, or a DM author's default
+	text    string       // the message without the mention
+	root    string       // the timestamp of the thread's first message
 	eventID string
 }
 
@@ -143,6 +146,10 @@ func (b *Bot) event(teamID, eventID string, m message) {
 		b.ephemeral(ctx, in, m.Channel, m.User, m.ThreadTS, err.Error())
 		return
 	}
+	if err := b.identify(ctx, &r); err != nil {
+		b.ephemeral(ctx, in, m.Channel, m.User, m.ThreadTS, err.Error())
+		return
+	}
 	if r.text == "" && m.ThreadTS == "" && len(m.Files) == 0 {
 		b.ephemeral(ctx, in, m.Channel, m.User, "", "Mention me with a task, like “@beethoven fix the flaky test in auth_test.go”.")
 		return
@@ -191,7 +198,7 @@ func (b *Bot) target(ctx context.Context, r request) (target, bool) {
 	if envs, err := b.M.Store().Environments(ctx); err == nil {
 		var best *store.Environment
 		for i, e := range envs {
-			if mentions(r.text, e.Name) && (best == nil || len(e.Name) > len(best.Name)) {
+			if access.UseEnvironment(r.who, e) && mentions(r.text, e.Name) && (best == nil || len(e.Name) > len(best.Name)) {
 				best = &envs[i]
 			}
 		}
@@ -227,6 +234,10 @@ func (b *Bot) submit(ctx context.Context, r request, base session.Request) {
 	since, _ := b.M.Store().LastSlackRequest(ctx, r.in.TeamID, r.msg.Channel, r.root, r.msg.TS)
 	busy := false
 	if s, err := b.M.Store().SessionByKey(ctx, r.key()); err == nil {
+		if !access.PromptSession(r.who, s) {
+			b.post(ctx, r.in, r.msg.Channel, r.root, ":no_entry: "+b.refusal(ctx, r, s), nil)
+			return
+		}
 		busy = s.Status == store.Running
 	}
 	text, shared := b.prompt(ctx, r, since)
@@ -242,6 +253,17 @@ func (b *Bot) submit(ctx context.Context, r request, base session.Request) {
 	req := base
 	req.Prompt, req.Attachments = text, got.attachments
 	req.Key, req.Author, req.Source, req.DedupKey = r.key(), r.author, "slack", r.dedupKey()
+	if r.who.IsPerson() {
+		req.AccountID = r.who.AccountID
+	}
+	req.TeamID = r.team
+	if req.EnvironmentID != "" {
+		if e, err := b.M.Store().Environment(ctx, req.EnvironmentID); err == nil && !access.UseEnvironment(r.who, e) {
+			b.post(ctx, r.in, r.msg.Channel, r.root, ":no_entry: "+e.Name+" belongs to "+b.teamName(ctx, e.TeamID)+
+				", which you're not in. Ask one of its leads to add you.", nil)
+			return
+		}
+	}
 	if req.Author.Email == "" {
 		req.Author = b.M.DefaultAuthor(ctx)
 	}
@@ -343,7 +365,9 @@ func (b *Bot) ask(ctx context.Context, r request) {
 	var opts []any
 	if envs, err := b.M.Store().Environments(ctx); err == nil {
 		for _, e := range envs {
-			opts = append(opts, option(clip(e.Name, 60)+" (environment)", "env:"+e.ID))
+			if access.UseEnvironment(r.who, e) && (r.team == "" || e.TeamID == "" || e.TeamID == r.team) {
+				opts = append(opts, option(clip(e.Name, 60)+" (project)", "env:"+e.ID))
+			}
 		}
 	}
 	if repos, err := b.Repos(ctx); err == nil {
@@ -481,6 +505,10 @@ func (b *Bot) pick(ctx context.Context, in store.SlackInstallation, p interactio
 	var t target
 	switch kind, value, _ := strings.Cut(choice, ":"); kind {
 	case "env":
+		if e, err := b.M.Store().Environment(ctx, value); err != nil || !access.UseEnvironment(pend.r.who, e) {
+			b.ephemeral(ctx, in, p.Channel.ID, p.User.ID, thread, "That project is gone, or not yours to use.")
+			return
+		}
 		t.EnvironmentID = value
 	case "repo":
 		t.Repos = []store.RepoRef{{Repo: value}}
@@ -490,6 +518,9 @@ func (b *Bot) pick(ctx context.Context, in store.SlackInstallation, p interactio
 	if remember {
 		c := store.SlackChannel{TeamID: in.TeamID, Channel: p.Channel.ID, Name: b.channelName(ctx, in, p.Channel.ID),
 			EnvironmentID: t.EnvironmentID, Repos: t.Repos}
+		if old, err := b.M.Store().SlackChannel(ctx, in.TeamID, p.Channel.ID); err == nil {
+			c.OwnerTeamID = old.OwnerTeamID // the channel stays its team's
+		}
 		if err := b.M.Store().SaveSlackChannel(ctx, &c); err == nil {
 			note = " Requests here that name nothing will use it too; change that in Beethoven's Slack settings."
 		}
@@ -581,6 +612,62 @@ func (b *Bot) finished(s store.Session, p store.Prompt) {
 }
 
 // ------------------------------------------------------------------ people
+
+// identify matches a request's author to a person here, by email, and
+// decides the team its session belongs to: the channel's, or for a direct
+// message the person's default team. Someone without an account here acts
+// as the server's owner, within the channel's team, unless the settings
+// allow only people with accounts.
+func (b *Bot) identify(ctx context.Context, r *request) error {
+	if c, err := b.M.Store().SlackChannel(ctx, r.in.TeamID, r.msg.Channel); err == nil {
+		r.team = c.OwnerTeamID
+	}
+	acct, err := b.M.Store().ActiveAccountByEmail(ctx, strings.ToLower(r.author.Email))
+	if err == nil && r.author.Email != "" {
+		teams, err := b.M.Store().Memberships(ctx, acct.ID)
+		if err != nil {
+			return errors.New("I couldn't look up your teams. Try again in a moment.")
+		}
+		r.who = access.Person(acct, teams)
+		if r.team == "" && r.msg.ChannelType == "im" {
+			r.team, _ = b.M.Store().DefaultTeam(ctx, acct.ID)
+		}
+		if r.team != "" && !access.UseTeam(r.who, r.team) {
+			return fmt.Errorf("This channel belongs to %s, which you're not in. Ask one of its leads to add you.", b.teamName(ctx, r.team))
+		}
+		return nil
+	}
+	if settings, _ := b.M.Store().Settings(ctx); settings.SlackMembersOnly {
+		who := "you"
+		if r.author.Email != "" {
+			who = r.author.Email
+		}
+		return fmt.Errorf("Only people with a Beethoven account can start sessions here. Ask an admin to invite %s.", who)
+	}
+	r.who = access.Actor{Role: store.RoleMember, Teams: map[string]string{}}
+	if r.team != "" {
+		r.who.Teams[r.team] = store.TeamMemberRole
+	}
+	return nil
+}
+
+func (b *Bot) teamName(ctx context.Context, id string) string {
+	if t, err := b.M.Store().Team(ctx, id); err == nil {
+		return t.Name
+	}
+	return "another team"
+}
+
+// refusal explains why someone may not prompt a thread's session.
+func (b *Bot) refusal(ctx context.Context, r request, s store.Session) string {
+	switch {
+	case s.Visibility == store.VisibilityPrivate:
+		return "This thread's session is private to the person who started it."
+	case s.TeamID != "":
+		return "This thread's session belongs to " + b.teamName(ctx, s.TeamID) + ", which you're not in. Ask one of its leads to add you."
+	}
+	return "You can't add to this thread's session."
+}
 
 type person struct {
 	name   string
