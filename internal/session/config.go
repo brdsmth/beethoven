@@ -172,12 +172,13 @@ func secretTarget(s store.Session, e Effective) store.SecretTarget {
 	if e.Environment != nil {
 		inherit = e.Environment.InheritSecrets
 	}
-	return store.SecretTarget{EnvironmentID: s.EnvironmentID, InheritGlobal: inherit, Repos: store.RepoNames(s.Repos)}
+	return store.SecretTarget{TeamID: s.TeamID, EnvironmentID: s.EnvironmentID, InheritGlobal: inherit,
+		Repos: store.RepoNames(s.Repos)}
 }
 
 // mcpServers are the extra tool servers for a session's agent.
 func (m *Manager) mcpServers(ctx context.Context, s store.Session) ([]agent.MCPServer, error) {
-	list, err := m.db.MCPServersFor(ctx, s.EnvironmentID, store.RepoNames(s.Repos))
+	list, err := m.db.MCPServersFor(ctx, s.TeamID, s.EnvironmentID, store.RepoNames(s.Repos))
 	if err != nil {
 		return nil, err
 	}

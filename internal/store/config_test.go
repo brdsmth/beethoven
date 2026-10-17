@@ -159,7 +159,7 @@ func TestEnvironmentsAndMCPServers(t *testing.T) {
 	if m1.Secret["Authorization"] != "Bearer s" || !slices.Equal(m1.SecretKeys, []string{"Authorization"}) {
 		t.Errorf("m1 = %+v", m1)
 	}
-	applicable, _ := s.MCPServersFor(ctx, e.ID, []string{"acme/api"})
+	applicable, _ := s.MCPServersFor(ctx, "", e.ID, []string{"acme/api"})
 	var names []string
 	for _, m := range applicable {
 		names = append(names, m.Name)

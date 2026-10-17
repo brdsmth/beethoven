@@ -127,10 +127,12 @@ func (s *Store) LastSlackRequest(ctx context.Context, teamID, channel, threadTS,
 }
 
 // SlackChannel is what a channel works on when a request names nothing: an
-// environment, repositories, or (with neither) a scratch workspace.
+// environment, repositories, or (with neither) a scratch workspace; and the
+// team its requests belong to.
 type SlackChannel struct {
-	TeamID        string    `json:"team_id"`
+	TeamID        string    `json:"team_id"` // the Slack workspace
 	Channel       string    `json:"channel"`
+	OwnerTeamID   string    `json:"owner_team_id,omitempty"` // the Beethoven team; "" = the workspace
 	Name          string    `json:"name"`
 	EnvironmentID string    `json:"environment_id,omitempty"`
 	Repos         []RepoRef `json:"repos"`
@@ -139,10 +141,11 @@ type SlackChannel struct {
 
 func (s *Store) SaveSlackChannel(ctx context.Context, c *SlackChannel) error {
 	c.UpdatedAt = time.Now()
-	_, err := s.w.ExecContext(ctx, `INSERT INTO slack_channels (team_id, channel, name, environment_id, repos, updated_at)
-		VALUES (?,?,?,?,?,?) ON CONFLICT(team_id, channel) DO UPDATE SET name=excluded.name,
-		environment_id=excluded.environment_id, repos=excluded.repos, updated_at=excluded.updated_at`,
-		c.TeamID, c.Channel, c.Name, c.EnvironmentID, encodeRepos(c.Repos), ms(c.UpdatedAt))
+	_, err := s.w.ExecContext(ctx, `INSERT INTO slack_channels (team_id, channel, name, environment_id, repos,
+		owner_team_id, updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(team_id, channel) DO UPDATE SET name=excluded.name,
+		environment_id=excluded.environment_id, repos=excluded.repos, owner_team_id=excluded.owner_team_id,
+		updated_at=excluded.updated_at`,
+		c.TeamID, c.Channel, c.Name, c.EnvironmentID, encodeRepos(c.Repos), c.OwnerTeamID, ms(c.UpdatedAt))
 	return err
 }
 
@@ -150,7 +153,7 @@ func scanSlackChannel(row scanner) (SlackChannel, error) {
 	var c SlackChannel
 	var repos string
 	var updated int64
-	err := row.Scan(&c.TeamID, &c.Channel, &c.Name, &c.EnvironmentID, &repos, &updated)
+	err := row.Scan(&c.TeamID, &c.Channel, &c.Name, &c.EnvironmentID, &repos, &c.OwnerTeamID, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, ErrNotFound
 	}
@@ -158,7 +161,7 @@ func scanSlackChannel(row scanner) (SlackChannel, error) {
 	return c, err
 }
 
-const slackChannelCols = `team_id, channel, name, environment_id, repos, updated_at`
+const slackChannelCols = `team_id, channel, name, environment_id, repos, owner_team_id, updated_at`
 
 func (s *Store) SlackChannel(ctx context.Context, teamID, channel string) (SlackChannel, error) {
 	return scanSlackChannel(s.r.QueryRowContext(ctx,
