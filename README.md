@@ -130,9 +130,25 @@ nest at most two levels deep.
 
 **Pull requests.** The agent commits; `create_pull_request` makes the server push the session's
 branch (`beethoven/<id>`) from inside the sandbox with a token passed to that one command, then open
-the PR through the GitHub API as the person who connected GitHub. Git credentials are never written
-into the sandbox or given to the agent. Commits are authored by whoever sent the prompt (by default
-the connected GitHub account, with its private `noreply` address) and committed by `Beethoven`.
+the PR through the GitHub API as the person the session works for: whoever started it. Git
+credentials are never written into the sandbox or given to the agent. Commits are authored by whoever
+sent the prompt (their connected GitHub account, with its private `noreply` address, else their name
+and email) and committed by `Beethoven`.
+
+**People and teams.** A server that asks people to sign in has an owner, who invites the others with
+single-use links (valid for 7 days, sent however you like) and gives each a role: **owner**, **admin**
+or **member**. Owners and admins manage people, teams, settings and integrations; only owners make or
+unmake owners, and the last one can't leave. Admins create **teams**: a team has leads and members,
+and owns its sessions, projects, automations, secrets and Slack channels. Leads manage the team's
+people, secrets, channels and settings; members use and manage its projects and automations; anyone
+may join a team that's open to all. A session belongs to a team, or to the workspace (no team), and
+is seen by **everyone**, its **team** (a team's default) or **only** whoever started it; its owner or
+the team's lead can change that. Only a team's members prompt its sessions, whoever can see them.
+Work without a team belongs to the workspace and behaves as before teams. Teams are archived, never
+deleted: an archived team takes no new work. Changes to who may do what (people, teams, memberships,
+secrets, channels, session visibility) go to an audit log that admins, and a team's leads for their
+team, can read. The sidebar's switcher shows one team's sessions, the workspace's, or all you can
+see, grouped by project; new sessions start in the chosen team.
 
 **Automations.** A saved request: a prompt, a repository, and a cron schedule and/or a webhook.
 Firing one submits a prompt like any other source; that prompt is the run. Runs don't overlap,
@@ -140,18 +156,21 @@ webhook redeliveries (same `Idempotency-Key` or `X-GitHub-Delivery`) fire once, 
 handed to the agent, and three failures in a row pause the automation. With "reuse", every run
 continues one session.
 
-**Environments.** A named, reusable workspace: an ordered list of up to ten repositories (the first is
-the primary, each with its own base branch), setup and start scripts, its own secrets, and overrides
-of the global settings (model, effort, instructions, sandbox image, CPUs, memory). A session started
-from an environment copies its repositories and checks each out at `/workspace/<name>`; editing the
-environment later doesn't move existing sessions, but its scripts, secrets and settings are read
-live. A session can also target several repositories without an environment, one, or none.
+**Projects.** A named, reusable workspace (an *environment* in the API): an ordered list of up to ten
+repositories (the first is the primary, each with its own base branch), setup and start scripts, its
+own secrets, and overrides of the global settings (model, effort, instructions, sandbox image, CPUs,
+memory). A project belongs to a team or the workspace; only a team's members see and use its
+projects, and a team's project starts only that team's sessions. A session started from a project
+copies its repositories and checks each out at `/workspace/<name>`; editing the project later doesn't
+move existing sessions, but its scripts, secrets and settings are read live. A session can also
+target several repositories without a project, one, or none.
 
 **Secrets.** Environment variables for sandboxes, encrypted with AES-256-GCM under a key in the data
-directory. Every secret has a scope — global, a repository, or an environment — and a session gets,
-lowest precedence first: global secrets, then either its environment's secrets (an environment is a
-boundary: its repositories' own secrets don't apply, and it can opt out of global ones) or its
-repositories' secrets, the primary winning. `GET /api/secrets/effective` shows exactly what a session
+directory. Every secret has a scope — global, a repository, a team, or a project — and a session gets,
+lowest precedence first: global secrets, its team's, then either its project's secrets (a project is
+a boundary: its repositories' own secrets don't apply, and it can opt out of global ones) or its
+repositories' secrets, the primary winning. Admins manage global and repository secrets, a team's
+leads its secrets, and whoever manages a project its secrets. `GET /api/secrets/effective` shows exactly what a session
 would receive and what overrides what. Values are write-only; names that would shadow the server's
 own variables are refused. Paste a `.env` file to import many at once.
 
@@ -178,19 +197,22 @@ either:
   for a preconfigured setup.
 
 Either way the app asks for contents, pull requests and workflows (write) and metadata (read), and
-connecting takes the browser to GitHub and back: create (only without a preconfigured app),
-authorize, install. The server then clones and pushes with installation tokens it creates for one
-repository at a time, valid for an hour, and only through installations the connected person can
-access; public repositories the app isn't installed on are cloned anonymously. Pull requests,
-branch and repository lists use the person's own token, which refreshes itself.
+connecting takes the browser to GitHub and back: create (only without a preconfigured app; an admin
+does this), authorize, install. **Everyone connects their own GitHub account**, and a session works as
+the person who started it: the server clones and pushes with installation tokens it creates for one
+repository at a time, valid for an hour, and only through installations that person can access;
+public repositories the app isn't installed on are cloned anonymously. Pull requests, branch and
+repository lists use the person's own token, which refreshes itself. Someone who hasn't connected
+GitHub can't work on repositories; nobody borrows another person's access. Work no person asked for
+(the server's own token, a server nobody signs in to) acts as the owner.
 
 `BEETHOVEN_GITHUB_APP` holds the app's credentials as JSON, the way GitHub's manifest conversion
 returns them (`id`, `slug`, `client_id`, `client_secret`, `pem`, optional `name`, `owner.login`), or
 the path of a file containing it. Its callback URL must be the server's URL plus `/github/authorized`,
 and its setup URL the server's URL plus `/github/installed`.
 
-Until someone connects, a personal access token is used instead: one saved under **Settings ›
-GitHub**, `GITHUB_TOKEN`, or the GitHub CLI's (`gh auth token`).
+Until anyone connects, a personal access token is used instead, for everyone: one saved under
+**Settings › GitHub**, `GITHUB_TOKEN`, or the GitHub CLI's (`gh auth token`).
 
 ### Slack
 
@@ -200,10 +222,13 @@ session and answers in the thread: 👀 on the request, a status reply with **Op
 mention the bot in it again (any reply, in a direct message) to queue a follow-up, which carries what
 was said in the thread since as context. Files shared with the request, or in the thread since the bot
 was last asked there, are attached to its prompt. A request works on the repositories (`owner/repo`) or the
-environment it names, else on the channel's default; otherwise the bot asks, and the answer can
-become the channel's default. Full members of the workspace can start sessions; guests and people
-from other organizations in shared channels can't. Commits are authored by the Slack user, with the
-email on their Slack profile.
+project it names, else on the channel's default; otherwise the bot asks, and the answer can become
+the channel's default. Full members of the workspace can start sessions; guests and people from
+other organizations in shared channels can't. A requester is matched to a person here by the email on
+their Slack profile, and the session works as them: their GitHub, their commits. A channel can belong
+to a team (**Settings › Slack**, or the team's page): its sessions are the team's, and only its
+members may ask there; a direct message uses the person's default team. Someone without an account
+here works as the server's owner, unless **Settings › Slack** allows only people with accounts.
 
 Like GitHub, Slack is reached through an app, which is either:
 
@@ -259,7 +284,7 @@ keep their history.
 | `BEETHOVEN_ADDR` | `127.0.0.1:7070`, or `0.0.0.0:$PORT` when `PORT` is set | listen address |
 | `BEETHOVEN_URL` | Railway's domain, if any | the server's public HTTPS address |
 | `BEETHOVEN_DATA` | `~/.beethoven` | database and encryption key |
-| `BEETHOVEN_TOKEN` | — | an API token for scripts and the CLI (`Authorization: Bearer`), accepted instead of signing in |
+| `BEETHOVEN_TOKEN` | — | an API token for scripts and the CLI (`Authorization: Bearer`), accepted instead of signing in; it acts as the server itself, for its owner. People make their own under **Settings › Account** |
 | `BEETHOVEN_HOSTS` | — | extra `Host` names to accept (for access through a proxy) |
 | `BEETHOVEN_SANDBOX` | `modal` when `MODAL_TOKEN_ID` is set, else `docker` | sandbox provider |
 | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | `~/.modal.toml` | Modal credentials |
@@ -289,8 +314,13 @@ another address, or accepting other host names) asks people to sign in with an e
 Passwords are stored as salted PBKDF2-SHA256 hashes; a signed-in browser holds an `HttpOnly`,
 `SameSite=Lax` cookie for 30 days, stored only as its hash; ten failed sign-ins for an email within
 15 minutes block it until the window passes. A new server belongs to whoever creates the first
-account, so create it as soon as the server is up. `BEETHOVEN_TOKEN`, when set, works instead of
-signing in, for scripts and the CLI. Agents run
+account, so create it as soon as the server is up. Others join only through an invitation link,
+stored as its hash, used once, and valid for 7 days; a deactivated account is signed out everywhere
+and its API tokens stop working. Personal API tokens act as their person and are stored as hashes;
+`BEETHOVEN_TOKEN`, when set, acts as the server itself. Who may read, prompt or manage a session, use
+a project, or change a secret is decided by one set of rules (`internal/access`), mirrored by the
+query that lists sessions, with a test that the two agree; something you may not see answers 404, and
+live lists only carry sessions you may see. Agents run
 with permissions bypassed inside their container, see the sandbox secrets, and can reach the network.
 Their tool token only acts on their own session and its children. GitHub tokens reach a sandbox only
 for the clone and push commands the server runs, each limited to one repository for an hour. GitHub
@@ -307,7 +337,7 @@ HTML and SVG included, downloads, so a file can't run script as the person viewi
 
 | | |
 |---|---|
-| `GET/POST /api/sessions` | list; create `{prompt, environment_id \| repos, model, effort, title}` |
+| `GET/POST /api/sessions` | list (`?team=` ids or `workspace`, `?mine=1`); create `{prompt, environment_id \| repos, model, effort, title, team_id, visibility}` |
 | `GET /api/sessions/{id}` | session, prompts and pull requests |
 | `POST /api/sessions/{id}/prompts` | queue `{content, model}` |
 | | to attach files to either, send a multipart form: the JSON in a `request` field, each file in a `file` field |
@@ -321,7 +351,17 @@ HTML and SVG included, downloads, so a file can't run script as the person viewi
 | `POST /hooks/{id}` | fire an automation; `Authorization: Bearer <hook token>` |
 | `GET/PUT/DELETE /api/secrets` | by scope; names only on read |
 | `POST /api/secrets/import` · `GET /api/secrets/effective` | `.env` import; what a session receives |
-| `/api/environments[/{id}]` | CRUD |
+| `/api/environments[/{id}]` | projects: CRUD; `team_id` on creation |
+| `GET /api/teams` · `POST /api/teams` · `GET/PUT /api/teams/{id}` | teams (by id or short name) |
+| `POST /api/teams/{id}/archive` · `/join` | `{archived}`; join an open team |
+| `PUT/DELETE /api/teams/{id}/members/{account}` | `{role: lead \| member}`; remove, or leave |
+| `GET /api/people` · `PUT /api/people/{id}` | everyone; `{role, disabled}` |
+| `GET/POST /api/invites` · `DELETE /api/invites/{id}` | invitation links |
+| `GET/POST /api/auth/invite` | an invitation's details; accept it `{token, name, email, password}` |
+| `PUT /api/me` · `GET/POST /api/tokens` · `DELETE /api/tokens/{id}` | `{name, default_team_id}`; personal API tokens |
+| `PUT /api/sessions/{id}/visibility` | `{visibility: workspace \| team \| private}` |
+| `PUT /api/slack/channels/{team}/{channel}/team` | `{owner_team_id}`: the team a channel belongs to |
+| `GET /api/audit?team=&before=` | changes to who may do what |
 | `GET/PUT /api/settings` · `/api/credentials` | global settings; write-only credentials |
 | `GET /api/github` | the GitHub App, the connected account and its installations |
 | `POST /api/github/app` · `/app/created` · `DELETE /api/github/app` | register an app (manifest flow); forget it |
