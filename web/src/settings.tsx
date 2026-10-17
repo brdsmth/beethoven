@@ -93,7 +93,7 @@ function General() {
   };
   return (
     <form class="form" onSubmit={save}>
-      <Head title="General">Defaults for every session. Environments can override the model, instructions and sandbox.</Head>
+      <Head title="General">Defaults for every session. Projects can override the model, instructions and sandbox.</Head>
       <Group title="Model">
         <div class="grid2">
           <label>Default model<ModelField value={f.model} set={v => set('model', v)} def="Agent default" /></label>
@@ -109,7 +109,7 @@ function General() {
         <label>Branch prefix<input class="mono" placeholder={d.branch_prefix} spellcheck={false} {...bind('branch_prefix')} />
           <span class="hint">Work branches are named with this prefix.</span></label>
       </Group>
-      <Group title="Commits" hint="The author of commits no person asked for: automations and the server's own token. People commit as themselves. Set both or neither.">
+      <Group title="Commits" hint="The author of commits no person asked for: work done with the server's own token, or on a server nobody signs in to. People commit as themselves. Set both or neither.">
         <div class="grid2">
           <label>Author name<input placeholder={d.author_name || 'Name'} {...bind('author_name')} /></label>
           <label>Author email<input type="email" placeholder={d.author_email || 'Email'} {...bind('author_email')} /></label>
