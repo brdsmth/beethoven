@@ -18,7 +18,8 @@ import (
 //
 //	""                 global
 //	"owner/name"       a repository
-//	EnvScope(id)       an environment
+//	EnvScope(id)       an environment (a project)
+//	TeamScope(id)      a team
 //	CredentialScope    the server's own credentials (Anthropic, GitHub)
 //
 // A session receives the layers of its SecretTarget, later layers winning.
@@ -117,19 +118,23 @@ func (s *Store) Secrets(ctx context.Context, scope *string) ([]SecretInfo, error
 
 // SecretTarget describes what a session works on, which decides its secrets.
 type SecretTarget struct {
+	TeamID        string // the owning team; "" = the workspace
 	EnvironmentID string
 	InheritGlobal bool     // environment sessions: also take global secrets
 	Repos         []string // primary first
 }
 
 // Layers lists the target's secret scopes from lowest to highest precedence:
-// global (unless an environment opts out), then either the environment or
-// the repositories, primary last so that it wins. An environment is a
-// boundary: its repositories' own secrets do not apply.
+// global (unless an environment opts out), the owning team's, then either
+// the environment or the repositories, primary last so that it wins. An
+// environment is a boundary: its repositories' own secrets do not apply.
 func (t SecretTarget) Layers() []string {
 	var layers []string
 	if t.EnvironmentID == "" || t.InheritGlobal {
 		layers = append(layers, "")
+	}
+	if t.TeamID != "" {
+		layers = append(layers, TeamScope(t.TeamID))
 	}
 	if t.EnvironmentID != "" {
 		return append(layers, EnvScope(t.EnvironmentID))

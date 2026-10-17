@@ -168,20 +168,23 @@ type Session struct {
 	Branch        string    `json:"branch"`
 	Model         string    `json:"model"`
 	Effort        string    `json:"effort"`
-	ParentID     string    `json:"parent_id,omitempty"`
-	Depth        int       `json:"depth"`
-	Source       string    `json:"source"`
-	Key          string    `json:"key,omitempty"`
-	AutomationID string    `json:"automation_id,omitempty"`
-	Author       Author    `json:"author"`
-	Status       string    `json:"status"`
-	Sandbox      string    `json:"sandbox"`
-	SandboxID    string    `json:"-"`
-	AgentSession string    `json:"-"`
-	CostUSD      float64   `json:"cost_usd"`
-	Archived     bool      `json:"archived"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ParentID      string    `json:"parent_id,omitempty"`
+	Depth         int       `json:"depth"`
+	Source        string    `json:"source"`
+	Key           string    `json:"key,omitempty"`
+	AutomationID  string    `json:"automation_id,omitempty"`
+	Author        Author    `json:"author"`
+	AccountID     string    `json:"account_id,omitempty"` // the person it acts for; their GitHub opens its pull requests
+	TeamID        string    `json:"team_id,omitempty"`    // the owning team; "" = the workspace
+	Visibility    string    `json:"visibility"`           // workspace, team or private
+	Status        string    `json:"status"`
+	Sandbox       string    `json:"sandbox"`
+	SandboxID     string    `json:"-"`
+	AgentSession  string    `json:"-"`
+	CostUSD       float64   `json:"cost_usd"`
+	Archived      bool      `json:"archived"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // Primary is the session's first repository, if any.
@@ -193,15 +196,16 @@ func (x Session) Primary() (RepoRef, bool) {
 }
 
 const sessionCols = `id, title, repos, environment_id, branch, model, effort, COALESCE(parent_id,''), depth,
-	source, COALESCE(key,''), COALESCE(automation_id,''), author_name, author_email, status, sandbox,
-	sandbox_id, agent_session, cost_usd, archived, created_at, updated_at`
+	source, COALESCE(key,''), COALESCE(automation_id,''), author_name, author_email, account_id, owner_team_id,
+	visibility, status, sandbox, sandbox_id, agent_session, cost_usd, archived, created_at, updated_at`
 
 func scanSession(row scanner) (Session, error) {
 	var x Session
 	var repos string
 	var created, updated int64
 	err := row.Scan(&x.ID, &x.Title, &repos, &x.EnvironmentID, &x.Branch, &x.Model, &x.Effort, &x.ParentID,
-		&x.Depth, &x.Source, &x.Key, &x.AutomationID, &x.Author.Name, &x.Author.Email, &x.Status, &x.Sandbox,
+		&x.Depth, &x.Source, &x.Key, &x.AutomationID, &x.Author.Name, &x.Author.Email, &x.AccountID, &x.TeamID,
+		&x.Visibility, &x.Status, &x.Sandbox,
 		&x.SandboxID, &x.AgentSession, &x.CostUSD, &x.Archived, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return x, ErrNotFound
@@ -217,22 +221,28 @@ func (s *Store) CreateSession(ctx context.Context, x *Session) error {
 	if x.Repos == nil {
 		x.Repos = []RepoRef{}
 	}
+	if x.Visibility == "" {
+		x.Visibility = VisibilityWorkspace
+	}
+	if !ValidVisibility(x.Visibility, x.TeamID) {
+		return fmt.Errorf("%w: visibility must be workspace, private or, for a team's session, team", ErrInvalid)
+	}
 	_, err := s.w.ExecContext(ctx, `INSERT INTO sessions (id, title, repos, environment_id, branch, model,
-		effort, parent_id, depth, source, key, automation_id, author_name, author_email, status, sandbox,
-		sandbox_id, agent_session, cost_usd, archived, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		effort, parent_id, depth, source, key, automation_id, author_name, author_email, account_id, owner_team_id,
+		visibility, status, sandbox, sandbox_id, agent_session, cost_usd, archived, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		x.ID, x.Title, encodeRepos(x.Repos), x.EnvironmentID, x.Branch, x.Model, x.Effort, null(x.ParentID),
-		x.Depth, x.Source, null(x.Key), null(x.AutomationID), x.Author.Name, x.Author.Email, x.Status, x.Sandbox,
-		x.SandboxID, x.AgentSession, x.CostUSD, x.Archived, ms(now), ms(now))
+		x.Depth, x.Source, null(x.Key), null(x.AutomationID), x.Author.Name, x.Author.Email, x.AccountID, x.TeamID,
+		x.Visibility, x.Status, x.Sandbox, x.SandboxID, x.AgentSession, x.CostUSD, x.Archived, ms(now), ms(now))
 	return err
 }
 
 // SaveSession writes the mutable columns of x.
 func (s *Store) SaveSession(ctx context.Context, x *Session) error {
 	x.UpdatedAt = time.Now()
-	_, err := s.w.ExecContext(ctx, `UPDATE sessions SET title=?, repos=?, branch=?, model=?, effort=?, status=?,
-		sandbox=?, sandbox_id=?, agent_session=?, cost_usd=?, archived=?, updated_at=? WHERE id=?`,
-		x.Title, encodeRepos(x.Repos), x.Branch, x.Model, x.Effort, x.Status, x.Sandbox, x.SandboxID,
+	_, err := s.w.ExecContext(ctx, `UPDATE sessions SET title=?, repos=?, branch=?, model=?, effort=?, visibility=?,
+		status=?, sandbox=?, sandbox_id=?, agent_session=?, cost_usd=?, archived=?, updated_at=? WHERE id=?`,
+		x.Title, encodeRepos(x.Repos), x.Branch, x.Model, x.Effort, x.Visibility, x.Status, x.Sandbox, x.SandboxID,
 		x.AgentSession, x.CostUSD, x.Archived, ms(x.UpdatedAt), x.ID)
 	return err
 }
@@ -249,12 +259,30 @@ type SessionFilter struct {
 	ParentID string   // only children of this session
 	Archived *bool    // nil = both
 	Sandbox  []string // only sessions whose sandbox is in one of these states
+	Viewer   *Viewer  // only sessions this viewer may read; nil = all
+	Teams    []string // only sessions owned by these teams ("" = the workspace)
+	Account  string   // only sessions this person started
 	Limit    int
 }
 
 func (s *Store) Sessions(ctx context.Context, f SessionFilter) ([]Session, error) {
 	q := `SELECT ` + sessionCols + ` FROM sessions WHERE 1=1`
 	var args []any
+	if f.Viewer != nil {
+		pred, pargs := f.Viewer.readable()
+		q += ` AND ` + pred
+		args = append(args, pargs...)
+	}
+	if f.Teams != nil {
+		q += ` AND owner_team_id IN (` + placeholders(len(f.Teams)) + `)`
+		for _, t := range f.Teams {
+			args = append(args, t)
+		}
+	}
+	if f.Account != "" {
+		q += ` AND account_id=?`
+		args = append(args, f.Account)
+	}
 	if f.Archived != nil {
 		q += ` AND archived=?`
 		args = append(args, *f.Archived)
@@ -294,6 +322,7 @@ type Prompt struct {
 	Model        string     `json:"model,omitempty"`
 	Effort       string     `json:"effort,omitempty"`
 	Author       Author     `json:"author"`
+	AccountID    string     `json:"account_id,omitempty"`
 	Source       string     `json:"source"`
 	AutomationID string     `json:"automation_id,omitempty"`
 	DedupKey     string     `json:"-"`
@@ -309,7 +338,7 @@ type Prompt struct {
 	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
-const promptCols = `id, session_id, content, model, effort, author_name, author_email, source,
+const promptCols = `id, session_id, content, model, effort, author_name, author_email, account_id, source,
 	COALESCE(automation_id,''), COALESCE(dedup_key,''), status, error, result, cost_usd, created_at, started_at,
 	finished_at`
 
@@ -317,7 +346,7 @@ func scanPrompt(row scanner) (Prompt, error) {
 	var p Prompt
 	var created int64
 	var started, finished sql.NullInt64
-	err := row.Scan(&p.ID, &p.SessionID, &p.Content, &p.Model, &p.Effort, &p.Author.Name, &p.Author.Email, &p.Source,
+	err := row.Scan(&p.ID, &p.SessionID, &p.Content, &p.Model, &p.Effort, &p.Author.Name, &p.Author.Email, &p.AccountID, &p.Source,
 		&p.AutomationID, &p.DedupKey, &p.Status, &p.Error, &p.Result, &p.CostUSD, &created, &started, &finished)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, ErrNotFound
@@ -337,10 +366,10 @@ func (s *Store) CreatePrompt(ctx context.Context, p *Prompt) (created bool, err 
 	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx, `INSERT INTO prompts (id, session_id, content, model, effort, author_name,
-		author_email, source, automation_id, dedup_key, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+		author_email, account_id, source, automation_id, dedup_key, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(dedup_key) DO NOTHING`,
-		p.ID, p.SessionID, p.Content, p.Model, p.Effort, p.Author.Name, p.Author.Email, p.Source, null(p.AutomationID),
-		null(p.DedupKey), p.Status, ms(p.CreatedAt))
+		p.ID, p.SessionID, p.Content, p.Model, p.Effort, p.Author.Name, p.Author.Email, p.AccountID, p.Source,
+		null(p.AutomationID), null(p.DedupKey), p.Status, ms(p.CreatedAt))
 	if err != nil {
 		return false, err
 	}
@@ -472,16 +501,18 @@ type Automation struct {
 	Model         string     `json:"model"`
 	Effort        string     `json:"effort"`
 	Schedule      string     `json:"schedule"`
-	Reuse      bool       `json:"reuse"`
-	Enabled    bool       `json:"enabled"`
-	Failures   int        `json:"failures"`
-	NextRunAt  *time.Time `json:"next_run_at,omitempty"`
-	HookHash   string     `json:"-"`
-	CreatedAt  time.Time  `json:"created_at"`
+	TeamID        string     `json:"team_id,omitempty"`    // the owning team; "" = the workspace
+	AccountID     string     `json:"account_id,omitempty"` // who it runs as: whoever made it
+	Reuse         bool       `json:"reuse"`
+	Enabled       bool       `json:"enabled"`
+	Failures      int        `json:"failures"`
+	NextRunAt     *time.Time `json:"next_run_at,omitempty"`
+	HookHash      string     `json:"-"`
+	CreatedAt     time.Time  `json:"created_at"`
 }
 
 const automationCols = `id, name, repos, environment_id, prompt, model, effort, schedule, reuse, enabled,
-	failures, next_run_at, hook_hash, created_at`
+	failures, next_run_at, hook_hash, created_at, owner_team_id, account_id`
 
 func scanAutomation(row scanner) (Automation, error) {
 	var a Automation
@@ -489,7 +520,7 @@ func scanAutomation(row scanner) (Automation, error) {
 	var next sql.NullInt64
 	var created int64
 	err := row.Scan(&a.ID, &a.Name, &repos, &a.EnvironmentID, &a.Prompt, &a.Model, &a.Effort, &a.Schedule,
-		&a.Reuse, &a.Enabled, &a.Failures, &next, &a.HookHash, &created)
+		&a.Reuse, &a.Enabled, &a.Failures, &next, &a.HookHash, &created, &a.TeamID, &a.AccountID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}
@@ -500,9 +531,9 @@ func scanAutomation(row scanner) (Automation, error) {
 
 func (s *Store) CreateAutomation(ctx context.Context, a *Automation) error {
 	a.CreatedAt = time.Now()
-	_, err := s.w.ExecContext(ctx, `INSERT INTO automations (`+automationCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err := s.w.ExecContext(ctx, `INSERT INTO automations (`+automationCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		a.ID, a.Name, encodeRepos(a.Repos), a.EnvironmentID, a.Prompt, a.Model, a.Effort, a.Schedule, a.Reuse,
-		a.Enabled, a.Failures, optToMS(a.NextRunAt), a.HookHash, ms(a.CreatedAt))
+		a.Enabled, a.Failures, optToMS(a.NextRunAt), a.HookHash, ms(a.CreatedAt), a.TeamID, a.AccountID)
 	return err
 }
 
@@ -569,6 +600,14 @@ func query[T any](ctx context.Context, db queryer, scan func(scanner) (T, error)
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+// placeholders is n comma-separated SQL parameters.
+func placeholders(n int) string {
+	if n == 0 {
+		return "NULL" // IN (NULL) matches nothing
+	}
+	return "?" + strings.Repeat(",?", n-1)
 }
 
 func null(s string) any {

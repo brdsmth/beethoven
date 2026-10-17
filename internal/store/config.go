@@ -57,8 +57,11 @@ type Settings struct {
 	TurnMinutes  int    `json:"turn_minutes,omitempty"` // limit for one prompt
 	DraftPRs     bool   `json:"draft_prs,omitempty"`    // open pull requests as drafts by default
 	BranchPrefix string `json:"branch_prefix,omitempty"`
-	AuthorName   string `json:"author_name,omitempty"` // commit author for prompts from the UI and CLI
+	AuthorName   string `json:"author_name,omitempty"` // commit author for work no person asked for
 	AuthorEmail  string `json:"author_email,omitempty"`
+	// Slack requests only from people with an account here (matched by
+	// email); otherwise anyone in the Slack workspace, acting as the owner.
+	SlackMembersOnly bool `json:"slack_members_only,omitempty"`
 }
 
 func (s *Store) Settings(ctx context.Context) (Settings, error) {
@@ -87,6 +90,7 @@ func (s *Store) SaveSettings(ctx context.Context, v Settings) error {
 // setting overrides.
 type Environment struct {
 	ID             string    `json:"id"`
+	TeamID         string    `json:"team_id,omitempty"` // the owning team, fixed at creation; "" = the workspace
 	Name           string    `json:"name"`
 	Description    string    `json:"description"`
 	Repos          []RepoRef `json:"repos"`
@@ -98,13 +102,14 @@ type Environment struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
-const envCols = `id, name, description, repos, setup_script, start_script, inherit_secrets, overrides, created_at, updated_at`
+const envCols = `id, owner_team_id, name, description, repos, setup_script, start_script, inherit_secrets, overrides,
+	created_at, updated_at`
 
 func scanEnvironment(row scanner) (Environment, error) {
 	var e Environment
 	var repos, overrides string
 	var created, updated int64
-	err := row.Scan(&e.ID, &e.Name, &e.Description, &repos, &e.SetupScript, &e.StartScript, &e.InheritSecrets,
+	err := row.Scan(&e.ID, &e.TeamID, &e.Name, &e.Description, &repos, &e.SetupScript, &e.StartScript, &e.InheritSecrets,
 		&overrides, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return e, ErrNotFound
@@ -118,8 +123,8 @@ func scanEnvironment(row scanner) (Environment, error) {
 func (s *Store) CreateEnvironment(ctx context.Context, e *Environment) error {
 	e.CreatedAt, e.UpdatedAt = time.Now(), time.Now()
 	ov, _ := json.Marshal(e.Overrides)
-	_, err := s.w.ExecContext(ctx, `INSERT INTO environments (`+envCols+`) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		e.ID, e.Name, e.Description, encodeRepos(e.Repos), e.SetupScript, e.StartScript, e.InheritSecrets,
+	_, err := s.w.ExecContext(ctx, `INSERT INTO environments (`+envCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		e.ID, e.TeamID, e.Name, e.Description, encodeRepos(e.Repos), e.SetupScript, e.StartScript, e.InheritSecrets,
 		string(ov), ms(e.CreatedAt), ms(e.UpdatedAt))
 	return conflict(err)
 }
@@ -139,7 +144,7 @@ func (s *Store) Environment(ctx context.Context, id string) (Environment, error)
 }
 
 func (s *Store) Environments(ctx context.Context) ([]Environment, error) {
-	return query(ctx, s.r, scanEnvironment, `SELECT `+envCols+` FROM environments ORDER BY name`)
+	return query(ctx, s.r, scanEnvironment, `SELECT `+envCols+` FROM environments ORDER BY owner_team_id != '', name`)
 }
 
 // DeleteEnvironment removes an environment with its secrets and MCP servers.
@@ -252,16 +257,17 @@ func (s *Store) MCPServers(ctx context.Context) ([]MCPServer, error) {
 	return query(ctx, s.r, s.scanMCP, `SELECT `+mcpCols+` FROM mcp_servers ORDER BY name`)
 }
 
-// MCPServersFor returns the enabled servers that apply to a session in
-// environmentID (may be empty) working on repos.
-func (s *Store) MCPServersFor(ctx context.Context, environmentID string, repos []string) ([]MCPServer, error) {
+// MCPServersFor returns the enabled servers that apply to a session owned
+// by teamID and in environmentID (either may be empty), working on repos.
+func (s *Store) MCPServersFor(ctx context.Context, teamID, environmentID string, repos []string) ([]MCPServer, error) {
 	all, err := s.MCPServers(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var out []MCPServer
 	for _, m := range all {
-		if m.Enabled && (m.Scope == "" || (environmentID != "" && m.Scope == EnvScope(environmentID)) || contains(repos, m.Scope)) {
+		if m.Enabled && (m.Scope == "" || (environmentID != "" && m.Scope == EnvScope(environmentID)) ||
+			(teamID != "" && m.Scope == TeamScope(teamID)) || contains(repos, m.Scope)) {
 			out = append(out, m)
 		}
 	}
