@@ -1,25 +1,34 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { api, get, resetGitHub, type Credentials, type GitHubStatus, type Info, type Settings as S, type SettingsInfo } from './api';
+import { api, get, getMe, resetGitHub, type Credentials, type GitHubStatus, type Info, type Settings as S, type SettingsInfo } from './api';
 import { EnvironmentEdit, Environments } from './environments';
 import { ConnectGitHub } from './github';
 import { MCPServers } from './mcp';
+import { AccountPage, AuditPage, PeoplePage } from './people';
+import { useMe } from './teams';
 import { SecretsPage } from './secrets';
 import { SlackPage } from './slack';
 import { ConfirmButton, EffortSelect, Group, Head, ModelField, SaveBar, errText, fail, num, str, toast, useLoad } from './util';
 
 const SECTIONS: [string, [string, string][]][] = [
+  ['You', [['account', 'Account'], ['github', 'GitHub']]],
   ['Agent', [['general', 'General'], ['credentials', 'Credentials']]],
-  ['Workspace', [['github', 'GitHub'], ['slack', 'Slack'], ['environments', 'Environments'], ['secrets', 'Secrets'], ['mcp', 'MCP servers']]],
+  ['Workspace', [['people', 'People'], ['teams', 'Teams'], ['environments', 'Projects'], ['secrets', 'Secrets'], ['mcp', 'MCP servers'],
+    ['slack', 'Slack'], ['audit', 'Audit log']]],
   ['Server', [['about', 'About']]],
 ];
 
 export function Settings({ info, route }: { info?: Info; route: string[] }) {
   const [section, id, tab] = route;
+  const me = useMe();
+  useEffect(() => { if (section === 'teams') location.replace('#/teams'); }, [section]);
   useEffect(() => { // wide screens open a section; narrow ones show the list first
     if (!section && !matchMedia('(max-width: 900px)').matches) location.replace('#/settings/general');
   }, [section]);
-  const body = section === 'general' ? <General />
+  const body = section === 'account' ? <AccountPage />
+    : section === 'people' ? <PeoplePage />
+    : section === 'audit' ? (me?.admin ? <AuditPage /> : <p class="empty">Only admins see the audit log. Team leads see their team's on its page.</p>)
+    : section === 'general' ? <General />
     : section === 'credentials' ? <CredentialsPage />
     : section === 'github' ? <GitHubPage />
     : section === 'slack' ? <SlackPage />
@@ -35,7 +44,8 @@ export function Settings({ info, route }: { info?: Info; route: string[] }) {
         {SECTIONS.map(([group, items]) => (
           <div key={group} class="nav-group">
             <h3>{group}</h3>
-            {items.map(([k, label]) => <a key={k} href={`#/settings/${k}`} class={k === section ? 'active' : ''}>{label}</a>)}
+            {items.filter(([k]) => k !== 'audit' || me?.admin).map(([k, label]) =>
+              <a key={k} href={k === 'teams' ? '#/teams' : `#/settings/${k}`} class={k === section ? 'active' : ''}>{label}</a>)}
           </div>
         ))}
       </nav>
@@ -99,7 +109,7 @@ function General() {
         <label>Branch prefix<input class="mono" placeholder={d.branch_prefix} spellcheck={false} {...bind('branch_prefix')} />
           <span class="hint">Work branches are named with this prefix.</span></label>
       </Group>
-      <Group title="Commits" hint="The author of commits made from the web UI and CLI. Set both or neither.">
+      <Group title="Commits" hint="The author of commits no person asked for: automations and the server's own token. People commit as themselves. Set both or neither.">
         <div class="grid2">
           <label>Author name<input placeholder={d.author_name || 'Name'} {...bind('author_name')} /></label>
           <label>Author email<input type="email" placeholder={d.author_email || 'Email'} {...bind('author_email')} /></label>
@@ -170,29 +180,30 @@ function GitHubPage() {
     setChecking(false);
   };
   const { app, account } = st, g = c.github;
+  const me = getMe();
   return (
     <>
       <Head title="GitHub">
-        Agents clone, push and open pull requests through a GitHub App. Each push uses a token for that one repository,
-        valid for an hour; pull requests open as the person who connected.
+        Agents clone, push and open pull requests through a GitHub App, as the person who started the session: everyone
+        connects their own GitHub account. Each push uses a token for that one repository, valid for an hour.
       </Head>
       {st.error && <p class="err" role="alert">{st.error}</p>}
       <section class="card">
         <div class="card-head">
-          <h2>Account</h2><span class={'chip ' + (account ? 'green' : 'amber')}>{account ? 'Connected' : 'Not connected'}</span>
-          {account && <span class="push"><ConfirmButton small label="Disconnect" note="Agents fall back to the access token below, if any."
+          <h2>Your GitHub account</h2><span class={'chip ' + (account ? 'green' : 'amber')}>{account ? 'Connected' : 'Not connected'}</span>
+          {account && <span class="push"><ConfirmButton small label="Disconnect" note="Your sessions can't reach GitHub until you connect again."
             onConfirm={() => api('DELETE', '/api/github/account').then(changed)} /></span>}
         </div>
         {account
-          ? <p>Connected as <b>@{account.login}</b>{account.name && <span class="muted"> ({account.name})</span>}. Commits are authored by you, unless
-            the <a href="#/settings/general">general settings</a> name another author.</p>
+          ? <p>Connected as <b>@{account.login}</b>{account.name && <span class="muted"> ({account.name})</span>}. Your sessions' commits and pull
+            requests are yours.</p>
           : <ConnectGitHub status={st} />}
       </section>
       {app && (
         <section class="card">
           <div class="card-head">
             <h2>App</h2><span class="chip">{app.source === 'environment' ? 'Preconfigured' : 'Created from this server'}</span>
-            {app.source === 'settings' && <span class="push"><ConfirmButton small label="Remove" ask="Remove app"
+            {app.source === 'settings' && me?.admin && <span class="push"><ConfirmButton small label="Remove" ask="Remove app"
               note="Disconnects everyone. The app stays on GitHub; delete it there."
               onConfirm={() => api('DELETE', '/api/github/app').then(changed)} /></span>}
           </div>
@@ -216,19 +227,19 @@ function GitHubPage() {
           )}
         </section>
       )}
-      <section class="card">
+      {(me?.admin || !me?.people) && <section class="card">
         <div class="card-head">
           <h2>Personal access token</h2>
           {g.source && <button class="btn sm push" disabled={checking} onClick={check}>{checking ? 'Checking…' : 'Check'}</button>}
         </div>
         <p class="hint">
-          Instead of the app: used for everything until someone connects. {TOKEN[st.token] ?? st.token}
+          Instead of the app: shared by everyone until anyone connects the app. {TOKEN[st.token] ?? st.token}
         </p>
         {g.login && <p class="ok">Belongs to <b>@{g.login}</b></p>}
         {g.error && <p class="err">{g.error}</p>}
         <CredRow name="GITHUB_TOKEN" label="Access token" stored={c.stored.GITHUB_TOKEN} done={changed}
           hint="Needs read and write access to contents and pull requests of the repositories agents work on." />
-      </section>
+      </section>}
     </>
   );
 }

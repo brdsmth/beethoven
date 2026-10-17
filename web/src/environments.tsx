@@ -2,23 +2,26 @@ import { useEffect, useState } from 'preact/hooks';
 import { api, get, type Effective, type Environment, type RepoRef, type Secret, type SettingsInfo } from './api';
 import { RepoRows, cleanRepos } from './pickers';
 import { SecretsEditor } from './secrets';
-import { ConfirmButton, EffortSelect, Group, Head, ModelField, SaveBar, errText, go, num, plural, str, toast, useLoad } from './util';
+import { TeamLabel, TeamMark, useMe, useTeamIndex, useTeams } from './teams';
+import { ConfirmButton, EffortSelect, Group, Head, ModelField, SaveBar, errText, go, hashParam, num, plural, str, toast, useLoad } from './util';
 
 export function Environments() {
   const [list] = useLoad<Environment[]>('/api/environments');
   const [secrets] = useLoad<Secret[]>('/api/secrets');
+  const team = useTeamIndex();
   return (
     <>
-      <Head title="Environments" actions={<a class="btn primary" href="#/settings/environments/new">New environment</a>}>
+      <Head title="Projects" actions={<a class="btn primary" href="#/settings/environments/new">New project</a>}>
         A reusable workspace: repositories, scripts that prepare the sandbox, secrets, and setting overrides.
-        Choose one when you start a session or set up an automation.
+        Choose one when you start a session or set up an automation. A team's projects are its members' alone.
       </Head>
-      {list?.length === 0 && <p class="empty">No environments yet.</p>}
+      {list?.length === 0 && <p class="empty">No projects yet.</p>}
       <div class="rows">
         {list?.map(e => {
           const n = secrets?.filter(s => s.scope === 'env:' + e.id).length ?? 0;
           return (
             <a key={e.id} class="row link" href={`#/settings/environments/${e.id}`}>
+              <TeamMark team={team(e.team_id)} />
               <span class="row-main">
                 <span class="row-title">{e.name}</span>
                 {e.description && <span class="row-desc">{e.description}</span>}
@@ -68,6 +71,9 @@ export function EnvironmentEdit({ id, tab = 'configuration' }: { id: string; tab
   const isNew = id === 'new';
   const [saved, setSaved] = useState<Environment>();
   const [f, setF] = useState<EF>(BLANK);
+  const [team, setTeam] = useState(() => hashParam('team'));
+  const teams = useTeams();
+  const me = useMe();
   const [missing, setMissing] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -85,7 +91,7 @@ export function EnvironmentEdit({ id, tab = 'configuration' }: { id: string; tab
     setBusy(true);
     try {
       if (isNew) {
-        const env = await api<Environment>('POST', '/api/environments', body(f));
+        const env = await api<Environment>('POST', '/api/environments', { ...body(f), team_id: team });
         toast(`Created ${env.name}. Add its secrets next.`);
         go(`/settings/environments/${env.id}/secrets`);
         return;
@@ -115,9 +121,20 @@ export function EnvironmentEdit({ id, tab = 'configuration' }: { id: string; tab
   const saveBar = <SaveBar dirty={dirty || isNew} busy={busy} err={err} label={isNew ? 'Create environment' : 'Save changes'} />;
   return (
     <div class="form">
-      <a class="back" href="#/settings/environments">‹ Environments</a>
-      <Head title={isNew ? 'New environment' : saved!.name}
-        actions={!isNew && <ConfirmButton ask="Delete environment" note="Its secrets and MCP servers go too." onConfirm={remove} />} />
+      <a class="back" href="#/settings/environments">‹ Projects</a>
+      <Head title={isNew ? 'New project' : saved!.name}
+        actions={!isNew && <ConfirmButton ask="Delete project" note="Its secrets and MCP servers go too." onConfirm={remove} />} />
+      {isNew && !!teams?.length && (
+        <label class="field team-field">
+          <span class="field-label">Team</span>
+          <select value={team} onChange={e => setTeam(e.currentTarget.value)}>
+            <option value="">Workspace: everyone's</option>
+            {teams.filter(t => !t.archived_at && (t.role || me?.admin)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+          <span class="hint">Only the team's members see and use it. This can't change later.</span>
+        </label>
+      )}
+      {!isNew && saved?.team_id && <p class="crumbs"><TeamLabel team={teams?.find(t => t.id === saved.team_id)} /> <span class="dim">· its members see and use this project</span></p>}
       <nav class="tabs">
         {TABS.map(([k, label]) => isNew && k === 'secrets'
           ? <span key={k} class="tab disabled" title="Create the environment first">{label}</span>
@@ -136,10 +153,10 @@ export function EnvironmentEdit({ id, tab = 'configuration' }: { id: string; tab
             Inherit global secrets
           </label>
           <p class="hint flush">
-            Global secrets apply here unless replaced by one of this environment's. Repository secrets never apply inside
-            an environment. Credentials always reach the agent, whatever this setting.
+            Global secrets{saved?.team_id ? ", then the team's," : ''} apply here unless replaced by one of this project's. Repository
+            secrets never apply inside a project. Credentials always reach the agent, whatever this setting.
           </p>
-          <Group title="Environment secrets">
+          <Group title="Project secrets">
             <SecretsEditor scope={'env:' + id} onChange={reloadEff} />
           </Group>
           <Group title="Effective secrets" hint="What a session in this environment receives, and from where.">
@@ -149,7 +166,7 @@ export function EnvironmentEdit({ id, tab = 'configuration' }: { id: string; tab
                 <div key={s.name} class="row">
                   <span class="row-main mono">{s.name}</span>
                   {!!s.overrides?.length && <span class="hint">overrides Global</span>}
-                  <span class={'badge' + (s.scope ? '' : ' plain')}>{s.scope ? 'This environment' : 'Global'}</span>
+                  <span class={'badge' + (s.scope ? '' : ' plain')}>{!s.scope ? 'Global' : s.scope.startsWith('team:') ? 'Team' : 'This project'}</span>
                 </div>
               ))}
             </div>

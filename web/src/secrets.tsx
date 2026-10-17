@@ -1,6 +1,7 @@
 import { useState } from 'preact/hooks';
 import { api, isRepo, scopeQuery, type Environment, type Secret } from './api';
 import { RepoInput } from './pickers';
+import { useTeams } from './state';
 import { ConfirmButton, Group, Head, ago, errText, fail, go, plural, toast, useLoad } from './util';
 
 type ImportResult = { imported: string[]; skipped: { line: number; reason: string }[] };
@@ -90,7 +91,8 @@ export function SecretsPage({ scope }: { scope: string }) {
   const [adding, setAdding] = useState('');
   const counts: Record<string, number> = {};
   all?.forEach(s => { counts[s.scope] = (counts[s.scope] || 0) + 1; });
-  const repos = Object.keys(counts).filter(s => s && !s.startsWith('env:'));
+  const teams = useTeams();
+  const repos = Object.keys(counts).filter(s => s && !s.startsWith('env:') && !s.startsWith('team:'));
   if (scope && !repos.includes(scope)) repos.push(scope);
   repos.sort();
   const href = (s: string) => '#/settings/secrets' + (s ? '/' + encodeURIComponent(s) : '');
@@ -110,11 +112,21 @@ export function SecretsPage({ scope }: { scope: string }) {
             <button class="btn" disabled={!isRepo(adding)}>Add</button>
           </form>
         </div>
+        {!!teams?.length && (
+          <div class="scope-group">
+            <h3>Teams</h3>
+            {teams.filter(t => t.role || t.manages).map(t => (
+              <a key={t.id} class="pill" href={`#/teams/${t.slug}/secrets`} title="Edit on the team's page">
+                {t.name}<span class="count">{counts['team:' + t.id] || 0}</span> ↗
+              </a>
+            ))}
+          </div>
+        )}
         {!!envs?.length && (
           <div class="scope-group">
-            <h3>Environments</h3>
+            <h3>Projects</h3>
             {envs.map(e => (
-              <a key={e.id} class="pill" href={`#/settings/environments/${e.id}/secrets`} title="Edit in the environment">
+              <a key={e.id} class="pill" href={`#/settings/environments/${e.id}/secrets`} title="Edit in the project">
                 {e.name}<span class="count">{counts['env:' + e.id] || 0}</span> ↗
               </a>
             ))}
@@ -122,13 +134,14 @@ export function SecretsPage({ scope }: { scope: string }) {
         )}
       </div>
       <Group title={scope ? `Secrets for ${scope}` : 'Global secrets'}
-        hint={scope ? `Sessions working on ${scope} receive these, over global ones with the same name.` : 'Every session receives these, unless its environment opts out.'}>
+        hint={scope ? `Sessions working on ${scope} receive these, over global ones with the same name.` : 'Every session receives these, unless its project opts out.'}>
         <SecretsEditor key={scope} scope={scope} onChange={reload} />
       </Group>
       <div class="note">
-        <b>Precedence.</b> Global secrets come first. A session on repositories adds each repository's secrets, the primary
-        repository winning. A session in an environment adds that environment's secrets instead (repository secrets don't
-        apply there) and keeps global ones only if the environment inherits them. Credentials are separate and always reach the agent.
+        <b>Precedence.</b> Global secrets come first, then the secrets of the session's team. A session on repositories adds
+        each repository's secrets, the primary repository winning. A session in a project adds that project's secrets instead
+        (repository secrets don't apply there) and keeps global ones only if the project inherits them. Global and repository
+        secrets are for admins to change; a team's for its leads. Credentials are separate and always reach the agent.
       </div>
     </>
   );

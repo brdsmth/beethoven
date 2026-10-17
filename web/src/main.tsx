@@ -1,18 +1,21 @@
 import { render } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import {
-  api, get, onAuthRequired, onGlobal, withFiles, type Account, type AuthState, type Environment, type Info, type Session,
+  api, get, onAuthRequired, onGlobal, setMe, withFiles, type Account, type AuthState, type Environment, type Info, type Session,
+  type Visibility,
 } from './api';
 import { AttachButton, PendingFiles, useFiles } from './attach';
 import { AutomationEdit, Automations } from './automations';
 import { GitHubReturn, GitHubSetup, githubStep } from './github';
 import { Insights } from './insights';
+import { InviteAccept } from './people';
+import { NewTeam, TeamMark, TeamPage, TeamSwitcher, TeamsIndex, scopeTeam, useMe, useScope, useTeams } from './teams';
 import { SlackReturn, slackStep } from './slack';
 import { TargetPicker, fromTarget, targetProblem, toTarget, type Pick } from './pickers';
 import { SessionView } from './session';
 import { Settings } from './settings';
 import {
-  Dot, EffortSelect, ModelField, Seg, Toasts, ago, fail, go, modEnter, readPref, setEfforts, targetLabel, useRoute, useTick,
+  Dot, EffortSelect, ModelField, Seg, Toasts, ago, fail, go, modEnter, readPref, setEfforts, useRoute, useTick,
   writePref,
 } from './util';
 
@@ -21,13 +24,15 @@ import {
 function Root() {
   const [auth, setAuth] = useState<AuthState>();
   const [error, setError] = useState('');
+  const route = useRoute();
   useEffect(() => {
-    const load = () => get<AuthState>('/api/auth').then(a => { setAuth(a); setError(''); }, e => setError(e.message));
+    const load = () => get<AuthState>('/api/auth').then(a => { setAuth(a); setMe(a); setError(''); }, e => setError(e.message));
     load();
     return onAuthRequired(load);
   }, []);
+  if (route[0] === 'invite' && route[1]) return <InviteAccept token={route[1]} />;
   if (!auth) return error ? <div class="auth"><p class="auth-error" role="alert">Can't reach the server: {error}</p></div> : null;
-  if (auth.required && !auth.account) return <SignIn setup={auth.setup} done={setAuth} />;
+  if (auth.required && !auth.account) return <SignIn setup={auth.setup} done={a => { setAuth(a); setMe(a); }} />;
   return <App account={auth.account} />;
 }
 
@@ -98,6 +103,7 @@ function App({ account }: { account: Account | null }) {
   else if (page === 's' && arg) view = <SessionView key={arg} id={arg} />;
   else if (page === 'automations') view = arg ? <AutomationEdit key={arg} id={arg} /> : <Automations />;
   else if (page === 'insights') view = <Insights />;
+  else if (page === 'teams') view = arg === 'new' ? <NewTeam /> : arg ? <TeamPage key={arg} slug={arg} tab={route[2]} /> : <TeamsIndex />;
   else if (page === 'settings') view = <Settings info={info} route={route.slice(1)} />;
   else view = <NewSession info={info} />;
   if (page !== 's') document.title = 'Beethoven';
@@ -116,44 +122,76 @@ function App({ account }: { account: Account | null }) {
   );
 }
 
+/** The sidebar's sessions, grouped by what they work on: a project, a
+ * repository, or a scratch workspace; the busiest group first. */
+function groups(list: Session[], envs?: Environment[]) {
+  const out = new Map<string, { label: string; sessions: Session[] }>();
+  for (const s of list) {
+    const key = s.environment_id ? 'env:' + s.environment_id : s.repos[0]?.repo || 'scratch';
+    const label = s.environment_id ? envs?.find(e => e.id === s.environment_id)?.name || "Another team's project"
+      : s.repos[0]?.repo || 'Scratch';
+    if (!out.has(key)) out.set(key, { label, sessions: [] });
+    out.get(key)!.sessions.push(s);
+  }
+  return [...out.entries()];
+}
+
 function Sidebar({ current, account }: { current: string; account: Account | null }) {
   const [archived, setArchived] = useState(false);
   const [list, setList] = useState<Session[]>();
   const [envs, setEnvs] = useState<Environment[]>();
+  const [scope] = useScope();
+  const teams = useTeams();
   useTick();
   useEffect(() => { get<Environment[]>('/api/environments').then(setEnvs, () => {}); }, [current]);
+  const filter = scope === 'all' ? '' : '&team=' + scope;
   useEffect(() => {
-    const load = () => get<Session[]>(`/api/sessions?limit=200${archived ? '&archived=1' : ''}`).then(setList, fail);
+    const team = scopeTeam(scope);
+    const fits = (s: Session) => scope === 'all' || (scope === 'workspace' ? !s.team_id : s.team_id === team);
+    const load = () => get<Session[]>(`/api/sessions?limit=200${archived ? '&archived=1' : ''}${filter}`).then(setList, fail);
     load();
     return onGlobal(e => {
+      if (e.type === 'session_hidden') setList(l => (l || []).filter(x => x.id !== e.data.id));
       if (e.type === 'session') {
         const s: Session = e.data;
         setList(l => {
           const rest = (l || []).filter(x => x.id !== s.id);
-          return s.archived === archived ? [s, ...rest] : rest;
+          return s.archived === archived && fits(s) ? [s, ...rest] : rest;
         });
       }
     }, load); // a reconnect may have missed changes
-  }, [archived]);
+  }, [archived, filter]);
+  const teamOf = (id?: string) => teams?.find(t => t.id === id);
 
   return (
     <nav class="sidebar">
       <div class="side-top">
         <a class="brand" href="#/">Beethoven</a>
+        {!!teams?.length && <TeamSwitcher />}
         <a class="btn primary block" href="#/">New session</a>
         <Seg value={archived ? 'archived' : 'active'} set={v => setArchived(v === 'archived')}
           options={[['active', 'Active'], ['archived', 'Archived']]} />
       </div>
       <div class="side-list">
         {list?.length === 0 && <p class="empty small">{archived ? 'No archived sessions.' : 'No sessions yet.'}</p>}
-        {list?.map(s => (
-          <a key={s.id} href={`#/s/${s.id}`} class={'item' + (s.id === current ? ' active' : '')}>
-            <Dot status={s.status} />
-            <span class="item-main">
-              <span class="item-title">{s.parent_id && <span class="dim">↳ </span>}{s.title || 'Untitled'}</span>
-              <span class="item-meta">{targetLabel(s, envs)} · {ago(s.updated_at)}</span>
-            </span>
-          </a>
+        {list && groups(list, envs).map(([key, g]) => (
+          <div key={key} class="side-group">
+            <div class="side-group-label ellipsis" title={g.label}>{g.label}</div>
+            {g.sessions.map(s => (
+              <a key={s.id} href={`#/s/${s.id}`} class={'item' + (s.id === current ? ' active' : '')}>
+                <Dot status={s.status} />
+                <span class="item-main">
+                  <span class="item-title">{s.parent_id && <span class="dim">↳ </span>}{s.title || 'Untitled'}</span>
+                  <span class="item-meta">
+                    {scope === 'all' && s.team_id && <TeamMark team={teamOf(s.team_id)} size={11} />}
+                    {s.visibility === 'private' && <span title="Only you">🔒</span>}
+                    {s.author.name && <span class="ellipsis">{s.author.name}</span>}
+                    <span>{ago(s.updated_at)}</span>
+                  </span>
+                </span>
+              </a>
+            ))}
+          </div>
         ))}
       </div>
       {account && (
@@ -184,6 +222,20 @@ function NewSession({ info }: { info?: Info }) {
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
   const [busy, setBusy] = useState(false);
+  const me = useMe();
+  const teams = useTeams();
+  const [scope] = useScope();
+  // The team the session belongs to: the switcher's, else the person's default.
+  const [team, setTeam] = useState<string>();
+  const [visibility, setVisibility] = useState<Visibility | ''>('');
+  const mine = teams?.filter(t => !t.archived_at && (t.role || me?.admin)) || [];
+  const usable = (id?: string) => !!id && mine.some(t => t.id === id);
+  const chosen = team ?? (scope === 'workspace' ? '' : usable(scopeTeam(scope)) ? scopeTeam(scope)
+    : usable(me?.default_team_id) ? me!.default_team_id : '');
+  const teamObj = teams?.find(t => t.id === chosen);
+  useEffect(() => { // a team's default project
+    if (teamObj?.default_environment_id) setTarget(t => ({ ...t, kind: 'env', environment_id: teamObj.default_environment_id }));
+  }, [chosen, teamObj?.default_environment_id]);
   const f = useFiles();
   const empty = !prompt.trim() && !f.files.length;
   const problem = targetProblem(target);
@@ -194,6 +246,7 @@ function NewSession({ info }: { info?: Info }) {
       const t = toTarget(target);
       const r = await api<{ session: Session }>('POST', '/api/sessions', withFiles({
         prompt, model, effort, ...(t.environment_id ? { environment_id: t.environment_id } : { repos: t.repos }),
+        team_id: chosen, visibility,
       }, f.files));
       writePref(TARGET_PREF, target);
       go('/s/' + r.session.id);
@@ -215,9 +268,36 @@ function NewSession({ info }: { info?: Info }) {
             <AttachButton add={f.add} label="Attach files" />
           </div>
         </div>
+        {(mine.length > 0 || me?.people) && (
+          <div class="grid2">
+            {mine.length > 0 && (
+              <label>Team
+                <span class="with-mark">
+                  <TeamMark team={teamObj} />
+                  <select value={chosen} onChange={e => setTeam(e.currentTarget.value)}>
+                    <option value="">Workspace: no team</option>
+                    {mine.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </span>
+              </label>
+            )}
+            <label>Seen by
+              <select value={visibility} onChange={e => setVisibility(e.currentTarget.value as Visibility | '')}>
+                <option value="">{teamObj ? `The team's default (${teamObj.default_visibility === 'team' ? 'the team' : 'everyone'})` : 'Everyone'}</option>
+                <option value="workspace">Everyone</option>
+                {teamObj && <option value="team">The team</option>}
+                {me?.account && <option value="private">Only me</option>}
+              </select>
+            </label>
+          </div>
+        )}
         <div class="field">
           <span class="field-label">Workspace</span>
-          <TargetPicker v={target} set={setTarget} />
+          <TargetPicker v={target} set={t => {
+            setTarget(t);
+            const env = t.kind === 'env' && t.environment_id; // a team's project brings its team
+            if (env) get<Environment>(`/api/environments/${env}`).then(e => { if (e.team_id) setTeam(e.team_id); }, () => {});
+          }} team={chosen} />
         </div>
         <div class="grid2">
           <label>Model<ModelField value={model} set={setModel} def={info?.model ? `Default (${info.model})` : 'Default'} /></label>

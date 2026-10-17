@@ -2,11 +2,12 @@ import { useEffect, useState } from 'preact/hooks';
 import { api, get, type Automation, type Environment, type Prompt, type Session, type Spec } from './api';
 import { span } from './insights';
 import { TargetPicker, fromTarget, targetProblem, toTarget, type Pick } from './pickers';
-import { Chip, ConfirmButton, EffortSelect, ModelField, ago, fail, go, money, targetLabel, toast, useForm, useLoad, when } from './util';
+import { TeamLabel, useMe, useTeamIndex, useTeams } from './teams';
+import { Chip, ConfirmButton, EffortSelect, ModelField, ago, fail, go, hashParam, money, targetLabel, toast, useForm, useLoad, when } from './util';
 
 const MAX_FAILURES = 3;
-const toSpec = ({ name, environment_id, repos, prompt, model, effort, schedule, reuse, enabled }: Spec): Spec => ({
-  name, environment_id: environment_id || '', repos: repos.map(r => ({ repo: r.repo, base_branch: r.base_branch })),
+const toSpec = ({ name, environment_id, repos, prompt, model, effort, schedule, reuse, enabled, team_id }: Spec): Spec => ({
+  name, team_id: team_id || '', environment_id: environment_id || '', repos: repos.map(r => ({ repo: r.repo, base_branch: r.base_branch })),
   prompt, model, effort, schedule, reuse, enabled,
 });
 
@@ -16,6 +17,7 @@ const runNow = (a: Automation) =>
 export function Automations() {
   const [list, load] = useLoad<Automation[]>('/api/automations');
   const [envs] = useLoad<Environment[]>('/api/environments');
+  const team = useTeamIndex();
   const toggle = (a: Automation) => api('PUT', `/api/automations/${a.id}`, { ...toSpec(a), enabled: !a.enabled }).then(load, fail);
   return (
     <div class="page">
@@ -30,7 +32,8 @@ export function Automations() {
             <div class="row-main">
               <a class="row-title" href={`#/automations/${a.id}`}>{a.name}</a>
               <div class="row-meta">
-                {a.environment_id ? <span>Environment: {envs ? envs.find(e => e.id === a.environment_id)?.name ?? 'deleted' : '…'}</span>
+                {a.team_id && <TeamLabel team={team(a.team_id)} />}
+                {a.environment_id ? <span>Project: {envs ? envs.find(e => e.id === a.environment_id)?.name ?? 'deleted' : '…'}</span>
                   : <span class={a.repos.length ? 'mono' : ''}>{targetLabel(a)}</span>}
                 <span class="mono">{a.schedule || 'webhook / manual'}</span>
                 {a.enabled && a.next_run_at && <span>next {when(a.next_run_at)}</span>}
@@ -55,7 +58,10 @@ export function AutomationEdit({ id }: { id: string }) {
   const isNew = id === 'new';
   const { f, setF, bind, check } = useForm<Spec>({
     name: '', environment_id: '', repos: [], prompt: '', model: '', effort: '', schedule: '', reuse: false, enabled: true,
+    team_id: isNew ? hashParam('team') : '',
   });
+  const teams = useTeams();
+  const me = useMe();
   const [target, setTarget] = useState<Pick>(() => fromTarget());
   const [current, setCurrent] = useState<Automation>();
   const [runs, setRuns] = useState<Prompt[]>();
@@ -100,9 +106,19 @@ export function AutomationEdit({ id }: { id: string }) {
       </div>
       <form class="form" onSubmit={save}>
         <label>Name<input required {...bind('name')} /></label>
+        {isNew && !!teams?.length && (
+          <label>Team
+            <select value={f.team_id} onChange={e => setF(p => ({ ...p, team_id: e.currentTarget.value }))}>
+              <option value="">Workspace: no team</option>
+              {teams.filter(t => !t.archived_at && (t.role || me?.admin)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+            <span class="hint">It runs as you, in the team; its runs are the team's sessions. This can't change later.</span>
+          </label>
+        )}
+        {!isNew && current?.team_id && <p class="crumbs"><TeamLabel team={teams?.find(t => t.id === current.team_id)} /></p>}
         <div class="field">
           <span class="field-label">Workspace</span>
-          <TargetPicker v={target} set={setTarget} />
+          <TargetPicker v={target} set={setTarget} team={f.team_id || ''} />
         </div>
         <div class="grid2">
           <label>Model<ModelField value={f.model} set={model => setF(p => ({ ...p, model }))} def="Default" /></label>

@@ -3,6 +3,11 @@ export type RepoRef = { repo: string; base_branch: string; pr_url?: string };
 export type Session = {
   id: string; title: string; repos: RepoRef[]; environment_id?: string; branch: string; model: string; effort: string;
   parent_id?: string; depth: number; source: string; key?: string; automation_id?: string; author: Author;
+  /** The person it works for; their GitHub opens its pull requests. */
+  account_id?: string;
+  /** The team that owns it; none = the workspace. */
+  team_id?: string;
+  visibility: Visibility;
   status: 'idle' | 'running' | 'done' | 'failed' | 'stopped';
   sandbox: 'none' | 'starting' | 'ready' | 'stopped' | 'failed';
   cost_usd: number; archived: boolean; created_at: string; updated_at: string;
@@ -21,15 +26,16 @@ export type Ev = { session: string; seq?: number; type: string; prompt?: string;
 export type Target = { environment_id: string; repos: RepoRef[] };
 export type Spec = Target & {
   name: string; prompt: string; model: string; effort: string; schedule: string; reuse: boolean; enabled: boolean;
+  team_id?: string;
 };
-export type Automation = Spec & { id: string; failures: number; next_run_at?: string; created_at: string };
+export type Automation = Spec & { id: string; failures: number; next_run_at?: string; created_at: string; account_id?: string };
 export type Info = {
   version: string; author: Author; github: boolean; anthropic: boolean; model: string; effort: string; efforts: string[];
 };
 export type Overrides = { model?: string; effort?: string; instructions?: string; image?: string; cpus?: number; memory_mb?: number };
 export type Settings = Overrides & {
   idle_minutes?: number; turn_minutes?: number; draft_prs?: boolean; branch_prefix?: string;
-  author_name?: string; author_email?: string;
+  author_name?: string; author_email?: string; slack_members_only?: boolean;
 };
 export type SettingsInfo = {
   settings: Settings; efforts: string[];
@@ -41,7 +47,7 @@ export type Credentials = {
   github: { source: string; login?: string; error?: string };
 };
 export type Environment = {
-  id: string; repos: RepoRef[]; name: string; description: string; setup_script: string; start_script: string;
+  id: string; team_id?: string; repos: RepoRef[]; name: string; description: string; setup_script: string; start_script: string;
   inherit_secrets: boolean; overrides: Overrides; created_at: string; updated_at: string;
 };
 export type Secret = { scope: string; name: string; updated_at: string };
@@ -81,7 +87,7 @@ export type SlackStatus = {
   app: { app_id: string; source: 'environment' | 'settings'; settings_url: string } | null;
   installations: { team_id: string; team_name: string; installer: string; base_url: string; created_at: string }[];
   /** What a channel works on when a request names nothing. */
-  channels: { team_id: string; channel: string; name: string; environment_id?: string; repos: RepoRef[] }[];
+  channels: { team_id: string; channel: string; name: string; environment_id?: string; repos: RepoRef[]; owner_team_id?: string }[];
 };
 export type GitHubStatus = {
   /** The GitHub App the server acts as: preconfigured (environment) or registered here (settings). */
@@ -94,15 +100,64 @@ export type GitHubStatus = {
   error?: string;
 };
 
+/** Who may read a session: everyone, its team, or only whoever started it. */
+export type Visibility = 'workspace' | 'team' | 'private';
+export type Role = 'owner' | 'admin' | 'member';
 /** A person who signs in to the web UI. */
-export type Account = { id: string; email: string; name: string; owner: boolean };
+export type Account = { id: string; email: string; name: string; role: Role; owner: boolean; disabled?: boolean; created_at: string };
+/** Someone as others see them: emails only for admins. */
+export type Person = Account & { github?: string };
 /** Whether this server asks people to sign in, and who is signed in. */
 export type AuthState = {
   required: boolean;
   /** No account exists yet: the first one created owns the server. */
   setup: boolean;
   account: Account | null;
+  /** The viewer's teams: id → lead or member. */
+  teams: Record<string, 'lead' | 'member'>;
+  default_team_id: string;
+  /** The viewer manages the workspace. */
+  admin: boolean;
+  /** The server has accounts, so people and teams apply. */
+  people: boolean;
 };
+export type Team = {
+  id: string; slug: string; name: string; description: string; color: string;
+  join_policy: 'open' | 'invite'; default_visibility: 'team' | 'workspace'; default_environment_id: string;
+  archived_at?: string; members: number; created_at: string; updated_at: string;
+  /** The viewer's role in it, if any, and whether they may change it. */
+  role?: 'lead' | 'member'; manages: boolean;
+};
+export type TeamMember = Account & { team_role: 'lead' | 'member'; joined_at: string };
+export type Invite = { id: string; role: Role; email?: string; team_id?: string; team?: string; created_by: string; created_at: string; expires_at: string };
+export type APIToken = { id: string; name: string; hint: string; created_at: string; last_used_at?: string };
+export type AuditEvent = {
+  id: number; at: string; actor_id?: string; actor: string; team_id?: string; action: string; target?: string; detail: Record<string, unknown>;
+};
+
+// Who is signed in, for any component (set by the root once known).
+let me: AuthState | undefined;
+const meWaiters = new Set<(a: AuthState) => void>();
+export const setMe = (a: AuthState) => { me = a; meWaiters.forEach(f => f(a)); };
+export const getMe = () => me;
+export function onMe(fn: (a: AuthState) => void) {
+  meWaiters.add(fn);
+  return () => { meWaiters.delete(fn); };
+}
+
+// Every team, cached for the page's lifetime; reloadTeams refreshes them.
+let teamList: Promise<Team[]> | undefined;
+const teamWaiters = new Set<(t: Team[]) => void>();
+export const teams = () => (teamList ??= get<Team[]>('/api/teams').catch(() => []));
+export function reloadTeams() {
+  teamList = undefined;
+  teams().then(t => teamWaiters.forEach(f => f(t)));
+  get<AuthState>('/api/auth').then(setMe, () => {});
+}
+export function onTeams(fn: (t: Team[]) => void) {
+  teamWaiters.add(fn);
+  return () => { teamWaiters.delete(fn); };
+}
 
 const authWaiters = new Set<() => void>();
 export function onAuthRequired(fn: () => void) {
