@@ -106,6 +106,7 @@ type projectReq struct {
 	Stack       string `json:"stack"`
 	Variables   string `json:"variables"` // a .env file: the environment's secrets
 	Prompt      string `json:"prompt"`    // starts a first session, as do attached files
+	TeamID      string `json:"team_id"`   // the team the project and its sessions belong to; "" = the workspace
 	Model       string `json:"model"`
 	Effort      string `json:"effort"`
 }
@@ -154,8 +155,13 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		replyErr(w, err)
 		return
 	}
-	env := store.Environment{ID: store.NewID(), Description: in.Description, SetupScript: st.Setup, InheritSecrets: true}
-	env.Name, err = s.environmentName(r, in.Name, in.Owner+"/"+in.Name)
+	team, ok := s.target(w, r, in.TeamID, "")
+	if !ok {
+		return
+	}
+	env := store.Environment{ID: store.NewID(), TeamID: team, Description: in.Description, SetupScript: st.Setup,
+		InheritSecrets: true}
+	env.Name, err = s.environmentName(r, team, in.Name, in.Owner+"/"+in.Name)
 	if err != nil {
 		replyErr(w, err)
 		return
@@ -193,7 +199,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"repo": repo, "environment": env}
 	if strings.TrimSpace(in.Prompt) != "" || len(files) > 0 {
 		sess, p, err := s.M.Submit(ctx, session.Request{Prompt: in.Prompt, Attachments: files, EnvironmentID: env.ID,
-			Model: in.Model, Effort: in.Effort, Author: s.author(r), Source: "web"})
+			Model: in.Model, Effort: in.Effort, Author: s.author(r), AccountID: accountOf(r), TeamID: team, Source: "web"})
 		if err != nil {
 			partly("couldn't start the session", err)
 			return
@@ -203,8 +209,9 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	reply(w, http.StatusCreated, out)
 }
 
-// environmentName is the first of names that no environment has.
-func (s *Server) environmentName(r *http.Request, names ...string) (string, error) {
+// environmentName is the first of names that none of a team's projects
+// (or, for "", the workspace's) has.
+func (s *Server) environmentName(r *http.Request, team string, names ...string) (string, error) {
 	list, err := s.M.Store().Environments(r.Context())
 	if err != nil {
 		return "", err
@@ -212,11 +219,11 @@ func (s *Server) environmentName(r *http.Request, names ...string) (string, erro
 next:
 	for _, name := range names {
 		for _, e := range list {
-			if strings.EqualFold(e.Name, name) {
+			if e.TeamID == team && strings.EqualFold(e.Name, name) {
 				continue next
 			}
 		}
 		return name, nil
 	}
-	return "", fmt.Errorf("%w: an environment named %s", store.ErrConflict, names[0])
+	return "", fmt.Errorf("%w: a project named %s", store.ErrConflict, names[0])
 }
