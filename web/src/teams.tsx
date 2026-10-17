@@ -32,9 +32,12 @@ export function TeamMark({ team, size = 18 }: { team?: Pick<Team, 'id' | 'name' 
   );
 }
 
+/** Where a team's pages live: in the settings, beside projects. */
+export const teamHref = (slug?: string, tab?: string) => '#/settings/teams' + (slug ? '/' + slug + (tab ? '/' + tab : '') : '');
+
 /** A team's mark and name, for meta lines. */
 export const TeamLabel = ({ team }: { team?: Team }) =>
-  team ? <a class="team-label" href={`#/teams/${team.slug}`}><TeamMark team={team} size={14} /> {team.name}</a>
+  team ? <a class="team-label" href={teamHref(team.slug)}><TeamMark team={team} size={14} /> {team.name}</a>
     : <span class="team-label"><TeamMark size={14} /> Workspace</span>;
 
 /** The sidebar's team switcher: which team's work to show and start. */
@@ -75,9 +78,9 @@ export function TeamSwitcher() {
           {others.length > 0 && <div class="menu-label">Other teams</div>}
           {others.map(t => <Item key={t.id} on={s === t.id} pick={() => pick(t.id)}><TeamMark team={t} /> {t.name}</Item>)}
           <div class="menu-sep" />
-          <a class="menu-item" role="menuitem" href="#/teams" onClick={() => setOpen(false)}>Browse teams</a>
-          {current && <a class="menu-item" role="menuitem" href={`#/teams/${current.slug}`} onClick={() => setOpen(false)}>About {current.name}</a>}
-          {me?.admin && <a class="menu-item" role="menuitem" href="#/teams/new" onClick={() => setOpen(false)}>New team</a>}
+          <a class="menu-item" role="menuitem" href={teamHref()} onClick={() => setOpen(false)}>Browse teams</a>
+          {current && <a class="menu-item" role="menuitem" href={teamHref(current.slug)} onClick={() => setOpen(false)}>About {current.name}</a>}
+          {me?.admin && <a class="menu-item" role="menuitem" href={teamHref('new')} onClick={() => setOpen(false)}>New team</a>}
         </div>
       )}
     </div>
@@ -95,8 +98,8 @@ export function TeamsIndex() {
   const me = useMe();
   const join = (t: Team) => api('POST', `/api/teams/${t.id}/join`).then(() => { reloadTeams(); toast(`Joined ${t.name}`); }, fail);
   return (
-    <div class="page narrow">
-      <Head title="Teams" actions={me?.admin && <a class="btn primary" href="#/teams/new">New team</a>}>
+    <>
+      <Head title="Teams" actions={me?.admin && <a class="btn primary" href={teamHref('new')}>New team</a>}>
         A team groups people and owns their work: sessions, projects, automations, secrets and Slack channels. Its sessions
         are seen by its members unless made visible to everyone.
       </Head>
@@ -105,7 +108,7 @@ export function TeamsIndex() {
         {list?.map(t => (
           <div key={t.id} class="row">
             <TeamMark team={t} size={28} />
-            <a class="row-main" href={`#/teams/${t.slug}`}>
+            <a class="row-main" href={teamHref(t.slug)}>
               <span class="row-title">{t.name} {t.archived_at && <span class="chip">archived</span>}</span>
               {t.description && <span class="row-desc">{t.description}</span>}
               <span class="row-meta">
@@ -118,7 +121,7 @@ export function TeamsIndex() {
           </div>
         ))}
       </div>
-    </div>
+    </>
   );
 }
 
@@ -142,18 +145,18 @@ export function NewTeam() {
       reloadTeams();
       setScope(t.id);
       toast(`Created ${t.name}. Add its people next.`);
-      go(`/teams/${t.slug}/members`);
+      go(teamHref(t.slug, 'members').slice(1));
     } catch (e) { setErr(errText(e)); setBusy(false); }
   };
   return (
-    <div class="page narrow">
-      <a class="back" href="#/teams">‹ Teams</a>
+    <>
+      <a class="back" href={teamHref()}>‹ Teams</a>
       <Head title="New team">You'll lead it; add its people next.</Head>
       <form class="form" onSubmit={save}>
         <TeamFields f={f} set={v => { setF({ ...f, ...v }); setErr(''); }} />
         <SaveBar dirty={!!f.name.trim()} busy={busy} err={err} label="Create team" />
       </form>
-    </div>
+    </>
   );
 }
 
@@ -164,7 +167,7 @@ function TeamFields({ f, set, projects }: { f: TF; set: (v: Partial<TF>) => void
         <label>Name<input required maxLength={60} placeholder="e.g. Web platform" value={f.name} onInput={e => set({ name: e.currentTarget.value })} /></label>
         <label>Short name<input class="mono" maxLength={40} placeholder="from the name" spellcheck={false} value={f.slug}
           onInput={e => set({ slug: e.currentTarget.value.toLowerCase() })} />
-          <span class="hint">For links: <code>#/teams/{f.slug || 'web-platform'}</code></span></label>
+          <span class="hint">For links: <code>{teamHref(f.slug || 'web-platform')}</code></span></label>
       </div>
       <label>Description<input maxLength={300} placeholder="Optional: what the team works on" value={f.description}
         onInput={e => set({ description: e.currentTarget.value })} /></label>
@@ -213,12 +216,13 @@ const TABS: [string, string][] = [
 export function TeamPage({ slug, tab = 'overview' }: { slug: string; tab?: string }) {
   const [data, reload] = useLoad<{ team: Team; members: TeamMember[] }>(`/api/teams/${slug}`);
   const me = useMe();
-  if (!data) return <div class="page"><p class="empty">Loading…</p></div>;
+  if (!data) return <p class="empty">Loading…</p>;
   const { team: t, members } = data;
   const changed = () => { reload(); reloadTeams(); };
   const tabs = TABS.filter(([k]) => k === 'settings' ? t.manages : k === 'channels' ? t.manages || !!t.role : true);
   return (
-    <div class="page">
+    <>
+      <a class="back" href={teamHref()}>‹ Teams</a>
       <div class="team-head">
         <TeamMark team={t} size={36} />
         <div class="team-title">
@@ -234,7 +238,7 @@ export function TeamPage({ slug, tab = 'overview' }: { slug: string; tab?: strin
         </div>
       </div>
       <nav class="tabs">
-        {tabs.map(([k, label]) => <a key={k} class={'tab' + (k === tab ? ' on' : '')} href={`#/teams/${t.slug}/${k}`}>{label}</a>)}
+        {tabs.map(([k, label]) => <a key={k} class={'tab' + (k === tab ? ' on' : '')} href={teamHref(t.slug, k)}>{label}</a>)}
       </nav>
       <div class="tab-body">
         {tab === 'overview' && <Overview t={t} members={members} />}
@@ -245,7 +249,7 @@ export function TeamPage({ slug, tab = 'overview' }: { slug: string; tab?: strin
         {tab === 'channels' && <Channels t={t} />}
         {tab === 'settings' && t.manages && <TeamSettings t={t} changed={changed} />}
       </div>
-    </div>
+    </>
   );
 }
 
@@ -425,7 +429,7 @@ function TeamSettings({ t, changed }: { t: Team; changed: () => void }) {
     try {
       const saved = await api<Team>('PUT', `/api/teams/${t.id}`, f);
       toast('Team saved');
-      if (saved.slug !== t.slug) go(`/teams/${saved.slug}/settings`);
+      if (saved.slug !== t.slug) go(teamHref(saved.slug, 'settings').slice(1));
       changed();
     } catch (e) { setErr(errText(e)); }
     setBusy(false);
