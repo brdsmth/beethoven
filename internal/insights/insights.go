@@ -108,13 +108,21 @@ func (f *fact) people() bool { return f.s.ParentID == "" && f.s.AutomationID == 
 
 // Compute measures the sessions created in the last days calendar days in
 // loc, today included.
-func Compute(ctx context.Context, db *store.Store, days int, now time.Time, loc *time.Location) (Report, error) {
+func Compute(ctx context.Context, db *store.Store, days int, now time.Time, loc *time.Location, keep func(store.Session) bool) (Report, error) {
 	local := now.In(loc)
 	today := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
 	from, to := today.AddDate(0, 0, 1-days), today.AddDate(0, 0, 1)
-	sessions, err := db.SessionsCreated(ctx, from, to)
+	all, err := db.SessionsCreated(ctx, from, to)
 	if err != nil {
 		return Report{}, err
+	}
+	// Only the sessions keep accepts count: what the viewer may see. A
+	// prompt or pull request counts with its session.
+	sessions := all[:0:0]
+	for _, s := range all {
+		if keep == nil || keep(s) {
+			sessions = append(sessions, s)
+		}
 	}
 	prompts, err := db.PromptsOfSessionsCreated(ctx, from, to)
 	if err != nil {

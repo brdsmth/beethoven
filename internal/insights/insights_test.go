@@ -84,7 +84,7 @@ func TestQualityMeasures(t *testing.T) {
 		}
 	}
 
-	r, err := insights.Compute(ctx, env.DB, 7, now, time.UTC)
+	r, err := insights.Compute(ctx, env.DB, 7, now, time.UTC, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestQualityMeasures(t *testing.T) {
 
 func TestNothingYet(t *testing.T) {
 	env := fake.NewEnv(t)
-	r, err := insights.Compute(ctx, env.DB, 30, time.Now(), time.UTC)
+	r, err := insights.Compute(ctx, env.DB, 30, time.Now(), time.UTC, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

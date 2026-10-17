@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -9,12 +10,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/brdsmth/beethoven/internal/access"
 	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/store"
 )
 
-// author is the commit author for prompts sent through the API.
+// author is the commit author for prompts sent through the API: a
+// person's GitHub identity, or their name and email; for the server, the
+// settings' author or its owner's.
 func (s *Server) author(r *http.Request) store.Author {
+	if who := actor(r); who.IsPerson() {
+		if a := s.GitHub.Author(r.Context()); a.Name != "" && a.Email != "" {
+			return a
+		}
+		if acct, err := s.M.Store().Account(r.Context(), who.AccountID); err == nil {
+			return store.Author{Name: firstOf(acct.Name, acct.Email), Email: acct.Email}
+		}
+	}
 	eff, err := s.M.Effective(r.Context(), "")
 	if err != nil {
 		return store.Author{}
@@ -49,6 +61,10 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	var in store.Settings
 	if !decode(w, r, &in) {
+		return
+	}
+	if !actor(r).Admin() {
+		forbid(w, "change the settings: ask an admin")
 		return
 	}
 	if (in.AuthorName == "") != (in.AuthorEmail == "") {
@@ -131,6 +147,10 @@ func (s *Server) putCredential(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
+	if !actor(r).Admin() {
+		forbid(w, "change credentials: ask an admin")
+		return
+	}
 	if !slices.Contains(credentialNames, in.Name) {
 		fail(w, http.StatusBadRequest, "credential must be one of "+strings.Join(credentialNames, ", "))
 		return
@@ -145,6 +165,7 @@ func (s *Server) putCredential(w http.ResponseWriter, r *http.Request) {
 // ------------------------------------------------------------- environments
 
 type environmentReq struct {
+	TeamID         string          `json:"team_id"` // on creation only: a team's project, or the workspace's
 	Name           string          `json:"name"`
 	Description    string          `json:"description"`
 	Repos          []store.RepoRef `json:"repos"`
@@ -161,22 +182,47 @@ func (in environmentReq) apply(e *store.Environment) error {
 	return session.ValidateEnvironment(e)
 }
 
+// listEnvironments lists the projects the viewer may use.
 func (s *Server) listEnvironments(w http.ResponseWriter, r *http.Request) {
 	list, err := s.M.Store().Environments(r.Context())
 	if err != nil {
 		replyErr(w, err)
 		return
 	}
-	reply(w, http.StatusOK, orEmpty(list))
+	who := actor(r)
+	out := []store.Environment{}
+	for _, e := range list {
+		if access.UseEnvironment(who, e) {
+			out = append(out, e)
+		}
+	}
+	reply(w, http.StatusOK, out)
+}
+
+// environment loads the project a request names, if the viewer may use it,
+// and checks they may manage it when manage is set; otherwise it replies.
+func (s *Server) environment(w http.ResponseWriter, r *http.Request, id string, manage bool) (store.Environment, bool) {
+	e, err := s.M.Store().Environment(r.Context(), id)
+	if err != nil {
+		replyErr(w, err)
+		return e, false
+	}
+	who := actor(r)
+	if !access.UseEnvironment(who, e) {
+		hidden(w)
+		return e, false
+	}
+	if manage && !access.ManageEnvironment(who, e) {
+		forbid(w, "change this project")
+		return e, false
+	}
+	return e, true
 }
 
 func (s *Server) getEnvironment(w http.ResponseWriter, r *http.Request) {
-	e, err := s.M.Store().Environment(r.Context(), r.PathValue("id"))
-	if err != nil {
-		replyErr(w, err)
-		return
+	if e, ok := s.environment(w, r, r.PathValue("id"), false); ok {
+		reply(w, http.StatusOK, e)
 	}
-	reply(w, http.StatusOK, e)
 }
 
 func (s *Server) createEnvironment(w http.ResponseWriter, r *http.Request) {
@@ -184,7 +230,11 @@ func (s *Server) createEnvironment(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	e := store.Environment{ID: store.NewID()}
+	team, ok := s.target(w, r, in.TeamID, "")
+	if !ok {
+		return
+	}
+	e := store.Environment{ID: store.NewID(), TeamID: team}
 	if err := in.apply(&e); err != nil {
 		replyErr(w, err)
 		return
@@ -201,9 +251,12 @@ func (s *Server) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	e, err := s.M.Store().Environment(r.Context(), r.PathValue("id"))
-	if err != nil {
-		replyErr(w, err)
+	e, ok := s.environment(w, r, r.PathValue("id"), true)
+	if !ok {
+		return
+	}
+	if in.TeamID != "" && in.TeamID != e.TeamID {
+		fail(w, http.StatusBadRequest, "a project's team can't change")
 		return
 	}
 	if err := in.apply(&e); err != nil {
@@ -218,6 +271,9 @@ func (s *Server) updateEnvironment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteEnvironment(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.environment(w, r, r.PathValue("id"), true); !ok {
+		return
+	}
 	if err := s.M.Store().DeleteEnvironment(r.Context(), r.PathValue("id")); err != nil {
 		replyErr(w, err)
 		return
@@ -227,7 +283,7 @@ func (s *Server) deleteEnvironment(w http.ResponseWriter, r *http.Request) {
 
 func named(err error, name string) error {
 	if err == store.ErrConflict {
-		return fmt.Errorf("%w: an environment named %q", store.ErrConflict, name)
+		return fmt.Errorf("%w: a project named %q", store.ErrConflict, name)
 	}
 	return err
 }
@@ -236,21 +292,47 @@ func named(err error, name string) error {
 
 var repoScope = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 
-// checkScope accepts "" (global), owner/name, or env:<existing id>.
-func (s *Server) checkScope(ctx context.Context, scope string) error {
+// checkScope accepts "" (global), owner/name, env:<existing id> or
+// team:<existing id>, and checks the viewer may read it, or write it when
+// write is set.
+func (s *Server) checkScope(r *http.Request, scope string, write bool) error {
+	ctx, who := r.Context(), actor(r)
+	var env *store.Environment
 	switch {
 	case scope == "" || repoScope.MatchString(scope):
-		return nil
 	case strings.HasPrefix(scope, "env:"):
-		if _, err := s.M.Store().Environment(ctx, strings.TrimPrefix(scope, "env:")); err != nil {
-			return fmt.Errorf("%w: no environment %q", store.ErrInvalid, strings.TrimPrefix(scope, "env:"))
+		e, err := s.M.Store().Environment(ctx, strings.TrimPrefix(scope, "env:"))
+		if err != nil || !access.UseEnvironment(who, e) {
+			return fmt.Errorf("%w: no project %q", store.ErrInvalid, strings.TrimPrefix(scope, "env:"))
 		}
-		return nil
+		env = &e
+	case store.IsTeamScope(scope):
+		if _, err := s.M.Store().Team(ctx, store.TeamOfScope(scope)); err != nil {
+			return fmt.Errorf("%w: no team %q", store.ErrInvalid, store.TeamOfScope(scope))
+		}
+	default:
+		return fmt.Errorf("%w: scope must be empty (global), owner/name, env:<id> or team:<id>", store.ErrInvalid)
 	}
-	return fmt.Errorf("%w: scope must be empty (global), owner/name, or env:<id>", store.ErrInvalid)
+	if !access.ReadScope(who, scope, env) || (write && !access.WriteScope(who, scope, env)) {
+		return errForbidden
+	}
+	return nil
 }
 
-// listSecrets lists secret names: all, or with ?scope= only that scope.
+// errForbidden is a request the viewer may not make.
+var errForbidden = errors.New("you can't change that: ask an admin or the team's lead")
+
+// scopeErr replies to a failed checkScope.
+func scopeErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, errForbidden) {
+		fail(w, http.StatusForbidden, err.Error())
+		return
+	}
+	replyErr(w, err)
+}
+
+// listSecrets lists secret names the viewer may see: all, or with ?scope=
+// only that scope.
 func (s *Server) listSecrets(w http.ResponseWriter, r *http.Request) {
 	var scope *string
 	if r.URL.Query().Has("scope") {
@@ -259,13 +341,23 @@ func (s *Server) listSecrets(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusBadRequest, "use /api/credentials")
 			return
 		}
+		if err := s.checkScope(r, *scope, false); err != nil {
+			scopeErr(w, err)
+			return
+		}
 	}
 	list, err := s.M.Store().Secrets(r.Context(), scope)
 	if err != nil {
 		replyErr(w, err)
 		return
 	}
-	reply(w, http.StatusOK, orEmpty(list))
+	out := []store.SecretInfo{}
+	for _, x := range list {
+		if scope != nil || s.checkScope(r, x.Scope, false) == nil {
+			out = append(out, x)
+		}
+	}
+	reply(w, http.StatusOK, out)
 }
 
 func (s *Server) putSecret(w http.ResponseWriter, r *http.Request) {
@@ -277,14 +369,15 @@ func (s *Server) putSecret(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if err := s.checkScope(r.Context(), in.Scope); err != nil {
-		replyErr(w, err)
+	if err := s.checkScope(r, in.Scope, true); err != nil {
+		scopeErr(w, err)
 		return
 	}
 	if err := s.M.Store().SetSecret(r.Context(), in.Scope, strings.TrimSpace(in.Name), in.Value); err != nil {
 		replyErr(w, err)
 		return
 	}
+	s.auditSecret(r, in.Scope, "secret.set", strings.TrimSpace(in.Name))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -297,8 +390,8 @@ func (s *Server) importSecrets(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if err := s.checkScope(r.Context(), in.Scope); err != nil {
-		replyErr(w, err)
+	if err := s.checkScope(r, in.Scope, true); err != nil {
+		scopeErr(w, err)
 		return
 	}
 	vars, skipped := ParseDotenv(in.Text)
@@ -309,6 +402,7 @@ func (s *Server) importSecrets(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		imported = append(imported, v.Name)
+		s.auditSecret(r, in.Scope, "secret.set", v.Name)
 	}
 	reply(w, http.StatusOK, map[string]any{"imported": imported, "skipped": orEmpty(skipped)})
 }
@@ -317,14 +411,17 @@ func (s *Server) importSecrets(w http.ResponseWriter, r *http.Request) {
 // which scope: ?environment=<id>, or ?repos=owner/a,owner/b (primary first).
 func (s *Server) effectiveSecrets(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	t := store.SecretTarget{InheritGlobal: true}
+	t := store.SecretTarget{InheritGlobal: true, TeamID: q.Get("team")}
+	if t.TeamID != "" && !access.UseTeam(actor(r), t.TeamID) {
+		hidden(w)
+		return
+	}
 	if id := q.Get("environment"); id != "" {
-		e, err := s.M.Store().Environment(r.Context(), id)
-		if err != nil {
-			replyErr(w, err)
+		e, ok := s.environment(w, r, id, false)
+		if !ok {
 			return
 		}
-		t.EnvironmentID, t.InheritGlobal = e.ID, e.InheritSecrets
+		t.EnvironmentID, t.InheritGlobal, t.TeamID = e.ID, e.InheritSecrets, firstOf(e.TeamID, t.TeamID)
 	} else if v := q.Get("repos"); v != "" {
 		t.Repos = strings.Split(v, ",")
 	}
@@ -342,11 +439,26 @@ func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "use /api/credentials")
 		return
 	}
+	if err := s.checkScope(r, q.Get("scope"), true); err != nil {
+		scopeErr(w, err)
+		return
+	}
 	if err := s.M.Store().DeleteSecret(r.Context(), q.Get("scope"), q.Get("name")); err != nil {
 		replyErr(w, err)
 		return
 	}
+	s.auditSecret(r, q.Get("scope"), "secret.deleted", q.Get("name"))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// auditSecret records a change to a secret: its scope and name, never its
+// value.
+func (s *Server) auditSecret(r *http.Request, scope, action, name string) {
+	team := ""
+	if store.IsTeamScope(scope) {
+		team = store.TeamOfScope(scope)
+	}
+	s.audit(r, team, action, name, map[string]string{"scope": scope})
 }
 
 // -------------------------------------------------------------- MCP servers
@@ -361,8 +473,8 @@ type mcpReq struct {
 	Enabled *bool              `json:"enabled"`
 }
 
-func (s *Server) applyMCP(ctx context.Context, in mcpReq, m *store.MCPServer) error {
-	if err := s.checkScope(ctx, in.Scope); err != nil {
+func (s *Server) applyMCP(r *http.Request, in mcpReq, m *store.MCPServer) error {
+	if err := s.checkScope(r, in.Scope, true); err != nil {
 		return err
 	}
 	m.Name, m.Scope, m.Type, m.URL, m.Command = strings.TrimSpace(in.Name), in.Scope, in.Type, strings.TrimSpace(in.URL), in.Command
@@ -390,13 +502,20 @@ func (s *Server) applyMCP(ctx context.Context, in mcpReq, m *store.MCPServer) er
 	return session.ValidateMCPServer(m)
 }
 
+// listMCP lists the MCP servers in scopes the viewer may see.
 func (s *Server) listMCP(w http.ResponseWriter, r *http.Request) {
 	list, err := s.M.Store().MCPServers(r.Context())
 	if err != nil {
 		replyErr(w, err)
 		return
 	}
-	reply(w, http.StatusOK, orEmpty(list))
+	out := []store.MCPServer{}
+	for _, m := range list {
+		if s.checkScope(r, m.Scope, false) == nil {
+			out = append(out, m)
+		}
+	}
+	reply(w, http.StatusOK, out)
 }
 
 func (s *Server) createMCP(w http.ResponseWriter, r *http.Request) {
@@ -405,8 +524,8 @@ func (s *Server) createMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m := store.MCPServer{ID: store.NewID(), Enabled: true}
-	if err := s.applyMCP(r.Context(), in, &m); err != nil {
-		replyErr(w, err)
+	if err := s.applyMCP(r, in, &m); err != nil {
+		scopeErr(w, err)
 		return
 	}
 	if err := s.M.Store().CreateMCPServer(r.Context(), &m); err != nil {
@@ -426,8 +545,12 @@ func (s *Server) updateMCP(w http.ResponseWriter, r *http.Request) {
 		replyErr(w, err)
 		return
 	}
-	if err := s.applyMCP(r.Context(), in, &m); err != nil {
-		replyErr(w, err)
+	if err := s.checkScope(r, m.Scope, true); err != nil {
+		scopeErr(w, err)
+		return
+	}
+	if err := s.applyMCP(r, in, &m); err != nil {
+		scopeErr(w, err)
 		return
 	}
 	if err := s.M.Store().SaveMCPServer(r.Context(), &m); err != nil {
@@ -438,6 +561,15 @@ func (s *Server) updateMCP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteMCP(w http.ResponseWriter, r *http.Request) {
+	m, err := s.M.Store().MCPServer(r.Context(), r.PathValue("id"))
+	if err != nil {
+		replyErr(w, err)
+		return
+	}
+	if err := s.checkScope(r, m.Scope, true); err != nil {
+		scopeErr(w, err)
+		return
+	}
 	if err := s.M.Store().DeleteMCPServer(r.Context(), r.PathValue("id")); err != nil {
 		replyErr(w, err)
 		return

@@ -83,6 +83,9 @@ var shownInline = map[string]bool{"image/png": true, "image/jpeg": true, "image/
 
 // attachment serves an attached file.
 func (s *Server) attachment(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.session(w, r, nil, ""); !ok {
+		return
+	}
 	a, err := s.M.Store().Attachment(r.Context(), r.PathValue("id"), r.PathValue("aid"))
 	if err != nil {
 		replyErr(w, err)

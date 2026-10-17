@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/brdsmth/beethoven/internal/access"
 	"github.com/brdsmth/beethoven/internal/slack"
 	"github.com/brdsmth/beethoven/internal/store"
 )
@@ -49,6 +50,10 @@ func (s *Server) slackStatus(w http.ResponseWriter, r *http.Request) {
 // createSlackApp creates the server's own Slack app with a person's app
 // configuration token, then continues to installing it.
 func (s *Server) createSlackApp(w http.ResponseWriter, r *http.Request) {
+	if !actor(r).Admin() {
+		forbid(w, "set up Slack: ask an admin")
+		return
+	}
 	var in struct {
 		ConfigToken string `json:"config_token"`
 		BaseURL     string `json:"base_url"`
@@ -79,6 +84,10 @@ func (s *Server) createSlackApp(w http.ResponseWriter, r *http.Request) {
 
 // installSlack returns where to send the browser to add the app to a workspace.
 func (s *Server) installSlack(w http.ResponseWriter, r *http.Request) {
+	if !actor(r).Admin() {
+		forbid(w, "set up Slack: ask an admin")
+		return
+	}
 	var in struct {
 		BaseURL string `json:"base_url"`
 	}
@@ -125,6 +134,10 @@ func (s *Server) slackInstalled(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) uninstallSlack(w http.ResponseWriter, r *http.Request) {
+	if !actor(r).Admin() {
+		forbid(w, "set up Slack: ask an admin")
+		return
+	}
 	if err := s.Slack.Uninstall(r.Context(), r.PathValue("team")); err != nil {
 		replyErr(w, err)
 		return
@@ -133,6 +146,10 @@ func (s *Server) uninstallSlack(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) forgetSlackApp(w http.ResponseWriter, r *http.Request) {
+	if !actor(r).Admin() {
+		forbid(w, "set up Slack: ask an admin")
+		return
+	}
 	if err := s.Slack.ForgetApp(r.Context()); err != nil {
 		replyErr(w, err)
 		return
@@ -140,10 +157,76 @@ func (s *Server) forgetSlackApp(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// slackChannel loads a channel's defaults and checks the viewer may change
+// them: admins, and the leads of the team it belongs to.
+func (s *Server) slackChannel(w http.ResponseWriter, r *http.Request) (store.SlackChannel, bool) {
+	c, err := s.M.Store().SlackChannel(r.Context(), r.PathValue("team"), r.PathValue("channel"))
+	if err != nil {
+		replyErr(w, err)
+		return c, false
+	}
+	who := actor(r)
+	if !who.Admin() && (c.OwnerTeamID == "" || !access.ManageTeam(who, c.OwnerTeamID)) {
+		forbid(w, "change this channel: ask an admin or its team's lead")
+		return c, false
+	}
+	return c, true
+}
+
 func (s *Server) deleteSlackChannel(w http.ResponseWriter, r *http.Request) {
-	if err := s.M.Store().DeleteSlackChannel(r.Context(), r.PathValue("team"), r.PathValue("channel")); err != nil {
+	c, ok := s.slackChannel(w, r)
+	if !ok {
+		return
+	}
+	if err := s.M.Store().DeleteSlackChannel(r.Context(), c.TeamID, c.Channel); err != nil {
 		replyErr(w, err)
 		return
 	}
+	s.audit(r, c.OwnerTeamID, "slack.channel_cleared", c.Channel, map[string]string{"name": c.Name})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// bindSlackChannel sets the team a channel's requests belong to ("" for the
+// workspace). New sessions there belong to that team, and its members alone
+// may start them.
+func (s *Server) bindSlackChannel(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		OwnerTeamID string `json:"owner_team_id"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	c, ok := s.slackChannel(w, r)
+	if !ok {
+		return
+	}
+	if in.OwnerTeamID != "" {
+		t, err := s.M.Store().Team(r.Context(), in.OwnerTeamID)
+		switch {
+		case err != nil:
+			fail(w, http.StatusBadRequest, "no such team")
+			return
+		case !access.ManageTeam(actor(r), t.ID):
+			forbid(w, "give a channel to "+t.Name+": ask its lead")
+			return
+		case t.ArchivedAt != nil:
+			fail(w, http.StatusConflict, t.Name+" is archived")
+			return
+		}
+	}
+	if c.EnvironmentID != "" {
+		if e, err := s.M.Store().Environment(r.Context(), c.EnvironmentID); err == nil && e.TeamID != "" && e.TeamID != in.OwnerTeamID {
+			fail(w, http.StatusBadRequest, "the channel's project belongs to another team: change the project first")
+			return
+		}
+	}
+	before := c.OwnerTeamID
+	c.OwnerTeamID = in.OwnerTeamID
+	if err := s.M.Store().SaveSlackChannel(r.Context(), &c); err != nil {
+		replyErr(w, err)
+		return
+	}
+	s.audit(r, firstOf(c.OwnerTeamID, before), "slack.channel_bound", c.Channel,
+		map[string]string{"name": c.Name, "from": before, "to": c.OwnerTeamID})
+	reply(w, http.StatusOK, c)
 }
