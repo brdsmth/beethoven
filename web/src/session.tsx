@@ -1,13 +1,14 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'preact/hooks';
 import {
-  api, get, onGlobal, subscribe, withFiles, type Environment, type Ev, type Prompt, type PullRequest, type Session,
+  api, get, onGlobal, subscribe, withFiles, type AddedCapability, type Environment, type Ev, type Prompt, type PullRequest, type Session,
 } from './api';
 import { AttachButton, Attachments, PendingFiles, useFiles } from './attach';
+import { useCapabilities } from './capabilities';
 import { span } from './insights';
 import { Link, Markdown, safeHref } from './markdown';
 import { TeamLabel, VisibilityBadge, useTeamIndex } from './teams';
-import { Chip, Dot, EffortSelect, Spinner, ago, dur, fail, modEnter, money, useTick } from './util';
+import { Chip, Dot, EffortSelect, Spinner, ago, dur, fail, modEnter, money, toast, useTick } from './util';
 
 type End = { id: string; status: string; error?: string; cost_usd: number; duration_ms?: number };
 type Group = { id: string; items: Ev[] };
@@ -23,9 +24,12 @@ type Model = {
   ends: Record<string, End>;
   deltas: Record<string, string>; // live text per prompt, until its full message lands
   logs: Record<string, string[]>; // live sandbox boot output per prompt
+  caps: { enabled: string[]; suggested: string[] }; // the sandbox's capabilities, and those its repositories suggest
   seq: number;
 };
-const newModel = (): Model => ({ prompts: {}, blocks: [], groups: {}, results: {}, ends: {}, deltas: {}, logs: {}, seq: 0 });
+const newModel = (): Model => ({
+  prompts: {}, blocks: [], groups: {}, results: {}, ends: {}, deltas: {}, logs: {}, caps: { enabled: [], suggested: [] }, seq: 0,
+});
 
 function group(m: Model, id: string) {
   if (!m.groups[id]) m.blocks.push((m.groups[id] = { id, items: [] }));
@@ -39,7 +43,11 @@ function apply(m: Model, e: Ev) {
   }
   const p = e.prompt || '', d = e.data || {};
   const patch = (id: string, v: Partial<Prompt>) => { if (m.prompts[id]) m.prompts[id] = { ...m.prompts[id], ...v }; };
+  if (e.type === 'capability') { // added during the session; also shown on the timeline
+    m.caps = { enabled: [...new Set([...m.caps.enabled, d.id])], suggested: m.caps.suggested.filter(x => x !== d.id) };
+  }
   switch (e.type) {
+    case 'capabilities': m.caps = { enabled: d.enabled || [], suggested: d.suggested || [] }; return;
     case 'session': m.session = d; return;
     case 'delta': m.deltas[p] = (m.deltas[p] || '') + d.text; return;
     case 'log': (m.logs[p] ||= []).push(d.text); m.logs[p].splice(0, m.logs[p].length - 50); return;
@@ -100,7 +108,7 @@ export function SessionView({ id }: { id: string }) {
   if (!s) return <div class="page"><p class="empty">Loading…</p></div>;
   return (
     <div class="session">
-      <Header s={s} kids={kids} stats={<Stats m={m} prs={prs} />} changed={x => { m.session = x; rerender(0); }} />
+      <Header s={s} kids={kids} stats={<Stats m={m} prs={prs} />} caps={m.caps} changed={x => { m.session = x; rerender(0); }} />
       <div class="timeline" ref={scroller} onScroll={() => {
         const el = scroller.current!;
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -142,7 +150,9 @@ function Stats({ m, prs }: { m: Model; prs: PullRequest[] }) {
   );
 }
 
-function Header({ s, kids, stats, changed }: { s: Session; kids: Session[]; stats: ComponentChildren; changed: (s: Session) => void }) {
+function Header({ s, kids, stats, caps, changed }: {
+  s: Session; kids: Session[]; stats: ComponentChildren; caps: Model['caps']; changed: (s: Session) => void;
+}) {
   const team = useTeamIndex()(s.team_id);
   const [pr, setPr] = useState<{ url: string; warning: string }>();
   const [env, setEnv] = useState<string>(); // its name; "" once known to be deleted
@@ -204,6 +214,7 @@ function Header({ s, kids, stats, changed }: { s: Session; kids: Session[]; stat
             ))}
           </div>
         )}
+        <SessionCapabilities id={s.id} caps={caps} />
         {kids.length > 0 && (
           <div class="meta kids">
             <span>Children</span>
@@ -218,6 +229,37 @@ function Header({ s, kids, stats, changed }: { s: Session; kids: Session[]; stat
         )}
       </div>
     </header>
+  );
+}
+
+/** The session's capabilities, and a menu that adds one: installed in the
+ * sandbox now and kept for later. */
+function SessionCapabilities({ id, caps }: { id: string; caps: Model['caps'] }) {
+  const list = useCapabilities();
+  const [busy, setBusy] = useState('');
+  if (!list) return null;
+  const name = (c: string) => list.find(x => x.id === c)?.name || c;
+  const add = async (c: string) => {
+    setBusy(c);
+    try {
+      const r = await api<AddedCapability>('POST', `/api/sessions/${id}/capabilities`, { id: c });
+      toast(`Added ${r.name}` + (r.kept === 'environment' ? ` to the ${r.where} environment` : r.kept === 'repository' ? '; the agent should commit .beethoven/capabilities' : ''));
+      r.warnings?.forEach(w => toast(w, true));
+    } catch (e) { fail(e); }
+    setBusy('');
+  };
+  const rest = list.filter(c => !caps.enabled.includes(c.id))
+    .sort((a, b) => Number(caps.suggested.includes(b.id)) - Number(caps.suggested.includes(a.id)));
+  return (
+    <div class="meta caps-row">
+      {caps.enabled.map(c => <span key={c} class="badge plain" title="Capability">{name(c)}</span>)}
+      {rest.length > 0 && (
+        <select class="cap-add" aria-label="Add a capability" disabled={!!busy} value="" onChange={e => add(e.currentTarget.value)}>
+          <option value="">{busy ? `Installing ${name(busy)}…` : '+ Add capability'}</option>
+          {rest.map(c => <option key={c.id} value={c.id}>{c.name}{caps.suggested.includes(c.id) ? ' · suggested' : ''}</option>)}
+        </select>
+      )}
+    </div>
   );
 }
 
@@ -296,6 +338,13 @@ function Item({ e, m, live, sub }: { e: Ev; m: Model; live: boolean; sub?: Recor
     }
     case 'warning':
       return <div class="line warn">Warning: {d.message}</div>;
+    case 'capability':
+      return (
+        <div class="line dim">
+          Added the {d.name} capability{d.by === 'agent' ? ' (by the agent)' : ''}
+          {d.kept === 'environment' ? `, kept in the ${d.where} environment` : d.kept === 'repository' ? `, recorded in ${d.where}` : ', for this session'}
+        </div>
+      );
     case 'artifact':
       return (
         <div class="card">
