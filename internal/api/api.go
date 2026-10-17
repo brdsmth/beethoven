@@ -132,6 +132,8 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/insights", s.insights)
 	api("GET /api/repos", s.listRepos)
 	api("GET /api/repos/{owner}/{name}/branches", s.listBranches)
+	api("GET /api/projects/options", s.projectOptions)
+	api("POST /api/projects", s.createProject)
 
 	api("GET /api/automations", s.listAutomations)
 	api("GET /api/automations/{id}", s.getAutomation)
