@@ -9,6 +9,8 @@
 #                 written to disk or shown to scripts
 #   ENV_SETUP     environment setup script: once per sandbox, and again when it changes (ENV_SETUP_ID)
 #   ENV_START     environment start script: on every start
+#   CAPABILITIES  capabilities to install, besides those the repositories name;
+#                 the catalog arrives on stdin (capabilities.sh, prepended)
 set -eu
 phase() { echo "::phase $*"; }
 git_auth() {
@@ -19,6 +21,7 @@ token_for() { printf '%s\n' "${GH_TOKENS:-}" | while read -r dir tok; do if [ "$
 dirs() { printf '%s\n' "${REPOS:-}" | while read -r dir _; do [ -n "$dir" ] && echo "$dir"; done; }
 done_dir="$HOME/.beethoven" # markers for setup that already ran in this sandbox
 mkdir -p "$done_dir"
+cap_unpack
 
 mkdir -p /workspace
 cd /workspace
@@ -43,6 +46,10 @@ printf '%s\n' "${REPOS:-}" | while read -r dir url base; do
   fi
 done
 unset GH_TOKEN GH_TOKENS
+
+# Capabilities: toolchains the server enabled or the repositories name, before
+# the hooks and scripts that may need them.
+cap_setup
 
 # Repository hooks: .beethoven/setup.sh provisions once per sandbox and may
 # fail with a warning; .beethoven/start.sh runs on every start and must pass.

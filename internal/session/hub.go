@@ -18,6 +18,10 @@ const (
 	EvArtifact = "artifact"     // {kind, url, title}
 	EvChild    = "child"        // a child session started or finished a prompt {id, title, status, error}
 	EvWarning  = "warning"      // {message}
+	// The capabilities a sandbox booted with: {enabled, suggested, env}.
+	EvCapabilities = "capabilities"
+	// A capability added during the session: {id, name, by, kept, where, env}.
+	EvCapability = "capability"
 )
 
 // AllSessions is the hub key whose subscribers see every session's
