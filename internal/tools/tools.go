@@ -8,11 +8,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/brdsmth/beethoven/internal/capability"
 	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/store"
 )
@@ -29,6 +31,10 @@ func Handler(m *session.Manager) http.Handler {
 		"Set wait_seconds to block until the child stops running (or the wait elapses)."}, t.get)
 	mcp.AddTool(srv, &mcp.Tool{Name: "list_sessions", Description: "List your child sessions with their status."}, t.list)
 	mcp.AddTool(srv, &mcp.Tool{Name: "stop_session", Description: "Stop a child session's current work and cancel its queued prompts."}, t.stop)
+	mcp.AddTool(srv, &mcp.Tool{Name: "list_capabilities", Description: "List the toolchains this sandbox can be given (mobile apps with Expo, " +
+		"Android builds, Go, Rust, Bun, Python with uv): which are set up, which the repositories look like they need, and the secrets each uses."}, t.listCapabilities)
+	mcp.AddTool(srv, &mcp.Tool{Name: "add_capability", Description: "Install a toolchain in this sandbox now, with a skill that explains how to use it, " +
+		"and keep it for later sessions: in the session's environment, or in the repository's .beethoven/capabilities file, which you then commit."}, t.addCapability)
 
 	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{
 		Stateless:    true,
@@ -233,6 +239,70 @@ func (t *tools) stop(ctx context.Context, req *mcp.CallToolRequest, in stopIn) (
 		return nil, nil, err
 	}
 	return text("Stopped %s.", c.ID), nil, nil
+}
+
+func (t *tools) listCapabilities(ctx context.Context, req *mcp.CallToolRequest, _ none) (*mcp.CallToolResult, any, error) {
+	me, err := t.caller(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	have, err := t.m.Capabilities(ctx, me.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	type secretOut struct {
+		Name     string `json:"name"`
+		Required bool   `json:"required"`
+		Why      string `json:"why"`
+		Set      bool   `json:"set"`
+	}
+	type capOut struct {
+		ID          string      `json:"id"`
+		Name        string      `json:"name"`
+		Description string      `json:"description"`
+		Enabled     bool        `json:"enabled"`
+		Suggested   bool        `json:"suggested"`
+		Secrets     []secretOut `json:"secrets,omitempty"`
+	}
+	var out []capOut
+	for _, c := range capability.Catalog {
+		o := capOut{ID: c.ID, Name: c.Name, Description: c.Description,
+			Enabled: slices.Contains(have.Enabled, c.ID), Suggested: slices.Contains(have.Suggested, c.ID)}
+		for _, s := range c.Secrets {
+			o.Secrets = append(o.Secrets, secretOut{s.Name, s.Required, s.Why, slices.Contains(have.SecretsSet, s.Name)})
+		}
+		out = append(out, o)
+	}
+	return jsonText(out), nil, nil
+}
+
+type addCapabilityIn struct {
+	ID string `json:"id" jsonschema:"the capability's id, from list_capabilities"`
+}
+
+func (t *tools) addCapability(ctx context.Context, req *mcp.CallToolRequest, in addCapabilityIn) (*mcp.CallToolResult, any, error) {
+	me, err := t.caller(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	added, err := t.m.AddCapability(ctx, me.ID, strings.TrimSpace(in.ID), "agent")
+	if err != nil {
+		return nil, nil, err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Installed %s. Read ~/.claude/skills/%s/SKILL.md before you continue.\n", added.Name, added.ID)
+	switch added.Kept {
+	case "environment":
+		fmt.Fprintf(&b, "It is kept in the %q environment, so its later sessions have it too.\n", added.Where)
+	case "repository":
+		b.WriteString("It is recorded in .beethoven/capabilities in the primary repository: commit that file with your work so later sessions have it too.\n")
+	default:
+		b.WriteString("It is kept for this session only: there is no environment or repository to record it in.\n")
+	}
+	for _, w := range added.Warnings {
+		fmt.Fprintf(&b, "Warning: %s\n", w)
+	}
+	return text("%s", b.String()), nil, nil
 }
 
 func bearer(h http.Header) string {
