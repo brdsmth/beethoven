@@ -17,62 +17,31 @@ import (
 // that installs the project's toolchain and holds its variables.
 
 // A stack is what a new project is built with: GitHub's .gitignore
-// template for it, and an environment setup script that installs its
-// toolchain in the sandbox, then the project's dependencies once it has
-// any. Toolchains go in the agent's home, which needs no root.
+// template for it, and the capability (see internal/capability) that
+// installs its toolchain, its dependencies once it has any, and teaches the
+// agent how to work with it. The project switches the capability on, so
+// it's one setting to change later. Node needs no capability, as the
+// sandbox has it: a setup script installs the project's packages.
 type stack struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Hint      string `json:"hint"`
-	Gitignore string `json:"-"`
-	Setup     string `json:"setup"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Hint       string `json:"hint"`
+	Gitignore  string `json:"-"`
+	Capability string `json:"capability,omitempty"`
+	Setup      string `json:"setup,omitempty"`
 }
 
-// arch is the sandbox's architecture as Go and others name their downloads.
-const arch = `arch=$(dpkg --print-architecture 2>/dev/null || uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')`
-
 var stacks = []stack{
-	{ID: "", Name: "Anything", Hint: "Node 24 and Python 3 come with the sandbox; the agent installs anything else it needs."},
+	{ID: "", Name: "Anything", Hint: "Node 24 and Python 3 come with the sandbox; the agent adds the capabilities it needs."},
 	{ID: "node", Name: "Node.js", Gitignore: "Node", Hint: "Node 24 and npm; installs the project's packages.",
 		Setup: `# Node 24 and npm come with the sandbox. Install the project's packages once it has any.
 if [ -f package-lock.json ]; then npm ci; elif [ -f package.json ]; then npm install; fi`},
-	{ID: "bun", Name: "Bun", Gitignore: "Node", Hint: "Installs Bun, then the project's packages.",
-		Setup: `# Bun, in the agent's home.
-if ! command -v bun >/dev/null; then
-  curl -fsSL https://bun.sh/install | bash >/dev/null
-  mkdir -p "$HOME/.local/bin"
-  ln -sf "$HOME/.bun/bin/bun" "$HOME/.local/bin/bun"
-  ln -sf "$HOME/.bun/bin/bun" "$HOME/.local/bin/bunx"
-fi
-# The project's packages, once it has any.
-if [ -f package.json ]; then bun install; fi`},
-	{ID: "python", Name: "Python", Gitignore: "Python", Hint: "Python 3 with uv; installs the project's dependencies.",
-		Setup: `# uv, in the agent's home; Python 3 comes with the sandbox.
-if ! command -v uv >/dev/null; then
-  curl -fsSL https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh >/dev/null
-fi
-# The project's dependencies, once it has any.
-if [ -f pyproject.toml ]; then uv sync; elif [ -f requirements.txt ]; then python3 -m pip install -q -r requirements.txt; fi`},
-	{ID: "go", Name: "Go", Gitignore: "Go", Hint: "Installs the latest Go, then the project's modules.",
-		Setup: `# The latest Go, in the agent's home.
-if ! command -v go >/dev/null; then
-  ` + arch + `
-  v=$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1)
-  mkdir -p "$HOME/.local/bin"
-  curl -fsSL "https://go.dev/dl/$v.linux-$arch.tar.gz" | tar -xz -C "$HOME/.local"
-  ln -sf "$HOME/.local/go/bin/go" "$HOME/.local/go/bin/gofmt" "$HOME/.local/bin/"
-fi
-# The project's modules, once it has any.
-if [ -f go.mod ]; then go mod download; fi`},
-	{ID: "rust", Name: "Rust", Gitignore: "Rust", Hint: "Installs stable Rust with Cargo, then the project's crates.",
-		Setup: `# Stable Rust, in the agent's home.
-if ! command -v cargo >/dev/null; then
-  curl -fsSL https://sh.rustup.rs | sh -s -- -y -q --profile minimal -c clippy,rustfmt --no-modify-path
-  mkdir -p "$HOME/.local/bin"
-  ln -sf "$HOME"/.cargo/bin/* "$HOME/.local/bin/"
-fi
-# The project's crates, once it has any.
-if [ -f Cargo.toml ]; then cargo fetch; fi`},
+	{ID: "expo", Name: "Expo (React Native)", Gitignore: "Node", Capability: "expo",
+		Hint: "A mobile app: Expo's tools, with builds and phone previews through EAS. Add EXPO_TOKEN below for those."},
+	{ID: "bun", Name: "Bun", Gitignore: "Node", Capability: "bun", Hint: "Installs Bun, then the project's packages."},
+	{ID: "python", Name: "Python", Gitignore: "Python", Capability: "python", Hint: "Python 3 with uv; installs the project's dependencies."},
+	{ID: "go", Name: "Go", Gitignore: "Go", Capability: "go", Hint: "Installs the latest Go, then the project's modules."},
+	{ID: "rust", Name: "Rust", Gitignore: "Rust", Capability: "rust", Hint: "Installs stable Rust with Cargo, then the project's crates."},
 }
 
 func stackByID(id string) (stack, bool) {
@@ -161,6 +130,9 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	}
 	env := store.Environment{ID: store.NewID(), TeamID: team, Description: in.Description, SetupScript: st.Setup,
 		InheritSecrets: true}
+	if st.Capability != "" {
+		env.Overrides.Capabilities = []string{st.Capability}
+	}
 	env.Name, err = s.environmentName(r, team, in.Name, in.Owner+"/"+in.Name)
 	if err != nil {
 		replyErr(w, err)
