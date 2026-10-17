@@ -80,6 +80,7 @@ export function TeamSwitcher() {
           <div class="menu-sep" />
           <a class="menu-item" role="menuitem" href={teamHref()} onClick={() => setOpen(false)}>Browse teams</a>
           {current && <a class="menu-item" role="menuitem" href={teamHref(current.slug)} onClick={() => setOpen(false)}>About {current.name}</a>}
+          <a class="menu-item" role="menuitem" href="#/projects/new" onClick={() => setOpen(false)}>New project…</a>
           {me?.admin && <a class="menu-item" role="menuitem" href={teamHref('new')} onClick={() => setOpen(false)}>New team</a>}
         </div>
       )}
