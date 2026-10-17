@@ -76,7 +76,8 @@ func TestTools(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	slices.Sort(names)
-	if want := []string{"create_pull_request", "get_session", "list_sessions", "send_prompt", "spawn_session", "stop_session"}; !slices.Equal(names, want) {
+	if want := []string{"add_capability", "create_pull_request", "get_session", "list_capabilities", "list_sessions", "send_prompt",
+		"spawn_session", "stop_session"}; !slices.Equal(names, want) {
 		t.Errorf("tools = %v", names)
 	}
 
@@ -121,5 +122,61 @@ func TestTools(t *testing.T) {
 	out, isErr = call(t, cs, "create_pull_request", map[string]any{"title": "Add things", "body": "Body"})
 	if isErr || !strings.Contains(out, "https://github.com/acme/app/pull/1") {
 		t.Errorf("create_pull_request = %q (error=%v)", out, isErr)
+	}
+}
+
+func TestCapabilityTools(t *testing.T) {
+	env := fake.NewEnv(t)
+	env.Box.Suggest = []string{"expo"}
+	srv := httptest.NewServer(tools.Handler(env.M))
+	defer srv.Close()
+	if err := env.DB.SetSecret(ctx, "", "EXPO_TOKEN", "expo-secret"); err != nil {
+		t.Fatal(err)
+	}
+	s, p, err := env.M.Submit(ctx, session.Request{Prompt: "parent", Repos: []store.RepoRef{{Repo: "acme/app"}}, Source: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.WaitFor(t, "prompt done", func() bool { q, _ := env.DB.Prompt(ctx, p.ID); return q.Status == store.Done })
+	cs, err := connect(t, srv.URL, env.M.Token(s.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	out, isErr := call(t, cs, "add_capability", map[string]any{"id": "expo"})
+	if isErr || !strings.Contains(out, "~/.claude/skills/expo/SKILL.md") || !strings.Contains(out, "commit that file") {
+		t.Errorf("add_capability = %q (error=%v)", out, isErr)
+	}
+	if out, isErr := call(t, cs, "add_capability", map[string]any{"id": "cobol"}); !isErr {
+		t.Errorf("an unknown capability was added: %q", out)
+	}
+
+	out, _ = call(t, cs, "list_capabilities", nil)
+	var list []struct {
+		ID                 string
+		Enabled, Suggested bool
+		Secrets            []struct {
+			Name string
+			Set  bool
+		}
+	}
+	if err := json.Unmarshal([]byte(out), &list); err != nil {
+		t.Fatalf("list_capabilities = %q: %v", out, err)
+	}
+	for _, c := range list {
+		switch c.ID {
+		case "expo":
+			if !c.Enabled || c.Suggested || len(c.Secrets) != 1 || !c.Secrets[0].Set {
+				t.Errorf("expo = %+v; want it enabled, no longer suggested, with EXPO_TOKEN set", c)
+			}
+		case "go":
+			if c.Enabled || c.Suggested {
+				t.Errorf("go = %+v", c)
+			}
+		}
+	}
+	if strings.Contains(out, "expo-secret") {
+		t.Error("list_capabilities shows a secret's value")
 	}
 }
