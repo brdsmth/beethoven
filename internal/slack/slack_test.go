@@ -334,12 +334,13 @@ func TestADirectMessageCanBeJustAFile(t *testing.T) {
 	h.event(t, "Ev1", map[string]any{"type": "message", "subtype": "file_share", "channel_type": "im", "channel": "D1",
 		"user": "U1", "text": "", "ts": "800.000001", "files": []any{map[string]any{"id": "F1", "name": "trace.txt"}}})
 	var s store.Session
-	fake.WaitFor(t, "the session", func() bool {
+	var ps []store.Prompt
+	fake.WaitFor(t, "the prompt", func() bool { // the session is stored first, then its prompt
 		var err error
 		s, err = h.env.DB.SessionByKey(ctx, "slack:T1:D1:800.000001")
-		return err == nil
+		ps, _ = h.env.DB.Prompts(ctx, s.ID)
+		return err == nil && len(ps) > 0
 	})
-	ps, _ := h.env.DB.Prompts(ctx, s.ID)
 	if len(ps) != 1 || ps[0].Content != "" || len(ps[0].Attachments) != 1 || s.Title != "trace.txt" {
 		t.Errorf("session %q, prompts %+v", s.Title, ps)
 	}
