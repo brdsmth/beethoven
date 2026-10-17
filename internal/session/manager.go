@@ -26,7 +26,6 @@ import (
 //go:embed boot.sh
 var bootScript string
 
-
 var (
 	ErrNotFound     = store.ErrNotFound
 	ErrInvalid      = store.ErrInvalid
@@ -171,12 +170,15 @@ type Request struct {
 	Model         string          // "" = the effective default, resolved per prompt
 	Effort        string
 	Title         string
-	Author       store.Author
-	Source       string // web, cli, api, automation, webhook, agent
-	ParentID     string // set when an agent spawns a child session
-	Key          string // continuation key: reuse the session previously started with this key
-	DedupKey     string // a prompt with the same key is only queued once
-	AutomationID string
+	Author        store.Author
+	AccountID     string // the person it's for, whose GitHub it uses; "" = nobody in particular
+	TeamID        string // the owning team; "" = the workspace, or a team project's team
+	Visibility    string // "" = the team's default, or workspace without a team
+	Source        string // web, cli, api, automation, webhook, agent
+	ParentID      string // set when an agent spawns a child session
+	Key           string // continuation key: reuse the session previously started with this key
+	DedupKey      string // a prompt with the same key is only queued once
+	AutomationID  string
 }
 
 // Submit queues r.Prompt on the session named by r.Key, or on a new session.
@@ -184,8 +186,8 @@ func (m *Manager) Submit(ctx context.Context, r Request) (store.Session, store.P
 	if strings.TrimSpace(r.Prompt) == "" && len(r.Attachments) == 0 {
 		return store.Session{}, store.Prompt{}, fmt.Errorf("%w: empty prompt", ErrInvalid)
 	}
-	in := PromptInput{Content: r.Prompt, Attachments: r.Attachments, Author: r.Author, Source: r.Source,
-		DedupKey: r.DedupKey, AutomationID: r.AutomationID}
+	in := PromptInput{Content: r.Prompt, Attachments: r.Attachments, Author: r.Author, AccountID: r.AccountID,
+		Source: r.Source, DedupKey: r.DedupKey, AutomationID: r.AutomationID}
 	if r.Key != "" {
 		// A continued session keeps its own settings; carry the request's
 		// choices on the prompt instead.
@@ -234,13 +236,37 @@ func (m *Manager) create(ctx context.Context, r Request) (store.Session, error) 
 			}
 		}
 		r.Model, r.Effort = firstOf(r.Model, parent.Model), firstOf(r.Effort, parent.Effort)
+		// A child works for the same people, seen by the same people.
+		r.TeamID, r.AccountID = parent.TeamID, firstOf(r.AccountID, parent.AccountID)
+		r.Visibility = firstOf(r.Visibility, parent.Visibility)
 	}
-	if r.EnvironmentID != "" && len(r.Repos) == 0 {
+	if r.EnvironmentID != "" {
 		env, err := m.db.Environment(ctx, r.EnvironmentID)
 		if err != nil {
 			return store.Session{}, fmt.Errorf("%w: environment %q not found", ErrInvalid, r.EnvironmentID)
 		}
-		r.Repos = env.Repos // a snapshot: later edits to the environment don't move the session
+		if len(r.Repos) == 0 {
+			r.Repos = env.Repos // a snapshot: later edits to the environment don't move the session
+		}
+		// A team's project starts only that team's sessions.
+		if env.TeamID != "" && r.TeamID != "" && r.TeamID != env.TeamID {
+			return store.Session{}, fmt.Errorf("%w: %s belongs to another team", ErrInvalid, env.Name)
+		}
+		r.TeamID = firstOf(r.TeamID, env.TeamID)
+	}
+	if r.TeamID != "" {
+		team, err := m.db.Team(ctx, r.TeamID)
+		if err != nil {
+			return store.Session{}, fmt.Errorf("%w: team %q not found", ErrInvalid, r.TeamID)
+		}
+		if team.ArchivedAt != nil && r.ParentID == "" {
+			return store.Session{}, fmt.Errorf("%w: %s is archived", ErrInvalid, team.Name)
+		}
+		r.Visibility = firstOf(r.Visibility, team.DefaultVisibility)
+	}
+	r.Visibility = firstOf(r.Visibility, store.VisibilityWorkspace)
+	if !store.ValidVisibility(r.Visibility, r.TeamID) {
+		return store.Session{}, fmt.Errorf("%w: visibility must be workspace, private or, for a team's session, team", ErrInvalid)
 	}
 	repos, err := ValidateRepos(r.Repos)
 	if err != nil {
@@ -254,7 +280,8 @@ func (m *Manager) create(ctx context.Context, r Request) (store.Session, error) 
 	s := store.Session{
 		ID: id, Title: titleOf(r), Repos: repos, EnvironmentID: r.EnvironmentID, Branch: eff.BranchPrefix + id,
 		Model: r.Model, Effort: r.Effort, ParentID: r.ParentID, Depth: depth, Source: r.Source, Key: r.Key,
-		AutomationID: r.AutomationID, Author: r.Author, Status: "idle", Sandbox: "none",
+		AutomationID: r.AutomationID, Author: r.Author, AccountID: r.AccountID, TeamID: r.TeamID,
+		Visibility: r.Visibility, Status: "idle", Sandbox: "none",
 	}
 	if err := m.db.CreateSession(ctx, &s); err != nil {
 		return s, err
@@ -274,6 +301,7 @@ type PromptInput struct {
 	Model        string // overrides the session's for this prompt
 	Effort       string
 	Author       store.Author
+	AccountID    string // who sent it, if a person here
 	Source       string
 	DedupKey     string
 	AutomationID string
@@ -343,6 +371,19 @@ func (m *Manager) OpenPR(ctx context.Context, sessionID, repo, title, body strin
 		return "", err
 	}
 	return r.openPR(ctx, repo, title, body, draft)
+}
+
+// SetVisibility changes who may read a session.
+func (m *Manager) SetVisibility(ctx context.Context, sessionID, visibility string) (store.Session, error) {
+	r, err := m.runner(ctx, sessionID)
+	if err != nil {
+		return store.Session{}, err
+	}
+	if s := r.snapshot(); !store.ValidVisibility(visibility, s.TeamID) {
+		return store.Session{}, fmt.Errorf("%w: visibility must be workspace, private or, for a team's session, team", ErrInvalid)
+	}
+	r.update(func(s *store.Session) { s.Visibility = visibility })
+	return r.snapshot(), nil
 }
 
 func (m *Manager) Session(ctx context.Context, id string) (store.Session, error) {

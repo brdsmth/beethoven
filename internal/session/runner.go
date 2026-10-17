@@ -55,7 +55,8 @@ func (r *runner) enqueue(ctx context.Context, in PromptInput) (store.Prompt, err
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p := store.Prompt{ID: store.NewID(), SessionID: r.id, Content: in.Content, Model: in.Model, Effort: in.Effort,
-		Author: in.Author, Source: in.Source, DedupKey: in.DedupKey, AutomationID: in.AutomationID, Attachments: in.Attachments}
+		Author: in.Author, AccountID: in.AccountID, Source: in.Source, DedupKey: in.DedupKey, AutomationID: in.AutomationID,
+		Attachments: in.Attachments}
 	if p.Author == (store.Author{}) {
 		p.Author = r.s.Author
 	}
@@ -349,7 +350,7 @@ func (r *runner) boot(ctx context.Context, id string, s store.Session, eff Effec
 	if len(s.Repos) > 0 {
 		var lines, tokens []string
 		for _, ref := range s.Repos {
-			tok, err := r.m.scm.Token(ctx, ref.Repo)
+			tok, err := r.m.scm.Token(forPerson(ctx, s), ref.Repo)
 			if err != nil {
 				return err
 			}
@@ -447,6 +448,7 @@ func (r *runner) openPR(ctx context.Context, repo, title, body string, draft *bo
 	if draft == nil {
 		draft = &eff.DraftPRs
 	}
+	ctx = forPerson(ctx, s) // pull requests open as the person the session works for
 	token, err := r.m.scm.Token(ctx, ref.Repo)
 	if err != nil {
 		return "", err
