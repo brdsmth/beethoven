@@ -73,6 +73,9 @@ export function RepoRows({ repos, set }: { repos: RepoRef[]; set: (r: RepoRef[])
 export const cleanRepos = (repos: RepoRef[]) =>
   repos.filter(r => r.repo.trim()).map(r => ({ repo: r.repo.trim(), base_branch: r.base_branch.trim() }));
 
+/** Where the last session started, remembered for the next. */
+export const TARGET_PREF = 'beethoven.target';
+
 export type Kind = 'scratch' | 'repos' | 'env';
 export type Pick = Target & { kind: Kind };
 export const toTarget = (p: Pick): Target => ({

@@ -10,8 +10,9 @@ import { GitHubReturn, GitHubSetup, githubStep } from './github';
 import { Insights } from './insights';
 import { InviteAccept } from './people';
 import { TeamMark, TeamSwitcher, scopeTeam, useMe, useScope, useTeams } from './teams';
+import { NewProject } from './project';
 import { SlackReturn, slackStep } from './slack';
-import { TargetPicker, fromTarget, targetProblem, toTarget, type Pick } from './pickers';
+import { TARGET_PREF, TargetPicker, fromTarget, targetProblem, toTarget, type Pick } from './pickers';
 import { SessionView } from './session';
 import { Settings } from './settings';
 import {
@@ -104,6 +105,7 @@ function App({ account }: { account: Account | null }) {
   else if (page === 'automations') view = arg ? <AutomationEdit key={arg} id={arg} /> : <Automations />;
   else if (page === 'insights') view = <Insights />;
   else if (page === 'teams') view = <Moved to={'/settings/' + route.join('/')} />; // team pages live in the settings
+  else if (page === 'projects' && arg === 'new') view = <NewProject info={info} />;
   else if (page === 'settings') view = <Settings info={info} route={route.slice(1)} />;
   else view = <NewSession info={info} />;
   if (page !== 's') document.title = 'Beethoven';
@@ -210,8 +212,6 @@ function Sidebar({ current, account }: { current: string; account: Account | nul
     </nav>
   );
 }
-
-const TARGET_PREF = 'beethoven.target';
 
 function NewSession({ info }: { info?: Info }) {
   const [target, setTarget] = useState<Pick>(() => {
