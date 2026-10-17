@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/brdsmth/beethoven/internal/access"
 	"github.com/brdsmth/beethoven/internal/agent"
 	"github.com/brdsmth/beethoven/internal/store"
 )
@@ -164,6 +165,15 @@ func (m *Manager) DefaultAuthor(ctx context.Context) store.Author {
 		return a
 	}
 	return m.cfg.Author
+}
+
+// forPerson makes ctx act for the person a session works for, whose GitHub
+// account it uses; a session for nobody in particular acts for the owner.
+func forPerson(ctx context.Context, s store.Session) context.Context {
+	if s.AccountID == "" {
+		return ctx
+	}
+	return access.For(ctx, s.AccountID)
 }
 
 // secretTarget decides which secret scopes reach a session's sandbox.
