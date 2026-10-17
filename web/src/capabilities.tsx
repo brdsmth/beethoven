@@ -26,7 +26,7 @@ export function CapabilityPicker({ value, set, inherited = [], secrets }: {
     <div class="caps">
       {list.map(c => {
         const global = inherited.includes(c.id), on = global || value.includes(c.id);
-        const missing = secrets ? c.secrets.filter(s => !secrets.includes(s.name)) : [];
+        const missing = secrets ? (c.secrets || []).filter(s => !secrets.includes(s.name)) : [];
         return (
           <label key={c.id} class="cap">
             <input type="checkbox" checked={on} disabled={global} title={global ? 'On in the global settings' : undefined}
