@@ -16,22 +16,10 @@ import (
 )
 
 // author is the commit author for prompts sent through the API: a
-// person's GitHub identity, or their name and email; for the server, the
-// settings' author or its owner's.
+// person's own identity; for the server, the settings' author or its
+// owner's.
 func (s *Server) author(r *http.Request) store.Author {
-	if who := actor(r); who.IsPerson() {
-		if a := s.GitHub.Author(r.Context()); a.Name != "" && a.Email != "" {
-			return a
-		}
-		if acct, err := s.M.Store().Account(r.Context(), who.AccountID); err == nil {
-			return store.Author{Name: firstOf(acct.Name, acct.Email), Email: acct.Email}
-		}
-	}
-	eff, err := s.M.Effective(r.Context(), "")
-	if err != nil {
-		return store.Author{}
-	}
-	return eff.Author
+	return s.M.AuthorFor(r.Context(), accountOf(r))
 }
 
 // ----------------------------------------------------------------- settings
