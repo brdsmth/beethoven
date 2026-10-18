@@ -82,7 +82,7 @@ func TestCapabilityScript(t *testing.T) {
 	}
 
 	// Installed once per sandbox; secrets that are set don't warn.
-	out = run("cap_setup", "CAPABILITIES=one", "ONE_TOKEN=x")
+	out = run("cap_setup\ncap_prepare", "CAPABILITIES=one", "ONE_TOKEN=x")
 	if got := read(filepath.Join(home, "installs")); got != "one\nthree\n" || strings.Contains(out, "::phase capability one") ||
 		strings.Contains(out, "needs ONE_TOKEN") {
 		t.Errorf("second boot reinstalled or warned: installs %q\n%s", got, out)

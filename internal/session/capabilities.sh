@@ -40,7 +40,7 @@ cap_wanted() {
 }
 
 # cap_install installs one capability unless this sandbox already has this
-# version of it, writes its skill, and checks its secrets. A failure is a
+# version of it and writes its skill. A failure is a
 # warning. cap_ok says whether it is ready. With CAP_EXPORT set, a fresh
 # install is packed for the server to keep (CAP_CACHED lists the "id-hash"
 # installs it unpacked instead, which needn't be packed again).
@@ -62,12 +62,6 @@ cap_install() {
     fi
   fi
   mkdir -p "$HOME/.claude/skills/$cap_id" && cp "$cap_d/SKILL.md" "$HOME/.claude/skills/$cap_id/SKILL.md"
-  while read -r cap_var cap_need cap_why; do
-    if [ -n "$cap_var" ] && [ "$cap_need" = required ]; then
-      eval "cap_val=\${$cap_var:-}"
-      if [ -z "$cap_val" ]; then echo "::warn the $cap_name capability needs $cap_var, $cap_why: add it as a secret"; fi
-    fi
-  done < "$cap_d/secrets"
   while IFS= read -r cap_kv; do
     if [ -n "$cap_kv" ]; then eval "echo \"::env $cap_kv\""; fi
   done < "$cap_d/env"
@@ -93,9 +87,11 @@ cap_export() {
   fi
 }
 
-# cap_prepare installs each repository's dependencies for every capability
-# this sandbox has, once per capability version and repository. It runs the
-# repositories' own code (package scripts), so it comes after cap_setup.
+# cap_prepare checks the secrets of every capability this sandbox has and
+# installs each repository's dependencies for it, once per capability
+# version and repository. It runs the repositories' own code (package
+# scripts), so it comes after cap_setup, which has no secrets when it packs
+# installs.
 cap_prepare() {
   if [ ! -f "$cap_done/capabilities" ]; then return 0; fi
   for cap_id in $(cat "$cap_done/capabilities"); do cap_prepare_one "$cap_id"; done
@@ -103,8 +99,15 @@ cap_prepare() {
 
 cap_prepare_one() {
   cap_d="$cap_dir/$1"
-  if [ ! -f "$cap_d/prepare.sh" ]; then return 0; fi
+  if [ ! -f "$cap_d/name" ]; then return 0; fi
   cap_name=$(cat "$cap_d/name") cap_hash=$(cat "$cap_d/hash")
+  while read -r cap_var cap_need cap_why; do
+    if [ -n "$cap_var" ] && [ "$cap_need" = required ]; then
+      eval "cap_val=\${$cap_var:-}"
+      if [ -z "$cap_val" ]; then echo "::warn the $cap_name capability needs $cap_var, $cap_why: add it as a secret"; fi
+    fi
+  done < "$cap_d/secrets"
+  if [ ! -f "$cap_d/prepare.sh" ]; then return 0; fi
   for cap_r in $(cap_repos); do
     cap_mark="$cap_done/capability-$1-$cap_hash-$(basename "$cap_r")"
     if [ -d "$cap_r" ] && [ ! -f "$cap_mark" ]; then

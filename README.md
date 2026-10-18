@@ -229,12 +229,15 @@ Jest and Metro bundles, native builds and phone previews through EAS with an `EX
 - The image is a lean base with Node 24 and Python 3.
 - A sandbox installs the capabilities its repositories look like they need (`go.mod` brings Go,
   `android/build.gradle` the Android SDK, an Expo dependency Expo), after cloning and before the
-  setup scripts. Beethoven remembers what each repository needed, so its next sandbox is created
-  with the CPUs and memory they want (Android builds want 4 CPUs and 8 GB).
+  setup scripts. An `android/` directory means a download of several GB on the first boot, until the
+  install is kept. Beethoven remembers what each repository needed at its last boot, on whatever
+  branch, so its next sandbox is created with the CPUs and memory they want (Android builds want 4
+  CPUs and 8 GB).
 - Installs are kept in `<data>/cache/capabilities`, by capability version, machine and image, and
-  unpacked into later sandboxes instead of being downloaded again. Only a brand-new sandbox packs
-  one, before any repository code runs, so nothing an agent or repository could touch reaches other
-  sessions.
+  unpacked into later sandboxes instead of being downloaded again. They expire after a week, so
+  toolchains that install their latest release are refreshed, and each is at most 4 GB. Only a
+  brand-new sandbox packs one, before any repository code runs and without the session's secrets,
+  so nothing an agent, a repository or a secret could touch reaches other sessions.
 - The agent adds others mid-session with the `add_capability` tool when a task needs them. They are
   kept for later in the session's environment, else in its primary repository's
   `.beethoven/capabilities` (for the agent to commit).
