@@ -77,7 +77,7 @@ func TestTools(t *testing.T) {
 	}
 	slices.Sort(names)
 	if want := []string{"add_capability", "add_labels", "comment", "create_pull_request", "get_session", "list_capabilities", "list_sessions",
-		"pull_request_status", "send_prompt", "spawn_session", "stop_session"}; !slices.Equal(names, want) {
+		"pull_request_status", "send_prompt", "show_file", "spawn_session", "stop_session"}; !slices.Equal(names, want) {
 		t.Errorf("tools = %v", names)
 	}
 

@@ -23,6 +23,8 @@ import (
 	"github.com/brdsmth/beethoven/internal/store"
 )
 
+var ctx = context.Background()
+
 func server(t *testing.T, token string) (*httptest.Server, *fake.Env) {
 	env := fake.NewEnv(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -185,6 +187,48 @@ func TestGitHubEvents(t *testing.T) {
 	if code, out := do(t, "POST", srv.URL+"/webhooks/github", `{"zen":"hi"}`, "X-GitHub-Event", "ping",
 		"X-Hub-Signature-256", func() string { b := body; body = `{"zen":"hi"}`; s := sign("s3cret"); body = b; return s }()); code != 200 || out["ignored"] != true {
 		t.Errorf("ping: %d %v", code, out)
+	}
+}
+
+func TestArtifacts(t *testing.T) {
+	srv, env := server(t, "")
+	s, p, _ := env.M.Submit(ctx, session.Request{Prompt: "draw", Source: "test"})
+	fake.WaitFor(t, "prompt done", func() bool { q, _ := env.DB.Prompt(ctx, p.ID); return q.Status == store.Done })
+	env.Box.PutFile("/workspace/mock.html", []byte("<script>alert(1)</script>"))
+	env.Box.PutFile("/workspace/logo.svg", []byte("<svg/>"))
+	html, err := env.M.ShowFile(ctx, s.ID, "/workspace/mock.html", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svg, _ := env.M.ShowFile(ctx, s.ID, "/workspace/logo.svg", "")
+
+	resp, err := http.Get(srv.URL + "/api/sessions/" + s.ID + "/artifacts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list []store.Artifact
+	json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	if len(list) != 2 {
+		t.Fatalf("list = %+v", list)
+	}
+	get := func(id, q string) http.Header {
+		resp, err := http.Get(srv.URL + "/api/sessions/" + s.ID + "/artifacts/" + id + q)
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("get %s: %v %v", id, resp, err)
+		}
+		resp.Body.Close()
+		return resp.Header
+	}
+	if h := get(html.ID, ""); h.Get("Content-Security-Policy") != "sandbox allow-scripts allow-forms allow-modals allow-popups" ||
+		!strings.HasPrefix(h.Get("Content-Type"), "text/html") || h.Get("X-Content-Type-Options") != "nosniff" {
+		t.Errorf("html headers = %v", h)
+	}
+	if h := get(svg.ID, ""); !strings.HasPrefix(h.Get("Content-Security-Policy"), "sandbox;") {
+		t.Errorf("svg may run scripts: %v", h)
+	}
+	if h := get(html.ID, "?download=1"); !strings.HasPrefix(h.Get("Content-Disposition"), "attachment") {
+		t.Errorf("download disposition = %q", h.Get("Content-Disposition"))
 	}
 }
 

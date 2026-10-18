@@ -86,6 +86,8 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/sessions/{id}/pr", s.openPR)
 	api("PUT /api/sessions/{id}/visibility", s.setVisibility)
 	api("GET /api/sessions/{id}/attachments/{aid}", s.attachment)
+	api("GET /api/sessions/{id}/artifacts", s.artifacts)
+	api("GET /api/sessions/{id}/artifacts/{aid}", s.artifact)
 	api("POST /api/sessions/{id}/capabilities", s.addCapability)
 	api("GET /api/sessions/{id}/events", s.sessionEvents)
 	api("GET /api/events", s.allEvents)

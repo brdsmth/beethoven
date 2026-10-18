@@ -173,6 +173,16 @@ func (p *Provider) Exec(ctx context.Context, id string, c sandbox.Cmd) (int, err
 		p.Pushes = append(p.Pushes, c)
 		p.mu.Unlock()
 		return 0, nil
+	case len(c.Args) == 3 && c.Args[0] == "sh" && strings.Contains(c.Args[2], `cat "$FILE"`):
+		p.mu.Lock()
+		data, ok := p.Files[c.Env["FILE"]]
+		p.mu.Unlock()
+		if !ok {
+			fmt.Fprintf(c.Stderr, "no such file: %s\n", c.Env["FILE"])
+			return 3, nil
+		}
+		c.Stdout.Write(data)
+		return 0, nil
 	case len(c.Args) == 3 && c.Args[0] == "sh" && strings.Contains(c.Args[2], "/attachments/$PROMPT"):
 		data, _ := io.ReadAll(c.Stdin)
 		dir := AttachmentDir(c.Env["PROMPT"])
@@ -186,6 +196,13 @@ func (p *Provider) Exec(ctx context.Context, id string, c sandbox.Cmd) (int, err
 	p.Turns = append(p.Turns, c)
 	p.mu.Unlock()
 	return p.claude(ctx, c)
+}
+
+// PutFile puts a file in every sandbox, for the agent to have written.
+func (p *Provider) PutFile(path string, data []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Files[path] = data
 }
 
 func (p *Provider) claude(ctx context.Context, c sandbox.Cmd) (int, error) {
