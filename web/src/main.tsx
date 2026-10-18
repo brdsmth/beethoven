@@ -17,7 +17,7 @@ import { SessionView } from './session';
 import { Settings } from './settings';
 import { Sidebar } from './sidebar';
 import {
-  EffortSelect, ModelField, Toasts, fail, go, modEnter, readPref, setEfforts, useRoute, writePref,
+  EffortSelect, ModelField, Toasts, fail, go, modEnter, readPref, setEfforts, title, useRoute, writePref,
 } from './util';
 
 // Root asks who is signed in before showing anything; a 401 later (signed
@@ -58,7 +58,7 @@ function SignIn({ setup, done }: { setup: boolean; done: (a: AuthState) => void 
       setBusy(false);
     }
   };
-  document.title = (setup ? 'Create your account' : 'Sign in') + ' · Beethoven';
+  title(setup ? 'Create your account' : 'Sign in');
   return (
     <div class="auth">
       <form class="auth-card" onSubmit={submit}>
@@ -108,7 +108,8 @@ function App({ account }: { account: Account | null }) {
   else if (page === 'projects' && arg === 'new') view = <NewProject info={info} />;
   else if (page === 'settings') view = <Settings info={info} route={route.slice(1)} />;
   else view = <NewSession info={info} />;
-  if (page !== 's') document.title = 'Beethoven';
+  if (page !== 's') title(page === 'automations' ? 'Automations' : page === 'insights' ? 'Insights'
+    : page === 'settings' ? 'Settings' : page === 'projects' && arg === 'new' ? 'New project' : 'New session');
 
   return (
     <div class={'app' + (drawer ? ' drawer-open' : '')}>

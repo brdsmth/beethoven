@@ -10,7 +10,7 @@ import { Link, Markdown, safeHref } from './markdown';
 import { TeamLabel, VisibilityBadge, useTeamIndex } from './teams';
 import { Icon, useDismiss } from './components';
 import { ShownCard, Viewer, ViewerContext, type Shown } from './viewer';
-import { Chip, Dot, MODELS, Spinner, ago, dur, effortLevels, fail, modEnter, money, useLoad, useTick } from './util';
+import { Chip, Dot, MODELS, Spinner, ago, dur, effortLevels, fail, modEnter, money, title, useLoad, useTick } from './util';
 
 type End = { id: string; status: string; error?: string; cost_usd: number; duration_ms?: number };
 type Group = { id: string; items: Ev[] };
@@ -106,7 +106,7 @@ export function SessionView({ id }: { id: string }) {
     return () => { stop(); off(); cancelAnimationFrame(raf); };
   }, [id]);
 
-  useEffect(() => { document.title = m.session ? `${m.session.title} · Beethoven` : 'Beethoven'; });
+  useEffect(() => title(m.session?.title || 'Session'));
   useLayoutEffect(() => {
     const el = scroller.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;

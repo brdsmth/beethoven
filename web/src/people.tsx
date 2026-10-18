@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { api, get, setMe, type APIToken, type AuditEvent, type AuthState, type Invite, type Person, type Role, type Team } from './api';
 import { TeamMark, teamHref, useMe, useTeams } from './teams';
-import { ConfirmButton, Group, Head, ago, errText, fail, toast, useLoad, when } from './util';
+import { ConfirmButton, Group, Head, ago, errText, fail, toast, title, useLoad, when } from './util';
 
 // People: owners and admins invite people and set their roles; everyone
 // manages their own profile and API tokens.
@@ -303,7 +303,7 @@ export function InviteAccept({ token }: { token: string }) {
       location.reload();
     } catch (e) { setErr(errText(e) + '.'); setBusy(false); }
   };
-  document.title = 'Join · Beethoven';
+  title('Join');
   return (
     <div class="auth">
       <form class="auth-card" onSubmit={submit}>
