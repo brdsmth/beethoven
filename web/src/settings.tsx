@@ -32,9 +32,9 @@ export function Settings({ info, route }: { info?: Info; route: string[] }) {
     : section === 'people' ? <PeoplePage />
     : section === 'audit' ? (me?.admin ? <AuditPage /> : <p class="empty">Only admins see the audit log. Team leads see their team's on its page.</p>)
     : section === 'general' ? <General />
-    : section === 'credentials' ? <CredentialsPage />
-    : section === 'github' ? <GitHubPage />
-    : section === 'slack' ? <SlackPage />
+    : section === 'credentials' ? <CredentialsPage cloud={!!info?.cloud} />
+    : section === 'github' ? <GitHubPage cloud={!!info?.cloud} />
+    : section === 'slack' ? <SlackPage cloud={!!info?.cloud} />
     : section === 'environments' ? (id ? <EnvironmentEdit key={id} id={id} tab={tab} /> : <Environments />)
     : section === 'secrets' ? <SecretsPage scope={id || ''} />
     : section === 'mcp' ? <MCPServers />
@@ -146,23 +146,25 @@ const ANTHROPIC: Record<string, string> = {
   secret: 'Using a global secret.',
   '': "Not configured, so agents can't run.",
 };
-function CredentialsPage() {
+function CredentialsPage({ cloud }: { cloud: boolean }) {
   const [c, reload] = useLoad<Credentials>('/api/credentials');
   if (!c) return <p class="empty">Loading…</p>;
   const a = c.anthropic.source;
   return (
     <>
       <Head title="Credentials">
-        Stored encrypted on this server; values are never shown again. A credential stored here takes precedence over the server's
-        environment. GitHub is connected under <a href="#/settings/github">GitHub</a>.
+        {cloud ? 'Stored encrypted in this workspace; values are never shown again.' : <>Stored encrypted on this server; values are never
+          shown again. A credential stored here takes precedence over the server's environment.</>} GitHub is connected
+        under <a href="#/settings/github">GitHub</a>.
       </Head>
       <section class="card">
         <div class="card-head"><h2>Anthropic</h2><Status ok={!!a} /></div>
-        <p class="hint">{ANTHROPIC[a] ?? a} Agents need an API key or a subscription token; either works.</p>
+        <p class="hint">{ANTHROPIC[a] ?? a} {cloud ? 'Agents use your Anthropic API key.' : 'Agents need an API key or a subscription token; either works.'}</p>
         <CredRow name="ANTHROPIC_API_KEY" label="API key" stored={c.stored.ANTHROPIC_API_KEY} done={reload}
           hint="From the Anthropic Console. Billed per use." />
-        <CredRow name="CLAUDE_CODE_OAUTH_TOKEN" label="Subscription token" stored={c.stored.CLAUDE_CODE_OAUTH_TOKEN} done={reload}
-          hint={<>Uses a Claude subscription. Create one with <code>claude setup-token</code>.</>} />
+        {(!cloud || c.stored.CLAUDE_CODE_OAUTH_TOKEN) && <CredRow name="CLAUDE_CODE_OAUTH_TOKEN" label="Subscription token"
+          stored={c.stored.CLAUDE_CODE_OAUTH_TOKEN} done={reload}
+          hint={cloud ? 'Not used here: remove it, and add an API key.' : <>Uses a Claude subscription. Create one with <code>claude setup-token</code>.</>} />}
       </section>
     </>
   );
@@ -177,7 +179,7 @@ const TOKEN: Record<string, string> = {
   '': 'No token is set.',
 };
 
-function GitHubPage() {
+function GitHubPage({ cloud }: { cloud: boolean }) {
   const [st, reload] = useLoad<GitHubStatus>('/api/github');
   const [c, reloadCreds, setC] = useLoad<Credentials>('/api/credentials');
   const [checking, setChecking] = useState(false);
@@ -206,7 +208,7 @@ function GitHubPage() {
         {account
           ? <p>Connected as <b>@{account.login}</b>{account.name && <span class="muted"> ({account.name})</span>}. Your sessions' commits and pull
             requests are yours.</p>
-          : <ConnectGitHub status={st} />}
+          : <ConnectGitHub status={st} cloud={cloud} />}
       </section>
       {app && (
         <section class="card">
@@ -236,7 +238,7 @@ function GitHubPage() {
           )}
         </section>
       )}
-      {(me?.admin || !me?.people) && <section class="card">
+      {!cloud && (me?.admin || !me?.people) && <section class="card">
         <div class="card-head">
           <h2>Personal access token</h2>
           {g.source && <button class="btn sm push" disabled={checking} onClick={check}>{checking ? 'Checking…' : 'Check'}</button>}

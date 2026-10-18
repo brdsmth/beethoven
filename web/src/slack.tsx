@@ -66,7 +66,7 @@ function CreateApp() {
   );
 }
 
-export function SlackPage() {
+export function SlackPage({ cloud }: { cloud?: boolean }) {
   const [st, reload] = useLoad<SlackStatus>('/api/slack');
   const [envs] = useLoad<Environment[]>('/api/environments');
   const [settings, reloadSettings] = useLoad<SettingsInfo>('/api/settings');
@@ -93,7 +93,7 @@ export function SlackPage() {
         Mention <b>@beethoven</b> in a channel, or send it a direct message, and it works on the request in a session and answers
         in the thread. Mention it again in the thread to follow up.
       </Head>
-      {!reachable() && (
+      {!cloud && !reachable() && (
         <p class="banner warn">
           Slack can only reach Beethoven at a public HTTPS address. Open Beethoven through that address to connect Slack; for local
           testing, a tunnel such as <code>cloudflared tunnel --url http://localhost:7070</code> works, with its host in BEETHOVEN_HOSTS.
@@ -104,7 +104,7 @@ export function SlackPage() {
           <h2>Workspaces</h2>
           <span class={'chip ' + (st.installations.length ? 'green' : 'amber')}>{st.installations.length ? 'Connected' : 'Not connected'}</span>
         </div>
-        {!st.app ? <CreateApp /> : (
+        {!st.app ? (cloud ? <p class="muted">Slack isn't available on this service yet.</p> : <CreateApp />) : (
           <>
             <div class="rows">
               {st.installations.map(i => (

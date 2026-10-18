@@ -33,11 +33,31 @@ function Root() {
   }, []);
   if (route[0] === 'invite' && route[1]) return <InviteAccept token={route[1]} />;
   if (!auth) return error ? <div class="auth"><p class="auth-error" role="alert">Can't reach the server: {error}</p></div> : null;
-  if (auth.required && !auth.account) return <SignIn setup={auth.setup} done={a => { setAuth(a); setMe(a); }} />;
+  const code = route[0] === 'claim' ? route[1] : undefined;
+  if (route[0] === 'claim' && (!auth.setup || auth.account)) return <Moved to="/" />; // claimed already: on to the workspace
+  if (auth.setup && auth.claim && !code) return <Unclaimed />;
+  if (auth.required && !auth.account) return <SignIn setup={auth.setup} code={code} done={a => { setAuth(a); setMe(a); go('/'); }} />;
   return <App account={auth.account} />;
 }
 
-function SignIn({ setup, done }: { setup: boolean; done: (a: AuthState) => void }) {
+// Unclaimed is a hosted workspace nobody has claimed, visited without the
+// link that claims it.
+function Unclaimed() {
+  document.title = 'Beethoven';
+  return (
+    <div class="auth">
+      <div class="auth-card">
+        <div class="brand">Beethoven</div>
+        <div class="auth-head">
+          <h1>This workspace isn't set up yet</h1>
+          <p class="muted">Its owner sets it up with the link it was created with. If that's you, open that link.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SignIn({ setup, code, done }: { setup: boolean; code?: string; done: (a: AuthState) => void }) {
   const [f, setF] = useState({ name: '', email: '', password: '' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -51,7 +71,7 @@ function SignIn({ setup, done }: { setup: boolean; done: (a: AuthState) => void 
     setError('');
     try {
       done(await api<AuthState>('POST', setup ? '/api/auth/setup' : '/api/auth/login',
-        setup ? f : { email: f.email, password: f.password }));
+        setup ? { ...f, code } : { email: f.email, password: f.password }));
     } catch (err) {
       const msg = (err as Error).message;
       setError(msg.charAt(0).toUpperCase() + msg.slice(1) + '.');
@@ -65,7 +85,8 @@ function SignIn({ setup, done }: { setup: boolean; done: (a: AuthState) => void 
         <div class="brand">Beethoven</div>
         <div class="auth-head">
           <h1>{setup ? 'Create your account' : 'Sign in'}</h1>
-          {setup && <p class="muted">This server is new. The account you create now owns it; you'll sign in with it from then on.</p>}
+          {setup && <p class="muted">This {code ? 'workspace' : 'server'} is new. The account you create now owns it; you'll sign in with it from
+            then on.</p>}
         </div>
         {setup && (
           <label class="field"><span class="field-label">Name</span>
@@ -169,7 +190,7 @@ function NewSession({ info }: { info?: Info }) {
   return (
     <div class="page narrow">
       <h1>New session</h1>
-      {info && !info.github && <GitHubSetup />}
+      {info && !info.github && <GitHubSetup cloud={info.cloud} />}
       <form class="form" onSubmit={e => { e.preventDefault(); submit(); }}>
         <div class={'prompt-box' + (f.over ? ' dropping' : '')}>
           <textarea class="big" rows={8} autoFocus placeholder="What should the agent do?" value={prompt}
