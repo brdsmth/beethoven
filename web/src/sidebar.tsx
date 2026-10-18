@@ -169,6 +169,7 @@ export function Sidebar({ current, account }: { current: string; account: Accoun
                     <span class="item-main">
                       <span class="item-title">{orphan && <span class="dim">↳ </span>}{s.title || 'Untitled'}</span>
                       <span class="item-meta">
+                        {s.automation_id && <span class="auto" title="Started by an automation"><Icon name="bolt" size={11} />Auto</span>}
                         {s.status === 'running' && <span>Running</span>}
                         {s.status === 'failed' && <span class="err">Failed</span>}
                         {pr !== undefined && s.status !== 'running' && <span class="ok">{pr ? `PR #${pr}` : 'PR'}</span>}
