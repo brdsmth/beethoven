@@ -1,7 +1,7 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'preact/hooks';
 import {
-  api, get, onGlobal, subscribe, withFiles, type AddedCapability, type Environment, type Ev, type Info, type Prompt, type PullRequest, type Session,
+  api, get, onGlobal, subscribe, withFiles, type Environment, type Ev, type Info, type Prompt, type PullRequest, type Session,
 } from './api';
 import { AttachButton, Attachments, PendingFiles, useFiles } from './attach';
 import { useCapabilities } from './capabilities';
@@ -10,7 +10,7 @@ import { Link, Markdown, safeHref } from './markdown';
 import { TeamLabel, VisibilityBadge, useTeamIndex } from './teams';
 import { Icon, useDismiss } from './components';
 import { ShownCard, Viewer, ViewerContext, type Shown } from './viewer';
-import { Chip, Dot, MODELS, Spinner, ago, dur, effortLevels, fail, modEnter, money, toast, useLoad, useTick } from './util';
+import { Chip, Dot, MODELS, Spinner, ago, dur, effortLevels, fail, modEnter, money, useLoad, useTick } from './util';
 
 type End = { id: string; status: string; error?: string; cost_usd: number; duration_ms?: number };
 type Group = { id: string; items: Ev[] };
@@ -237,7 +237,7 @@ function Header({ s, kids, stats, caps, changed, extra }: {
             ))}
           </div>
         )}
-        <SessionCapabilities id={s.id} caps={caps} />
+        <SessionCapabilities caps={caps} />
         {kids.length > 0 && (
           <div class="meta kids">
             <span>Children</span>
@@ -255,33 +255,15 @@ function Header({ s, kids, stats, caps, changed, extra }: {
   );
 }
 
-/** The session's capabilities, and a menu that adds one: installed in the
- * sandbox now and kept for later. */
-function SessionCapabilities({ id, caps }: { id: string; caps: Model['caps'] }) {
+/** The toolchains the session's sandbox has: those its repositories need,
+ * found by the sandbox, and any the agent added. Nobody picks them here. */
+function SessionCapabilities({ caps }: { caps: Model['caps'] }) {
   const list = useCapabilities();
-  const [busy, setBusy] = useState('');
-  if (!list) return null;
+  if (!list || !caps.enabled.length) return null;
   const name = (c: string) => list.find(x => x.id === c)?.name || c;
-  const add = async (c: string) => {
-    setBusy(c);
-    try {
-      const r = await api<AddedCapability>('POST', `/api/sessions/${id}/capabilities`, { id: c });
-      toast(`Added ${r.name}` + (r.kept === 'environment' ? ` to the ${r.where} project` : r.kept === 'repository' ? '; the agent should commit .beethoven/capabilities' : ''));
-      r.warnings?.forEach(w => toast(w, true));
-    } catch (e) { fail(e); }
-    setBusy('');
-  };
-  const rest = list.filter(c => !caps.enabled.includes(c.id))
-    .sort((a, b) => Number(caps.suggested.includes(b.id)) - Number(caps.suggested.includes(a.id)));
   return (
-    <div class="meta caps-row">
-      {caps.enabled.map(c => <span key={c} class="badge plain" title="Capability">{name(c)}</span>)}
-      {rest.length > 0 && (
-        <select class="cap-add" aria-label="Add a capability" disabled={!!busy} value="" onChange={e => add(e.currentTarget.value)}>
-          <option value="">{busy ? `Installing ${name(busy)}…` : '+ Add capability'}</option>
-          {rest.map(c => <option key={c.id} value={c.id}>{c.name}{caps.suggested.includes(c.id) ? ' · suggested' : ''}</option>)}
-        </select>
-      )}
+    <div class="meta caps-row" title="Toolchains installed in the sandbox: found from the repositories' files or added by the agent">
+      {caps.enabled.map(c => <span key={c} class="badge plain">{name(c)}</span>)}
     </div>
   );
 }

@@ -192,8 +192,9 @@ function Configuration({ f, set, secrets }: { f: EF; set: (v: Partial<EF>) => vo
       <Group title="Repositories" hint={<>Each is cloned to <code>/workspace/&lt;name&gt;</code>. The first is the primary. A session copies this list when it starts.</>}>
         <RepoRows repos={f.repos} set={repos => set({ repos })} />
       </Group>
-      <Group title="Capabilities" hint={<>Toolchains the sandbox installs before the scripts run, each with instructions for the agent. A
-        repository can name more in <code>.beethoven/capabilities</code>, and the agent can add them during a session.</>}>
+      <Group title="Capabilities" hint={<>Usually nothing to choose: sandboxes install the toolchains their repositories look like they
+        need, and the agent adds others as it needs them. Tick one here only for needs the files don't show, such as Android
+        builds for a repository without an <code>android/</code> directory yet.</>}>
         <CapabilityPicker value={f.overrides.capabilities} set={capabilities => set({ overrides: { ...f.overrides, capabilities } })}
           inherited={g?.settings.capabilities} secrets={secrets} />
       </Group>

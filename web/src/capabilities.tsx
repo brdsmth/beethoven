@@ -2,8 +2,9 @@ import { useEffect, useState } from 'preact/hooks';
 import { get, type Capability } from './api';
 
 // Capabilities: toolchains a sandbox installs when it boots (a mobile app
-// stack, Go, Rust…), switched on globally, per project, in a
-// repository's .beethoven/capabilities, or during a session.
+// stack, Go, Rust…). Sandboxes install those their repositories look like
+// they need, and the agent adds others; settings and projects can name
+// more, for needs a repository's files don't show.
 
 let catalog: Promise<Capability[]> | undefined;
 /** The catalog, loaded once per page. */

@@ -120,8 +120,9 @@ function General() {
           <label>Author email<input type="email" placeholder={d.author_email || 'Email'} {...bind('author_email')} /></label>
         </div>
       </Group>
-      <Group title="Capabilities" hint={<>Toolchains every sandbox installs, each with instructions for the agent. Projects add their
-        own, a repository can name more in <code>.beethoven/capabilities</code>, and the agent can add them during a session.</>}>
+      <Group title="Capabilities" hint={<>Usually nothing to choose: sandboxes install the toolchains their repositories look like they
+        need (a <code>go.mod</code> brings Go), keep them for the next sandbox, and the agent adds others as it needs them. Tick one
+        here only to install it in every sandbox.</>}>
         <CapabilityPicker value={f.capabilities} set={v => set('capabilities', v)} secrets={secrets?.map(s => s.name)} />
       </Group>
       <Group title="Sandbox" hint="Image, CPUs and memory apply when a session's sandbox is first created. Capabilities raise a CPU or memory limit to what they need.">
