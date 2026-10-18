@@ -296,3 +296,24 @@ func TestMigratingKeepsData(t *testing.T) {
 		t.Errorf("names stay unique in the workspace: %v", err)
 	}
 }
+
+func TestSessionQuery(t *testing.T) {
+	s := open(t)
+	for _, title := range []string{"Fix the Sidebar", "Redesign the sidebar", "100% coverage", "Add a_b", "Unrelated"} {
+		if err := s.CreateSession(ctx, &Session{ID: NewID(), Title: title, Branch: "b", Source: "test", Status: "idle", Sandbox: "none"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func(q string) int {
+		list, err := s.Sessions(ctx, SessionFilter{Query: q})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(list)
+	}
+	for q, want := range map[string]int{"sidebar": 2, "SIDEBAR": 2, "%": 1, "_": 1, "a_b": 1, "nothing": 0, "": 5} {
+		if got := count(q); got != want {
+			t.Errorf("query %q matched %d, want %d", q, got, want)
+		}
+	}
+}

@@ -262,6 +262,7 @@ type SessionFilter struct {
 	Viewer   *Viewer  // only sessions this viewer may read; nil = all
 	Teams    []string // only sessions owned by these teams ("" = the workspace)
 	Account  string   // only sessions this person started
+	Query    string   // only sessions whose title contains this, ignoring case
 	Limit    int
 }
 
@@ -287,6 +288,10 @@ func (s *Store) Sessions(ctx context.Context, f SessionFilter) ([]Session, error
 		q += ` AND archived=?`
 		args = append(args, *f.Archived)
 	}
+	if f.Query != "" {
+		q += ` AND title LIKE ? ESCAPE '\'`
+		args = append(args, "%"+likeEscaper.Replace(f.Query)+"%")
+	}
 	if f.ParentID != "" {
 		q += ` AND parent_id=?`
 		args = append(args, f.ParentID)
@@ -304,6 +309,9 @@ func (s *Store) Sessions(ctx context.Context, f SessionFilter) ([]Session, error
 	args = append(args, f.Limit)
 	return query(ctx, s.r, scanSession, q, args...)
 }
+
+// likeEscaper escapes LIKE's wildcards, so a query matches literally.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
 // ----------------------------------------------------------------- prompts
 

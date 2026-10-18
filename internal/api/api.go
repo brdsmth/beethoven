@@ -220,14 +220,18 @@ func (s *Server) hostAllowed(hostport string) bool {
 
 // listSessions lists the sessions the viewer may read, newest activity
 // first. ?team= narrows to teams (comma separated; "workspace" for the
-// workspace's own), ?mine=1 to the viewer's own.
+// workspace's own), ?mine=1 to the viewer's own, ?q= to titles containing
+// it. ?archived=1 lists archived sessions, ?archived=all both.
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	who := actor(r)
-	archived := q.Get("archived") == "1"
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	viewer := who.Viewer()
-	f := store.SessionFilter{Archived: &archived, ParentID: q.Get("parent"), Limit: limit, Viewer: &viewer}
+	f := store.SessionFilter{ParentID: q.Get("parent"), Query: strings.TrimSpace(q.Get("q")), Limit: limit, Viewer: &viewer}
+	if v := q.Get("archived"); v != "all" {
+		archived := v == "1"
+		f.Archived = &archived
+	}
 	if v := q.Get("team"); v != "" {
 		f.Teams = []string{}
 		for _, t := range strings.Split(v, ",") {
