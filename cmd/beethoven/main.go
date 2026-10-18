@@ -46,6 +46,7 @@ Client (talks to $BEETHOVEN_URL, default http://127.0.0.1:7070):
       -model m  -effort e  -title t  -d (don't follow)
   beethoven send [-d] <session> <prompt>   queue a follow-up prompt
   beethoven tail <session>                 follow a session's timeline
+  beethoven logs [-json] <session>         print a session's full timeline, to read or hand to an agent
   beethoven ls [-a]                        list sessions (-a: archived)
   beethoven stop <session>                 stop the running prompt, cancel queued ones
   beethoven env ls                         list environments
@@ -94,6 +95,8 @@ func main() {
 		err = cmdSend(args)
 	case "tail":
 		err = cmdTail(args)
+	case "logs":
+		err = cmdLogs(args)
 	case "ls":
 		err = cmdList(args)
 	case "stop":
