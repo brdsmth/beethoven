@@ -24,11 +24,18 @@ export const attachmentURL = (session: string, a: Attachment) => `/api/sessions/
 export type Ev = { session: string; seq?: number; type: string; prompt?: string; data?: any; at: string };
 /** What a session works on: an environment, repositories, or neither (scratch). */
 export type Target = { environment_id: string; repos: RepoRef[] };
+/** Which git host events fire an automation: one kind, with every condition true. */
+export type Condition = { type: string; values: string[]; negate?: boolean; regex?: boolean };
+export type Trigger = { event: string; conditions: Condition[] };
+export type EventKind = { id: string; label: string; conditions: string[] };
 export type Spec = Target & {
   name: string; prompt: string; model: string; effort: string; schedule: string; reuse: boolean; enabled: boolean;
-  team_id?: string;
+  team_id?: string; trigger?: Trigger;
 };
-export type Automation = Spec & { id: string; failures: number; next_run_at?: string; created_at: string; account_id?: string };
+export type Automation = Spec & {
+  id: string; failures: number; next_run_at?: string; created_at: string; account_id?: string;
+  trigger_event: string; trigger_conditions: Condition[];
+};
 export type Info = {
   version: string; author: Author; github: boolean; anthropic: boolean; model: string; effort: string; efforts: string[];
 };

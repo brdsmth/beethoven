@@ -1,15 +1,36 @@
 import { useEffect, useState } from 'preact/hooks';
-import { api, get, type Automation, type Environment, type Prompt, type Session, type Spec } from './api';
+import { api, get, type Automation, type Condition, type Environment, type EventKind, type Prompt, type Session, type Spec, type Trigger } from './api';
 import { span } from './insights';
 import { TargetPicker, fromTarget, targetProblem, toTarget, type Pick } from './pickers';
 import { TeamLabel, useMe, useTeamIndex, useTeams } from './teams';
 import { Chip, ConfirmButton, EffortSelect, ModelField, ago, fail, go, hashParam, money, targetLabel, toast, useForm, useLoad, when } from './util';
 
 const MAX_FAILURES = 3;
-const toSpec = ({ name, environment_id, repos, prompt, model, effort, schedule, reuse, enabled, team_id }: Spec): Spec => ({
-  name, team_id: team_id || '', environment_id: environment_id || '', repos: repos.map(r => ({ repo: r.repo, base_branch: r.base_branch })),
-  prompt, model, effort, schedule, reuse, enabled,
+const toSpec = (a: Automation): Spec => ({
+  name: a.name, team_id: a.team_id || '', environment_id: a.environment_id || '',
+  repos: a.repos.map(r => ({ repo: r.repo, base_branch: r.base_branch })),
+  prompt: a.prompt, model: a.model, effort: a.effort, schedule: a.schedule, reuse: a.reuse, enabled: a.enabled,
+  trigger: a.trigger_event ? { event: a.trigger_event, conditions: a.trigger_conditions || [] } : undefined,
 });
+
+type Kinds = { kinds: EventKind[]; webhook: { path: string; secret: boolean } };
+
+/** How to say each condition type, and whether it can be negated. */
+const CONDITIONS: Record<string, { label: string; placeholder: string; not?: string; regex?: boolean }> = {
+  added_label: { label: 'Label added is', placeholder: 'agent, needs-fix' },
+  label: { label: 'Has a label', placeholder: 'bug, p1', not: 'Has none of these' },
+  branch: { label: 'Branch matches', placeholder: 'main, release/*' },
+  base: { label: 'Target branch matches', placeholder: 'main' },
+  actor: { label: 'Done by', placeholder: 'octocat', not: 'Not done by' },
+  draft: { label: 'Draft', placeholder: 'true or false' },
+  text: { label: 'Text contains', placeholder: '@beethoven', regex: true, not: "Text doesn't contain" },
+  conclusion: { label: 'CI conclusion is', placeholder: 'failure, timed_out' },
+  check_name: { label: 'Workflow or check', placeholder: 'CI, Deploy*' },
+  review_state: { label: 'Review is', placeholder: 'changes_requested, approved' },
+};
+
+const describeTrigger = (a: Automation, kinds?: EventKind[]) =>
+  a.trigger_event ? 'on ' + (kinds?.find(k => k.id === a.trigger_event)?.label.toLowerCase() ?? a.trigger_event) : '';
 
 const runNow = (a: Automation) =>
   api<{ session: Session }>('POST', `/api/automations/${a.id}/run`).then(r => go('/s/' + r.session.id), fail);
@@ -17,6 +38,7 @@ const runNow = (a: Automation) =>
 export function Automations() {
   const [list, load] = useLoad<Automation[]>('/api/automations');
   const [envs] = useLoad<Environment[]>('/api/environments');
+  const [kinds] = useLoad<Kinds>('/api/automations/events');
   const team = useTeamIndex();
   const toggle = (a: Automation) => api('PUT', `/api/automations/${a.id}`, { ...toSpec(a), enabled: !a.enabled }).then(load, fail);
   return (
@@ -25,7 +47,8 @@ export function Automations() {
         <h1>Automations</h1>
         <a class="btn primary" href="#/automations/new">New automation</a>
       </div>
-      {list?.length === 0 && <p class="empty">No automations yet. An automation runs a saved prompt on a schedule or when its webhook is called.</p>}
+      {list?.length === 0 && <p class="empty">No automations yet. An automation runs a saved prompt on a schedule, when something happens in
+        a repository (an issue labeled, a pull request opened…), or when its webhook is called.</p>}
       <div class="rows">
         {list?.map(a => (
           <div key={a.id} class="row">
@@ -35,7 +58,8 @@ export function Automations() {
                 {a.team_id && <TeamLabel team={team(a.team_id)} />}
                 {a.environment_id ? <span>Project: {envs ? envs.find(e => e.id === a.environment_id)?.name ?? 'deleted' : '…'}</span>
                   : <span class={a.repos.length ? 'mono' : ''}>{targetLabel(a)}</span>}
-                <span class="mono">{a.schedule || 'webhook / manual'}</span>
+                {a.trigger_event && <span>{describeTrigger(a, kinds?.kinds)}</span>}
+                {(a.schedule || !a.trigger_event) && <span class="mono">{a.schedule || 'webhook / manual'}</span>}
                 {a.enabled && a.next_run_at && <span>next {when(a.next_run_at)}</span>}
                 {!a.enabled && a.failures >= MAX_FAILURES ? <span class="err">paused after {a.failures} failures</span>
                   : a.failures > 0 && <span class="warn">{a.failures} failed in a row</span>}
@@ -67,6 +91,7 @@ export function AutomationEdit({ id }: { id: string }) {
   const [runs, setRuns] = useState<Prompt[]>();
   const [hook, setHook] = useState<{ id: string; url: string; token: string }>();
   const [busy, setBusy] = useState(false);
+  const [kinds] = useLoad<Kinds>('/api/automations/events');
 
   useEffect(() => {
     if (isNew) return;
@@ -125,14 +150,16 @@ export function AutomationEdit({ id }: { id: string }) {
           <label>Effort<EffortSelect value={f.effort} set={effort => setF(p => ({ ...p, effort }))} def="Default" /></label>
         </div>
         <label>Prompt<textarea rows={6} required {...bind('prompt')} /></label>
+        <TriggerEditor kinds={kinds} v={f.trigger} set={trigger => setF(p => ({ ...p, trigger }))} />
         <label>Schedule
           <input class="mono" placeholder="0 9 * * 1-5" spellcheck={false} {...bind('schedule')} />
           <span class="hint">
             Five-field cron: <code>0 9 * * 1-5</code> weekdays at 9:00, <code>*/30 * * * *</code> every 30 minutes,
-            {' '}<code>CRON_TZ=America/New_York 0 9 * * *</code> with a time zone. Leave empty to run only from the webhook or by hand.
+            {' '}<code>CRON_TZ=America/New_York 0 9 * * *</code> with a time zone. Leave empty to run only on events, from the webhook or by hand.
           </span>
         </label>
-        <label class="toggle"><input type="checkbox" {...check('reuse')} /> Reuse one session for every run</label>
+        <label class="toggle"><input type="checkbox" {...check('reuse')} />
+          {f.trigger?.event ? ' Reuse one session per issue or pull request' : ' Reuse one session for every run'}</label>
         <label class="toggle"><input type="checkbox" {...check('enabled')} /> Enabled</label>
         {current && current.failures > 0 && (
           <p class="warn">{current.failures} run{current.failures > 1 ? 's' : ''} failed in a row
@@ -160,6 +187,61 @@ export function AutomationEdit({ id }: { id: string }) {
             ))}
           </div>
         </section>
+      )}
+    </div>
+  );
+}
+
+/** Picks the repository event that fires the automation and its conditions. */
+function TriggerEditor({ kinds, v, set }: { kinds?: Kinds; v?: Trigger; set: (t?: Trigger) => void }) {
+  const kind = kinds?.kinds.find(k => k.id === v?.event);
+  const conds = v?.conditions ?? [];
+  const setCond = (i: number, c?: Condition) =>
+    set({ event: v!.event, conditions: c ? conds.map((x, j) => (j === i ? c : x)) : conds.filter((_, j) => j !== i) });
+  const unused = kind?.conditions.filter(t => !conds.some(c => c.type === t)) ?? [];
+  return (
+    <div class="field">
+      <span class="field-label">Repository event</span>
+      <select value={v?.event ?? ''} onChange={e => {
+        const event = e.currentTarget.value;
+        const allowed = kinds?.kinds.find(k => k.id === event)?.conditions ?? [];
+        set(event ? { event, conditions: conds.filter(c => allowed.includes(c.type)) } : undefined);
+      }}>
+        <option value="">None</option>
+        {kinds?.kinds.map(k => <option key={k.id} value={k.id}>{k.label}</option>)}
+      </select>
+      {kind && (
+        <div class="conditions">
+          {conds.map((c, i) => {
+            const meta = CONDITIONS[c.type] ?? { label: c.type, placeholder: '' };
+            return (
+              <div key={c.type} class="condition">
+                <span class="condition-label">{c.negate && meta.not ? meta.not : meta.label}</span>
+                <input value={c.values.join(', ')} placeholder={meta.placeholder} spellcheck={false}
+                  onInput={e => setCond(i, { ...c, values: e.currentTarget.value.split(',').map(s => s.trim()) })} />
+                {meta.not && <label class="toggle small"><input type="checkbox" checked={!!c.negate}
+                  onChange={e => setCond(i, { ...c, negate: e.currentTarget.checked })} /> not</label>}
+                {meta.regex && <label class="toggle small"><input type="checkbox" checked={!!c.regex}
+                  onChange={e => setCond(i, { ...c, regex: e.currentTarget.checked })} /> regex</label>}
+                <button type="button" class="btn small" onClick={() => setCond(i)}>Remove</button>
+              </div>
+            );
+          })}
+          {unused.length > 0 && (
+            <select value="" onChange={e => set({ event: v!.event, conditions: [...conds, { type: e.currentTarget.value, values: [] }] })}>
+              <option value="">Add a condition…</option>
+              {unused.map(t => <option key={t} value={t}>{CONDITIONS[t]?.label ?? t}</option>)}
+            </select>
+          )}
+          <span class="hint">
+            Fires for events in the repositories above, when every condition holds. Lists match any of their values;
+            branch patterns take <code>*</code>. Each run gets the issue or pull request with the prompt, and the agent can reply
+            with comments and labels.
+            {kinds && !kinds.webhook.secret && <> <b>This server isn't receiving GitHub events yet</b>: connect a GitHub App created
+              from a public HTTPS address, or point a repository webhook at <code>{location.origin + kinds.webhook.path}</code> with
+              {' '}<code>BEETHOVEN_GITHUB_WEBHOOK_SECRET</code> set.</>}
+          </span>
+        </div>
       )}
     </div>
   );

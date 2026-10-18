@@ -709,3 +709,9 @@ a.team-label:hover { color: var(--text); text-decoration: none; }
 .peek summary { width: fit-content; cursor: pointer; user-select: none; color: var(--accent); }
 .peek pre { margin: 6px 0 4px; padding: 8px 10px; background: var(--code); border-radius: var(--radius); font-size: 11.5px; overflow-x: auto; }
 .peek .hint { margin: 0; }
+
+/* Automation trigger conditions */
+.conditions { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.condition { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.condition-label { min-width: 150px; font-size: 13px; color: var(--muted); }
+.condition input:not([type]) { flex: 1; min-width: 140px; }
