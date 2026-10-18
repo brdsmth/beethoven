@@ -32,7 +32,18 @@ type Store struct {
 	key  []byte
 }
 
-func Open(path string, secretKey []byte) (*Store, error) {
+func Open(path string, secretKey []byte) (*Store, error) { return OpenWith(path, secretKey, Options{}) }
+
+// Options change how a database is opened.
+type Options struct {
+	// BeforeMigrate runs when migrations are pending, before any is applied,
+	// with their names and a function that copies the database, as it is,
+	// to a new file. An error stops the open with the database untouched.
+	BeforeMigrate func(pending []string, backup func(path string) error) error
+}
+
+// OpenWith opens a database, applying any pending migrations first.
+func OpenWith(path string, secretKey []byte, opts Options) (*Store, error) {
 	if len(secretKey) != 32 {
 		return nil, errors.New("store: secret key must be 32 bytes")
 	}
@@ -42,7 +53,7 @@ func Open(path string, secretKey []byte) (*Store, error) {
 		return nil, err
 	}
 	w.SetMaxOpenConns(1)
-	if err := migrate(w); err != nil {
+	if err := Migrate(w, migrations, "migrations", opts.BeforeMigrate); err != nil {
 		w.Close()
 		return nil, fmt.Errorf("store: %s: %w", path, err)
 	}
@@ -63,42 +74,106 @@ func Open(path string, secretKey []byte) (*Store, error) {
 
 func (s *Store) Close() error { return errors.Join(s.r.Close(), s.w.Close()) }
 
-// migrate applies migrations/NNN_*.sql in order, tracking progress in
-// PRAGMA user_version so each runs once. A database with tables but no
-// version was created by something else, and is refused untouched.
-func migrate(db *sql.DB) error {
-	names, err := fs.Glob(migrations, "migrations/*.sql")
+// Migrations lists the migrations applied to the database, in the order
+// they were applied.
+func (s *Store) Migrations(ctx context.Context) ([]string, error) {
+	return query(ctx, s.r, func(r scanner) (string, error) {
+		var name string
+		return name, r.Scan(&name)
+	}, `SELECT name FROM schema_migrations ORDER BY applied_at, rowid`)
+}
+
+// Migrate applies the *.sql files in dir of files that db hasn't had, in
+// name order, each in its own transaction, recording each by name in
+// schema_migrations. Recording names rather than a count lets branches
+// developed side by side each add migrations. PRAGMA user_version still
+// counts them: databases from before names were recorded counted their
+// migrations there, so their first user_version migrations are recorded as
+// applied. A database with tables but neither is someone else's, and is
+// refused untouched. before, if set, runs when migrations are pending.
+func Migrate(db *sql.DB, files fs.FS, dir string, before func(pending []string, backup func(path string) error) error) error {
+	names, err := fs.Glob(files, dir+"/*.sql")
 	if err != nil {
 		return err
 	}
 	sort.Strings(names)
-	var version int
+	var version, tables int
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version == 0 {
-		var tables int
-		if err := db.QueryRow(`SELECT count(*) FROM sqlite_master`).Scan(&tables); err != nil {
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE tbl_name != 'schema_migrations'`).Scan(&tables); err != nil {
+		return err
+	}
+	if version == 0 && tables > 0 {
+		return errors.New("not a beethoven database; move it aside or use another data directory")
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
+		return err
+	}
+	applied := map[string]bool{}
+	rows, err := db.Query(`SELECT name FROM schema_migrations`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
 			return err
 		}
-		if tables > 0 {
-			return errors.New("not a beethoven database; move it aside or use another data directory")
+		applied[name] = true
+	}
+	rows.Close()
+	base := func(name string) string { return strings.TrimPrefix(name, dir+"/") }
+	if len(applied) == 0 && version > 0 { // counted, not yet named
+		if version > len(names) {
+			return fmt.Errorf("the database has %d migrations, more than this version of Beethoven knows", version)
+		}
+		for _, name := range names[:version] {
+			if _, err := db.Exec(`INSERT INTO schema_migrations (name, applied_at) VALUES (?, 0)`, base(name)); err != nil {
+				return err
+			}
+			applied[base(name)] = true
 		}
 	}
-	for i, name := range names {
-		if i < version {
-			continue
+	var pending []string
+	for _, name := range names {
+		if !applied[base(name)] {
+			pending = append(pending, name)
 		}
-		body, _ := migrations.ReadFile(name)
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	if before != nil {
+		backup := func(path string) error {
+			_, err := db.Exec(`VACUUM INTO ?`, path)
+			return err
+		}
+		short := make([]string, len(pending))
+		for i, name := range pending {
+			short[i] = base(name)
+		}
+		if err := before(short, backup); err != nil {
+			return err
+		}
+	}
+	for _, name := range pending {
+		body, _ := fs.ReadFile(files, name)
 		tx, err := db.Begin()
 		if err != nil {
 			return err
 		}
 		if _, err := tx.Exec(string(body)); err != nil {
 			tx.Rollback()
-			return fmt.Errorf("migration %s: %w", name, err)
+			return fmt.Errorf("migration %s: %w", base(name), err)
 		}
-		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, i+1)); err != nil {
+		if _, err := tx.Exec(`INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)`, base(name), ms(time.Now())); err != nil {
+			tx.Rollback()
+			return err
+		}
+		applied[base(name)] = true
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(applied))); err != nil {
 			tx.Rollback()
 			return err
 		}
