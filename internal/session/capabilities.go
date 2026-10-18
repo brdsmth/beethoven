@@ -18,7 +18,9 @@ import (
 // Capabilities reach a sandbox when it boots: the server sends the catalog
 // on the boot script's stdin, and the ids it enabled (the global settings',
 // the environment's and those added during the session) in CAPABILITIES;
-// the sandbox adds the ids its repositories name and installs them all.
+// the sandbox adds the ids its repositories name or look like they need and
+// installs them all. What each repository needed is kept (repo_capabilities)
+// for sizing its next sandbox and unpacking cached installs into it.
 // What it set up comes back as "::capability" lines and is logged as an
 // EvCapabilities event, so the session's log, not a table, remembers it.
 
@@ -41,12 +43,14 @@ func (s capabilityState) same(o capabilityState) bool {
 		maps.Equal(s.Env, o.Env)
 }
 
-// capabilityLines reads the "::capability", "::suggest", "::env" and
-// "::warn" lines of the capability scripts.
+// capabilityLines reads the "::capability", "::suggest", "::repo",
+// "::cache", "::env" and "::warn" lines of the capability scripts.
 type capabilityLines struct {
 	state    capabilityState
 	warnings []string
 	recorded string
+	repos    map[string][]string // by repository directory
+	exports  []capabilityExport
 }
 
 func (c *capabilityLines) line(l string) bool {
@@ -65,6 +69,17 @@ func (c *capabilityLines) line(l string) bool {
 		}
 	case "::recorded":
 		c.recorded = arg
+	case "::repo":
+		if dir, id, ok := strings.Cut(arg, " "); ok {
+			if c.repos == nil {
+				c.repos = map[string][]string{}
+			}
+			c.repos[dir] = capability.Union(c.repos[dir], []string{id})
+		}
+	case "::cache":
+		if f := strings.Fields(arg); len(f) == 5 {
+			c.exports = append(c.exports, capabilityExport{ID: f[0], Hash: f[1], Machine: f[2], SHA256: f[3], File: f[4]})
+		}
 	case "::warn":
 		c.warnings = append(c.warnings, arg)
 	default:

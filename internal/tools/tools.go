@@ -43,7 +43,7 @@ func Handler(m *session.Manager) http.Handler {
 	mcp.AddTool(srv, &mcp.Tool{Name: "list_sessions", Description: "List your child sessions with their status."}, t.list)
 	mcp.AddTool(srv, &mcp.Tool{Name: "stop_session", Description: "Stop a child session's current work and cancel its queued prompts."}, t.stop)
 	mcp.AddTool(srv, &mcp.Tool{Name: "list_capabilities", Description: "List the toolchains this sandbox can be given (mobile apps with Expo, " +
-		"Android builds, Go, Rust, Bun, Python with uv): which are set up, which the repositories look like they need, and the secrets each uses."}, t.listCapabilities)
+		"Android builds, Go, Rust, Bun, Python with uv): which are set up and the secrets each uses. Those the repositories look like they need are set up already."}, t.listCapabilities)
 	mcp.AddTool(srv, &mcp.Tool{Name: "add_capability", Description: "Install a toolchain in this sandbox now, with a skill that explains how to use it, " +
 		"and keep it for later sessions: in the session's project (environment), or in the repository's .beethoven/capabilities file, which you then commit."}, t.addCapability)
 

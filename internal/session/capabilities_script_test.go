@@ -25,7 +25,8 @@ func TestCapabilityScript(t *testing.T) {
 	os.WriteFile(filepath.Join(ws, "app/.beethoven/capabilities"), []byte("three  # its build needs it\n\nnope one\n"), 0o644)
 	os.WriteFile(filepath.Join(ws, "app/marker-four"), nil, 0o644)
 	catalog := capability.ArchiveOf([]capability.Capability{
-		{ID: "one", Name: "One", Install: `echo one >> "$HOME/installs"`, Detect: "false", Skill: "Use one.",
+		{ID: "one", Name: "One", Install: `echo one >> "$HOME/installs" && mkdir -p "$HOME/one" && touch "$HOME/one/bin"`, Paths: []string{"one"},
+			Detect: "false", Skill: "Use one.",
 			Secrets: []capability.Secret{{Name: "ONE_TOKEN", Required: true, Why: "for one"}}, Env: map[string]string{"ONE_HOME": "$HOME/one"}},
 		{ID: "two", Name: "Two", Install: "exit 3", Detect: "false", Skill: "Use two."},
 		{ID: "three", Name: "Three", Install: `echo three >> "$HOME/installs"`, Prepare: "pwd > prepared", Detect: "false", Skill: "Use three."},
@@ -52,10 +53,11 @@ func TestCapabilityScript(t *testing.T) {
 	}
 	read := func(path string) string { b, _ := os.ReadFile(path); return string(b) }
 
-	out := run("cap_setup", "CAPABILITIES=one two")
+	// Detected capabilities are installed too; dependencies come after.
+	out := run("cap_setup\ncap_prepare", "CAPABILITIES=one two", "CAP_EXPORT=1")
 	has(out, "::capability one", "::env ONE_HOME="+home+"/one", "::warn the One capability needs ONE_TOKEN, for one: add it as a secret",
 		"::warn the Two capability failed to install", "::capability three", `::warn unknown capability "nope"; see Settings for the capabilities available`,
-		"::suggest four")
+		"::repo app three", "::repo app four", "::capability four")
 	if strings.Contains(out, "::capability two") || strings.Count(out, "::capability one") != 1 {
 		t.Errorf("two failed but is reported, or one twice:\n%s", out)
 	}
@@ -66,6 +68,14 @@ func TestCapabilityScript(t *testing.T) {
 		if got := strings.TrimSpace(read(filepath.Join(ws, repo, "prepared"))); !strings.HasSuffix(got, "/"+repo) {
 			t.Errorf("three prepared %s in %q", repo, got)
 		}
+	}
+	// The fresh install of one, which has paths, was packed for the server.
+	packed := filepath.Join(home, ".beethoven/export/one.tar.gz")
+	if !strings.Contains(out, "::cache one ") || !strings.Contains(out, " "+packed+"\n") {
+		t.Errorf("one wasn't packed:\n%s", out)
+	}
+	if list, err := exec.Command("tar", "-tzf", packed).Output(); err != nil || !strings.Contains(string(list), "one/bin") {
+		t.Errorf("packed %q, %v", list, err)
 	}
 	if skill := read(filepath.Join(home, ".claude/skills/one/SKILL.md")); !strings.HasPrefix(skill, "---\nname: one\n") {
 		t.Errorf("skill = %q", skill)

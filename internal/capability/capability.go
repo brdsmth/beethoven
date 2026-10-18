@@ -1,8 +1,9 @@
 // Package capability describes the development toolchains a sandbox can be
 // given on demand: a mobile app stack, a language's toolchain, and so on.
-// A capability is switched on in the global settings, for an environment,
-// in a repository's .beethoven/capabilities file, or by the agent during a
-// session, and the sandbox installs it when it boots. Each one brings
+// Nobody has to choose them: a sandbox installs those its repositories look
+// like they need, and the agent adds others during a session. Global
+// settings, an environment or a repository's .beethoven/capabilities file
+// can also name them, for needs the files don't show. Each one brings
 // instructions for the agent as a Claude Code skill.
 package capability
 
@@ -29,14 +30,18 @@ type Secret struct {
 // Capability is one installable toolchain with what the agent needs to know
 // to use it.
 type Capability struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Install     string   `json:"install"`           // installs the toolchain, once per sandbox; runs in $HOME
-	Prepare     string   `json:"prepare,omitempty"` // installs a project's dependencies, once per sandbox and repository
-	Detect      string   `json:"-"`                 // a shell test, run in a repository: true if it looks like it needs this
-	Skill       string   `json:"-"`                 // the skill's body, after its frontmatter
-	Secrets     []Secret `json:"secrets"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Install     string `json:"install"`           // installs the toolchain, once per sandbox; runs in $HOME
+	Prepare     string `json:"prepare,omitempty"` // installs a project's dependencies, once per sandbox and repository
+	Detect      string `json:"-"`                 // a shell test, run in a repository: true if it looks like it needs this
+	// Paths are what Install puts in $HOME, relative to it: the server keeps
+	// them after a first install and unpacks them into later sandboxes,
+	// whose Install then only links and checks.
+	Paths   []string `json:"-"`
+	Skill   string   `json:"-"` // the skill's body, after its frontmatter
+	Secrets []Secret `json:"secrets"`
 	// Env is set for the agent once the capability is installed. Values may
 	// refer to $HOME, which the sandbox expands.
 	Env      map[string]string `json:"env,omitempty"`
@@ -47,7 +52,7 @@ type Capability struct {
 // Hash identifies the capability's scripts: a sandbox installs it again
 // when they change.
 func (c Capability) Hash() string {
-	h := sha256.Sum256([]byte(c.Install + "\x00" + c.Prepare))
+	h := sha256.Sum256([]byte(c.Install + "\x00" + c.Prepare + "\x00" + strings.Join(c.Paths, "\n")))
 	return hex.EncodeToString(h[:6])
 }
 
@@ -140,6 +145,7 @@ func ArchiveOf(list []Capability) []byte {
 			add(c.ID+"/prepare.sh", c.Prepare+"\n", 0o755)
 		}
 		add(c.ID+"/detect.sh", c.Detect+"\n", 0o755)
+		add(c.ID+"/paths", strings.Join(c.Paths, "\n")+"\n", 0o644)
 		add(c.ID+"/SKILL.md", c.SkillFile(), 0o644)
 		add(c.ID+"/secrets", secrets.String(), 0o644)
 		var env strings.Builder
@@ -164,6 +170,11 @@ func Check() error {
 			return fmt.Errorf("capability %s: needs a name and a one-line description without colons", c.ID)
 		case strings.TrimSpace(c.Install) == "" || strings.TrimSpace(c.Detect) == "" || strings.TrimSpace(c.Skill) == "":
 			return fmt.Errorf("capability %s: needs install, detect and skill", c.ID)
+		}
+		for _, p := range c.Paths {
+			if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "..") || strings.ContainsAny(p, " \t\n") {
+				return fmt.Errorf("capability %s: path %q must be relative to $HOME, without spaces", c.ID, p)
+			}
 		}
 		for k, v := range c.Env {
 			if !secretName.MatchString(k) || strings.ContainsAny(v, "\n\"`\\") {

@@ -192,6 +192,7 @@ func serve(args []string) error {
 		TokenKey:    tokenKey[:],
 		Committer:   store.Author{Name: "Beethoven", Email: "beethoven@localhost"},
 		Env:         passEnv,
+		CacheDir:    filepath.Join(*dataDir, "cache", "capabilities"),
 	}, db, box, agent.Claude{}, gh, log)
 	auto := automation.New(m, log)
 	sl := &slack.Client{DB: db}
