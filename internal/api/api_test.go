@@ -151,6 +151,19 @@ func TestWebhook(t *testing.T) {
 	if again["prompt_id"] != first["prompt_id"] {
 		t.Errorf("redelivery fired again: %v vs %v", again, first)
 	}
+
+	// A new token replaces the old one.
+	id := strings.TrimPrefix(out["hook_path"].(string), "/hooks/")
+	code, fresh := do(t, "POST", srv.URL+"/api/automations/"+id+"/hook-token", "", "Authorization", "Bearer api-token")
+	if code != http.StatusOK || fresh["hook_token"] == token {
+		t.Fatalf("new token: %d %v", code, fresh)
+	}
+	if code, _ := do(t, "POST", hook, `{}`, "Authorization", "Bearer "+token); code != http.StatusUnauthorized {
+		t.Errorf("old token still works: %d", code)
+	}
+	if code, _ := do(t, "POST", hook, `{}`, "Authorization", "Bearer "+fresh["hook_token"].(string)); code == http.StatusUnauthorized {
+		t.Errorf("new token: %d", code)
+	}
 }
 
 func TestGitHubEvents(t *testing.T) {

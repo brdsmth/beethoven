@@ -144,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 	api("PUT /api/automations/{id}", s.updateAutomation)
 	api("DELETE /api/automations/{id}", s.deleteAutomation)
 	api("POST /api/automations/{id}/run", s.runAutomation)
+	api("POST /api/automations/{id}/hook-token", s.newHookToken)
 	api("GET /api/automations/{id}/runs", s.automationRuns)
 
 	api("GET /api/secrets", s.listSecrets)
@@ -778,6 +779,21 @@ func (s *Server) runAutomation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, http.StatusCreated, map[string]any{"session": sess, "prompt": p})
+}
+
+// newHookToken replaces an automation's webhook token and returns it, the
+// only time it is shown.
+func (s *Server) newHookToken(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.automation(w, r, true)
+	if !ok {
+		return
+	}
+	token, err := s.Auto.NewHookToken(r.Context(), a.ID)
+	if err != nil {
+		replyErr(w, err)
+		return
+	}
+	reply(w, http.StatusOK, map[string]any{"hook_token": token, "hook_path": "/hooks/" + a.ID})
 }
 
 func (s *Server) automationRuns(w http.ResponseWriter, r *http.Request) {
