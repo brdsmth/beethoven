@@ -65,8 +65,8 @@ export function TeamSwitcher() {
   return (
     <div class="switcher" ref={ref}>
       <button type="button" class="switcher-btn" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
-        {current ? <TeamMark team={current} /> : <span class="mark all" aria-hidden="true">∗</span>}
-        <span class="ellipsis">{label}</span>
+        {current ? <TeamMark team={current} size={26} /> : <span class="mark all" aria-hidden="true">∗</span>}
+        <span class="switcher-name"><span class="ellipsis">{label}</span><span class="dim">Beethoven</span></span>
         <span class="dim">▾</span>
       </button>
       {open && (

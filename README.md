@@ -148,7 +148,8 @@ Work without a team belongs to the workspace and behaves as before teams. Teams 
 deleted: an archived team takes no new work. Changes to who may do what (people, teams, memberships,
 secrets, channels, session visibility) go to an audit log that admins, and a team's leads for their
 team, can read. The sidebar's switcher shows one team's sessions, the workspace's, or all you can
-see, grouped by project; new sessions start in the chosen team.
+see, grouped by project; new sessions start in the chosen team. **⌘K** (Ctrl+K) searches every
+session, project and page you can open, and **C** starts a new session.
 
 **Automations.** A saved request: a prompt, a repository, and a cron schedule and/or a webhook.
 Firing one submits a prompt like any other source; that prompt is the run. Runs don't overlap,
@@ -368,7 +369,7 @@ HTML and SVG included, downloads, so a file can't run script as the person viewi
 
 | | |
 |---|---|
-| `GET/POST /api/sessions` | list (`?team=` ids or `workspace`, `?mine=1`); create `{prompt, environment_id \| repos, model, effort, title, team_id, visibility}` |
+| `GET/POST /api/sessions` | list (`?team=` ids or `workspace`, `?mine=1`, `?q=` title, `?archived=1` or `all`); create `{prompt, environment_id \| repos, model, effort, title, team_id, visibility}` |
 | `GET /api/sessions/{id}` | session, prompts and pull requests |
 | `POST /api/sessions/{id}/prompts` | queue `{content, model}` |
 | | to attach files to either, send a multipart form: the JSON in a `request` field, each file in a `file` field |
