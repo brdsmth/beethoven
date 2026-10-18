@@ -330,7 +330,7 @@ func (r *runner) ensure(ctx context.Context) (string, error) {
 		caps = capability.Union(caps, state.Enabled)
 	}
 	cpus, mem := capability.Resources(caps, eff.CPUs, eff.MemoryMB)
-	id, started, err := r.m.box.Start(ctx, sandbox.Spec{Name: "beethoven-" + s.ID, Image: eff.Image,
+	id, started, err := r.m.box.Start(ctx, sandbox.Spec{Name: firstOf(r.m.cfg.SandboxPrefix, "beethoven-") + s.ID, Image: eff.Image,
 		CPUs: cpus, MemoryMB: mem, Env: map[string]string{"BEETHOVEN_SESSION": s.ID}})
 	if err != nil {
 		r.setSandbox("failed", "", err.Error())

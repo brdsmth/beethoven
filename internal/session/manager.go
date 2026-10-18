@@ -66,6 +66,9 @@ type Config struct {
 	MaxDepth    int               // child session nesting limit
 	Committer   store.Author      // git committer; prompt authors are the commit authors
 	Env         map[string]string // base sandbox environment; secrets override it
+	// SandboxPrefix starts sandbox names, before the session id: "" is
+	// "beethoven-". Workspaces sharing a provider each have their own.
+	SandboxPrefix string
 }
 
 type Manager struct {
