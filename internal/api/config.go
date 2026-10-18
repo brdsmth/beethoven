@@ -143,6 +143,12 @@ func (s *Server) putCredential(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "credential must be one of "+strings.Join(credentialNames, ", "))
 		return
 	}
+	if s.Cloud && in.Name != "ANTHROPIC_API_KEY" && in.Value != "" {
+		// Anthropic doesn't allow a hosted product to run on people's
+		// subscriptions; and GitHub here is each person's own connection.
+		fail(w, http.StatusBadRequest, "on Beethoven Cloud, agents use an Anthropic API key")
+		return
+	}
 	if err := s.M.Store().SetCredential(r.Context(), in.Name, strings.TrimSpace(in.Value)); err != nil {
 		replyErr(w, err)
 		return
