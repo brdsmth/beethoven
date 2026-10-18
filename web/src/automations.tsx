@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { api, get, type Automation, type Condition, type Environment, type EventKind, type Prompt, type Session, type Spec, type Trigger } from './api';
+import { Select } from './components';
 import { span } from './insights';
 import { TargetPicker, fromTarget, targetProblem, toTarget, type Pick } from './pickers';
 import { TeamLabel, useMe, useTeamIndex, useTeams } from './teams';
@@ -133,10 +134,9 @@ export function AutomationEdit({ id }: { id: string }) {
         <label>Name<input required {...bind('name')} /></label>
         {isNew && !!teams?.length && (
           <label>Team
-            <select value={f.team_id} onChange={e => setF(p => ({ ...p, team_id: e.currentTarget.value }))}>
-              <option value="">Workspace: no team</option>
-              {teams.filter(t => !t.archived_at && (t.role || me?.admin)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
+            <Select label="Team" value={f.team_id || ''} set={team_id => setF(p => ({ ...p, team_id }))}
+              options={[{ value: '', label: 'Workspace: no team' },
+                ...teams.filter(t => !t.archived_at && (t.role || me?.admin)).map(t => ({ value: t.id, label: t.name }))]} />
             <span class="hint">It runs as you, in the team; its runs are the team's sessions. This can't change later.</span>
           </label>
         )}
@@ -201,15 +201,11 @@ function TriggerEditor({ kinds, v, set }: { kinds?: Kinds; v?: Trigger; set: (t?
   const unused = kind?.conditions.filter(t => !conds.some(c => c.type === t)) ?? [];
   return (
     <div class="field">
-      <span class="field-label">Repository event</span>
-      <select value={v?.event ?? ''} onChange={e => {
-        const event = e.currentTarget.value;
+      <span class="field-label">Trigger</span>
+      <Select label="Trigger" value={v?.event ?? ''} set={event => {
         const allowed = kinds?.kinds.find(k => k.id === event)?.conditions ?? [];
         set(event ? { event, conditions: conds.filter(c => allowed.includes(c.type)) } : undefined);
-      }}>
-        <option value="">None</option>
-        {kinds?.kinds.map(k => <option key={k.id} value={k.id}>{k.label}</option>)}
-      </select>
+      }} options={[{ value: '', label: 'None: schedule, webhook or by hand' }, ...(kinds?.kinds.map(k => ({ value: k.id, label: k.label })) ?? [])]} />
       {kind && (
         <div class="conditions">
           {conds.map((c, i) => {
@@ -228,10 +224,9 @@ function TriggerEditor({ kinds, v, set }: { kinds?: Kinds; v?: Trigger; set: (t?
             );
           })}
           {unused.length > 0 && (
-            <select value="" onChange={e => set({ event: v!.event, conditions: [...conds, { type: e.currentTarget.value, values: [] }] })}>
-              <option value="">Add a condition…</option>
-              {unused.map(t => <option key={t} value={t}>{CONDITIONS[t]?.label ?? t}</option>)}
-            </select>
+            <Select class="condition-add" label="Add a condition" value="" placeholder="Add a condition…"
+              set={type => set({ event: v!.event, conditions: [...conds, { type, values: [] }] })}
+              options={unused.map(t => ({ value: t, label: CONDITIONS[t]?.label ?? t }))} />
           )}
           <span class="hint">
             Fires for events in the repositories above, when every condition holds. Lists match any of their values;
