@@ -1,14 +1,15 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'preact/hooks';
 import {
-  api, get, onGlobal, subscribe, withFiles, type AddedCapability, type Environment, type Ev, type Prompt, type PullRequest, type Session,
+  api, get, onGlobal, subscribe, withFiles, type AddedCapability, type Environment, type Ev, type Info, type Prompt, type PullRequest, type Session,
 } from './api';
 import { AttachButton, Attachments, PendingFiles, useFiles } from './attach';
 import { useCapabilities } from './capabilities';
 import { span } from './insights';
 import { Link, Markdown, safeHref } from './markdown';
 import { TeamLabel, VisibilityBadge, useTeamIndex } from './teams';
-import { Chip, Dot, EffortSelect, Spinner, ago, dur, fail, modEnter, money, toast, useTick } from './util';
+import { Icon, useDismiss } from './sidebar';
+import { Chip, Dot, MODELS, Spinner, ago, dur, effortLevels, fail, modEnter, money, toast, useLoad, useTick } from './util';
 
 type End = { id: string; status: string; error?: string; cost_usd: number; duration_ms?: number };
 type Group = { id: string; items: Ev[] };
@@ -114,10 +115,14 @@ export function SessionView({ id }: { id: string }) {
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
       }}>
         <div class="col">
-          {m.blocks.map(b => 'items' in b ? <PromptGroup key={b.id} g={b} m={m} /> : <Item key={b.seq} e={b} m={m} live={false} />)}
+          {m.blocks.map((b, i) => 'items' in b
+            // Queued prompts wait in the composer's queue, and the strip above it shows a stopped sandbox.
+            ? m.prompts[b.id]?.status !== 'queued' && <PromptGroup key={b.id} g={b} m={m} />
+            : !(i === m.blocks.length - 1 && b.type === 'sandbox' && b.data?.state === s.sandbox && s.status !== 'running')
+              && <Item key={b.seq} e={b} m={m} live={false} />)}
         </div>
       </div>
-      <Composer id={s.id} running={s.status === 'running'} />
+      <Composer m={m} s={s} prs={prs} />
     </div>
   );
 }
@@ -181,7 +186,6 @@ function Header({ s, kids, stats, caps, changed }: {
         <div class="s-top">
           <h1 class="s-title">{s.title || 'Untitled'}</h1>
           <div class="actions">
-            {s.status === 'running' && <button class="btn" disabled={busy} onClick={act(() => api('POST', `${base}/stop`))}>Stop</button>}
             <button class="btn" disabled={busy} onClick={act(() => api('POST', `${base}/archive`, { archived: !s.archived }))}>
               {s.archived ? 'Unarchive' : 'Archive'}
             </button>
@@ -405,36 +409,202 @@ function Footer({ end }: { end: End }) {
   return <div class="foot">{end.duration_ms != null ? 'Stopped' : 'Cancelled'}</div>;
 }
 
-function Composer({ id, running }: { id: string; running: boolean }) {
+/** The follow-up box: a strip with what the session is doing, the prompts
+ * queued behind it, then one card with the text, files and the model and
+ * effort for this prompt. */
+function Composer({ m, s, prs }: { m: Model; s: Session; prs: PullRequest[] }) {
   const [text, setText] = useState('');
+  const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
   const [busy, setBusy] = useState(false);
+  const [info] = useLoad<Info>('/api/info');
+  const box = useRef<HTMLTextAreaElement>(null);
   const f = useFiles();
+  const running = s.status === 'running';
   const empty = !text.trim() && !f.files.length;
+  useLayoutEffect(() => { // grow with the text, up to the max-height in CSS
+    const el = box.current;
+    if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
+  }, [text]);
   const send = async () => {
     if (empty || busy) return;
     setBusy(true);
     try {
-      await api('POST', `/api/sessions/${id}/prompts`, withFiles({ content: text.trim(), effort }, f.files));
+      await api('POST', `/api/sessions/${s.id}/prompts`, withFiles({ content: text.trim(), model, effort }, f.files));
       setText('');
       f.clear();
     } catch (e) { fail(e); }
     setBusy(false);
   };
+  const queued = Object.values(m.prompts).filter(p => p.status === 'queued').sort((a, b) => a.created_at.localeCompare(b.created_at));
+  // Editing a queued prompt takes it back: there is no API to change one.
+  const edit = async (p: Prompt) => {
+    try {
+      await cancel(p);
+      setText(t => t.trim() ? t + '\n\n' + p.content : p.content);
+      if (p.model) setModel(p.model);
+      if (p.effort) setEffort(p.effort);
+      box.current?.focus();
+    } catch (e) { fail(e); }
+  };
+  const models = [...MODELS, ...(model && !MODELS.includes(model) ? [model] : [])];
   return (
     <form class={'composer' + (f.over ? ' dropping' : '')} onSubmit={e => { e.preventDefault(); send(); }}>
       <div class="col">
-        <PendingFiles files={f.files} remove={f.remove} />
-        <div class="composer-row">
-          <textarea rows={2} value={text} placeholder={running ? 'Queue a follow-up…' : 'Send a follow-up…'}
+        <Status m={m} s={s} prs={prs} />
+        {queued.length > 0 && (
+          <div class="queue">
+            {queued.map((p, i) => (
+              <div key={p.id} class="queue-row">
+                <span class="queue-n">{queued.length > 1 ? i + 1 : <Icon name="queue" size={13} />}</span>
+                <span class="queue-text" title={p.content}>
+                  {p.content || p.attachments?.map(a => a.name).join(', ')}
+                  {!!p.attachments?.length && p.content && <span class="dim"> · {p.attachments.length} file{p.attachments.length > 1 ? 's' : ''}</span>}
+                </span>
+                {(p.model || p.effort) && <span class="dim queue-opts">{[p.model, p.effort].filter(Boolean).join(' · ')}</span>}
+                {!p.attachments?.length && (
+                  <button type="button" class="queue-act" title="Edit: take it back into the box" aria-label="Edit queued prompt"
+                    onClick={() => edit(p)}><Icon name="pen" size={13} /></button>
+                )}
+                <button type="button" class="queue-act" title="Cancel this prompt" aria-label="Cancel queued prompt"
+                  onClick={() => cancel(p).catch(fail)}><Icon name="x" size={13} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div class="cbox">
+          <PendingFiles files={f.files} remove={f.remove} />
+          <textarea ref={box} rows={1} value={text} aria-label="Follow-up"
+            placeholder={running ? (queued.length ? 'Queue another follow-up…' : 'Queue a follow-up…') : 'Send a follow-up…'}
             onInput={e => setText(e.currentTarget.value)} onKeyDown={modEnter(send)} onPaste={f.onPaste} />
-          <span class="composer-side">
+          <div class="cbox-bar">
             <AttachButton add={f.add} />
-            <span class="compact" title="Reasoning effort for this prompt"><EffortSelect value={effort} set={setEffort} def="Effort" /></span>
-            <button class="btn primary" disabled={busy || empty} title="⌘/Ctrl+Enter">{running ? 'Queue' : 'Send'}</button>
-          </span>
+            <Pick label="Model" title="Model for this prompt" value={model} set={setModel}
+              def={s.model || info?.model} options={models} custom />
+            <Pick label="Effort" title="Reasoning effort for this prompt" icon="gauge" value={effort} set={setEffort}
+              def={s.effort || info?.effort} options={effortLevels()} />
+            <span class="grow" />
+            {!empty && <span class="cbox-hint"><kbd>⌘↵</kbd> to {running ? 'queue' : 'send'}</span>}
+            <button class="send" disabled={busy || empty} title={(running ? 'Queue' : 'Send') + ' (⌘/Ctrl+Enter)'}
+              aria-label={running ? 'Queue' : 'Send'}><Icon name="up" /></button>
+          </div>
+          {f.over && <div class="cbox-drop">Drop to attach <span class="dim">· up to 10 files, 50 MB</span></div>}
         </div>
       </div>
     </form>
+  );
+}
+
+const cancel = (p: Prompt) => api('DELETE', `/api/sessions/${p.session_id}/prompts/${p.id}`);
+
+/** A toolbar menu for an option of the follow-ups sent from here; "" is the
+ * session's default. */
+function Pick({ label, title, icon, value, set, def, options, custom }: {
+  label: string; title: string; icon?: string; value: string; set: (v: string) => void; def?: string; options: string[]; custom?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useDismiss(open, () => setOpen(false), ref);
+  const pick = (v: string) => { set(v); setOpen(false); };
+  return (
+    <div class="pick" ref={ref}>
+      <button type="button" class={'tb' + (value ? ' set' : '') + (open ? ' on' : '')} title={title} aria-haspopup="menu"
+        aria-expanded={open} onClick={() => setOpen(!open)}>
+        {icon && <Icon name={icon} size={14} />}
+        <span>{value ? cap(value) : def ? cap(def) : label}</span>
+        <Icon name="down" size={12} />
+      </button>
+      {open && (
+        <div class="menu up" role="menu">
+          <div class="menu-label">{label} for follow-ups</div>
+          <button type="button" role="menuitemradio" aria-checked={!value} class={'menu-item' + (value ? '' : ' on')} onClick={() => pick('')}>
+            Default {def && <span class="dim menu-note">{def}</span>}
+          </button>
+          <div class="menu-sep" />
+          {options.map(o => (
+            <button key={o} type="button" role="menuitemradio" aria-checked={o === value} class={'menu-item' + (o === value ? ' on' : '')}
+              onClick={() => pick(o)}>{cap(o)}</button>
+          ))}
+          {custom && (
+            <>
+              <div class="menu-sep" />
+              <input class="mono menu-input" placeholder="Model ID, then Enter" spellcheck={false} aria-label="Custom model ID"
+                onKeyDown={e => {
+                  const v = e.currentTarget.value.trim();
+                  if (e.key === 'Enter') { e.preventDefault(); if (v) pick(v); }
+                }} />
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const cap = (s: string) => (MODELS.includes(s) ? s[0].toUpperCase() + s.slice(1) : s);
+
+/** What the session is doing, docked above the box: the running step and
+ * Stop, a stopped sandbox, or how the last prompt ended. */
+function Status({ m, s, prs }: { m: Model; s: Session; prs: PullRequest[] }) {
+  const [busy, setBusy] = useState(false);
+  useTick(s.status === 'running' ? 1000 : 30000);
+  const run = Object.values(m.prompts).find(p => p.status === 'running');
+  if (s.status === 'running' && run) {
+    const g = m.groups[run.id];
+    const tool = g && [...g.items].reverse().find(e => e.type === 'tool' && !e.data.parent);
+    const step = s.sandbox === 'starting' ? <b>Starting sandbox</b>
+      : tool && !m.results[run.id + ':' + tool.data.id]
+        ? <><b>{tool.data.name}</b> <span class="mono ellipsis">{summarize(tool.data.input)}</span></>
+        : <b>{m.deltas[run.id] ? 'Writing' : 'Working'}</b>;
+    const stop = async () => {
+      setBusy(true);
+      try { await api('POST', `/api/sessions/${s.id}/stop`); } catch (e) { fail(e); }
+      setBusy(false);
+    };
+    return (
+      <div class="strip">
+        <span class="strip-main"><Spinner />{step}</span>
+        {run.started_at && <span class="strip-num">{dur(Date.now() - Date.parse(run.started_at))}</span>}
+        <button type="button" class="btn sm" disabled={busy} onClick={stop}
+          title="Stop this turn; queued prompts are cancelled too"><span class="stop-sq" />Stop</button>
+      </div>
+    );
+  }
+  if (s.sandbox === 'stopped' || s.sandbox === 'failed') {
+    const last = [...m.blocks].reverse().find((b): b is Ev => !('items' in b) && b.type === 'sandbox')
+      ?? [...m.blocks].reverse().flatMap(b => ('items' in b ? [...b.items].reverse() : [])).find(e => e.type === 'sandbox');
+    const why = last?.data?.state === s.sandbox ? last.data.message : '';
+    return (
+      <div class={'strip ' + (s.sandbox === 'failed' ? 'bad' : 'warn')}>
+        <span class="strip-main">
+          <Dot status={s.sandbox === 'failed' ? 'failed' : 'stopped'} />
+          <b>Sandbox {s.sandbox}</b>{why && <span class="ellipsis">· {why}.</span>}
+          <span class="strip-then">Sending a follow-up {s.sandbox === 'failed' ? 'tries again' : 'wakes it'}.</span>
+        </span>
+      </div>
+    );
+  }
+  const end = [...m.blocks].reverse().map(b => ('items' in b ? m.ends[b.id] : undefined)).find(Boolean);
+  if (!end) return null;
+  const links = s.repos.filter(r => r.pr_url).map(r => {
+    const pr = prs.find(p => p.url === r.pr_url);
+    return { url: r.pr_url!, label: pr ? `#${pr.number} ${pr.state}` : 'Pull request', title: r.repo };
+  });
+  return (
+    <div class={'strip ' + (end.status === 'done' ? 'ok' : end.status === 'failed' ? 'bad' : '')}>
+      <span class="strip-main">
+        {end.status === 'done' ? <><span class="strip-ok">✓</span><b>Done</b></>
+          : end.status === 'failed' ? <><b>✗ Failed</b>{end.error && <span class="ellipsis">{end.error}</span>}</>
+          : <b>{end.duration_ms != null ? 'Stopped' : 'Cancelled'}</b>}
+        <span class="strip-num">
+          {[end.duration_ms != null && dur(end.duration_ms), money(end.cost_usd)].filter(Boolean).join(' · ')}
+        </span>
+      </span>
+      {links.map(l => (
+        <a key={l.url} href={safeHref(l.url)} target="_blank" rel="noopener noreferrer" title={l.title}>
+          <Icon name="pr" size={13} /> {l.label}
+        </a>
+      ))}
+    </div>
   );
 }

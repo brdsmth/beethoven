@@ -136,6 +136,7 @@ export function Seg<T extends string>({ value, set, options }: { value: T; set: 
 export const MODELS = ['fable', 'opus', 'sonnet', 'haiku'];
 let efforts = ['low', 'medium', 'high', 'xhigh', 'max'];
 export const setEfforts = (list?: string[]) => { if (list?.length) efforts = list; };
+export const effortLevels = () => efforts;
 
 /** A model: the default, a known alias, or any model ID. */
 export function ModelField({ value, set, def }: { value: string; set: (v: string) => void; def: string }) {
