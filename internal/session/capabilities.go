@@ -70,7 +70,7 @@ func (c *capabilityLines) line(l string) bool {
 	case "::recorded":
 		c.recorded = arg
 	case "::repo":
-		if dir, id, ok := strings.Cut(arg, " "); ok {
+		if dir, id, ok := strings.Cut(arg, " "); ok && len(capability.Unknown([]string{id})) == 0 {
 			if c.repos == nil {
 				c.repos = map[string][]string{}
 			}

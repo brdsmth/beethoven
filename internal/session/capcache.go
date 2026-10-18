@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/brdsmth/beethoven/internal/capability"
 	"github.com/brdsmth/beethoven/internal/sandbox"
@@ -21,8 +22,12 @@ import (
 // A kept install is the capability's Paths, packed by the sandbox that
 // first installed it, and is named by the capability's version, the
 // machine and the image. Only a brand-new sandbox packs one, and only
-// before any of the repositories' code runs (BOOT_STAGE=install): what the
-// agent or a repository can touch never reaches other sessions.
+// before any of the repositories' code runs (BOOT_STAGE=install) and
+// without the session's secrets: what the agent, a repository or a secret
+// can touch never reaches other sessions.
+//
+// Kept installs expire after keptFor, so toolchains that install their
+// latest release are refreshed, and old ones don't pile up.
 
 // capabilityExport is a fresh install a sandbox packed: a "::cache" line.
 type capabilityExport struct {
@@ -30,6 +35,12 @@ type capabilityExport struct {
 }
 
 var machinePattern = regexp.MustCompile(`^[a-z0-9_]{1,32}$`)
+
+const (
+	keptFor  = 7 * 24 * time.Hour
+	maxKept  = 4 << 30 // bytes, per install
+	keptPart = ".part-"
+)
 
 // cacheName names a kept install.
 func cacheName(id, hash, machine, image string) string {
@@ -56,7 +67,11 @@ func (r *runner) unpackCached(ctx context.Context, box string, ids []string, ima
 		if !ok || len(c.Paths) == 0 {
 			continue
 		}
-		f, err := os.Open(filepath.Join(dir, cacheName(id, c.Hash(), machine, image)))
+		name := filepath.Join(dir, cacheName(id, c.Hash(), machine, image))
+		if fi, err := os.Stat(name); err != nil || time.Since(fi.ModTime()) > keptFor {
+			continue
+		}
+		f, err := os.Open(name)
 		if err != nil {
 			continue
 		}
@@ -88,8 +103,7 @@ func (r *runner) keepExports(ctx context.Context, box string, exports []capabili
 		return
 	}
 	for _, e := range exports {
-		c, ok := capability.Get(e.ID)
-		if !ok || c.Hash() != e.Hash || !machinePattern.MatchString(e.Machine) || !strings.HasSuffix(e.File, "/.beethoven/export/"+e.ID+".tar.gz") {
+		if !validExport(e) {
 			continue
 		}
 		if err := r.keep(ctx, box, dir, e, image); err != nil {
@@ -97,16 +111,50 @@ func (r *runner) keepExports(ctx context.Context, box string, exports []capabili
 		}
 	}
 	r.m.box.Exec(ctx, box, sandbox.Cmd{Args: []string{"sh", "-c", `rm -rf "$HOME/.beethoven/export"`}})
+	pruneKept(dir)
+}
+
+// validExport reports whether a "::cache" line names a capability at its
+// current version, a machine, and the file cap_export writes.
+func validExport(e capabilityExport) bool {
+	c, ok := capability.Get(e.ID)
+	return ok && c.Hash() == e.Hash && machinePattern.MatchString(e.Machine) &&
+		strings.HasSuffix(e.File, "/.beethoven/export/"+e.ID+".tar.gz") && !strings.Contains(e.File, "..")
+}
+
+// pruneKept removes expired installs and leftovers of interrupted copies.
+func pruneKept(dir string) {
+	entries, _ := os.ReadDir(dir)
+	for _, f := range entries {
+		fi, err := f.Info()
+		if err == nil && (time.Since(fi.ModTime()) > keptFor || strings.HasPrefix(f.Name(), keptPart) && time.Since(fi.ModTime()) > time.Hour) {
+			os.Remove(filepath.Join(dir, f.Name()))
+		}
+	}
+}
+
+// limitWriter fails once more than n bytes are written.
+type limitWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (l *limitWriter) Write(p []byte) (int, error) {
+	if l.n -= int64(len(p)); l.n < 0 {
+		return 0, fmt.Errorf("over %d GB", maxKept>>30)
+	}
+	return l.w.Write(p)
 }
 
 func (r *runner) keep(ctx context.Context, box, dir string, e capabilityExport, image string) error {
-	tmp, err := os.CreateTemp(dir, ".part-*")
+	tmp, err := os.CreateTemp(dir, keptPart+"*")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tmp.Name()) // after the rename, there is nothing to remove
 	h := sha256.New()
-	code, err := r.m.box.Exec(ctx, box, sandbox.Cmd{Args: []string{"cat", e.File}, Stdout: io.MultiWriter(tmp, h)})
+	code, err := r.m.box.Exec(ctx, box, sandbox.Cmd{Args: []string{"sh", "-c", `cat "$FILE"`}, Env: map[string]string{"FILE": e.File},
+		Stdout: &limitWriter{w: io.MultiWriter(tmp, h), n: maxKept}})
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
 	}
@@ -123,13 +171,24 @@ func (r *runner) keep(ctx context.Context, box, dir string, e capabilityExport, 
 		return err
 	}
 	// Older versions of it, for the same machine and image.
-	_, rest, _ := strings.Cut(strings.TrimPrefix(name, e.ID+"-"), "-")
-	older := regexp.MustCompile(`^` + regexp.QuoteMeta(e.ID) + `-[0-9a-f]+-` + regexp.QuoteMeta(rest) + `$`)
-	entries, _ := os.ReadDir(dir)
-	for _, f := range entries {
-		if f.Name() != name && older.MatchString(f.Name()) {
-			os.Remove(filepath.Join(dir, f.Name()))
-		}
+	for _, f := range olderKept(dir, e.ID, e.Machine, image, name) {
+		os.Remove(filepath.Join(dir, f))
 	}
 	return nil
+}
+
+// olderKept lists the kept installs of a capability for a machine and image
+// other than the one named keep.
+func olderKept(dir, id, machine, image, keep string) []string {
+	// cacheName with a pattern for the hash, which never holds a "-".
+	pattern := regexp.QuoteMeta(cacheName(id, "HASH", machine, image))
+	older := regexp.MustCompile(`^` + strings.Replace(pattern, "HASH", `[0-9a-f]+`, 1) + `$`)
+	var out []string
+	entries, _ := os.ReadDir(dir)
+	for _, f := range entries {
+		if f.Name() != keep && older.MatchString(f.Name()) {
+			out = append(out, f.Name())
+		}
+	}
+	return out
 }

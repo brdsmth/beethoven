@@ -385,9 +385,8 @@ func (r *runner) boot(ctx context.Context, id string, s store.Session, eff Effec
 		return err
 	}
 	env["CAPABILITIES"] = strings.Join(caps, " ")
-	out := &bootOutput{r: r, phase: "boot"}
-	run := func(stage string) error {
-		e := maps.Clone(env)
+	out := &bootOutput{r: r, phases: bootPhases{phase: "boot"}}
+	run := func(stage string, e map[string]string) error {
 		if stage != "" {
 			e["BOOT_STAGE"] = stage
 		}
@@ -398,23 +397,32 @@ func (r *runner) boot(ctx context.Context, id string, s store.Session, eff Effec
 			return err
 		}
 		if code != 0 {
-			return fmt.Errorf("boot failed during %s (exit %d): %s", out.phase, code, clip(out.tail.String(), 2000))
+			return fmt.Errorf("boot failed during %s (exit %d): %s", out.phases.phase, code, clip(out.tail.String(), 2000))
 		}
 		return nil
 	}
 	if fresh && r.m.cfg.CacheDir != "" {
+		// The install stage gets what cloning and installing need and no
+		// secrets or server variables: a proxy or registry set as a secret
+		// must not shape an install other sessions will unpack.
 		known, _ := r.m.db.RepoCapabilities(ctx, store.RepoNames(s.Repos))
-		env["CAP_EXPORT"], env["CAP_CACHED"] = "1", strings.Join(r.unpackCached(ctx, id, capability.Union(caps, known), eff.Image), " ")
-		if err := run("install"); err != nil {
+		install := map[string]string{"CAP_EXPORT": "1",
+			"CAP_CACHED": strings.Join(r.unpackCached(ctx, id, capability.Union(caps, known), eff.Image), " ")}
+		for _, k := range []string{"REPOS", "GH_TOKENS", "WORK_BRANCH", "WORKDIR", "CAPABILITIES"} {
+			if v, ok := env[k]; ok {
+				install[k] = v
+			}
+		}
+		if err := run("install", install); err != nil {
 			return err
 		}
 		r.keepExports(ctx, id, out.caps.exports, eff.Image)
-		delete(env, "CAP_EXPORT")
-		out.phase = "prepare" // from here on, nothing it prints about capabilities counts
-		if err := run("rest"); err != nil {
+		out.phases.done = true   // nothing the rest prints about capabilities counts
+		delete(env, "GH_TOKENS") // cloned already
+		if err := run("rest", env); err != nil {
 			return err
 		}
-	} else if err := run(""); err != nil {
+	} else if err := run("", env); err != nil {
 		return err
 	}
 	for _, ref := range s.Repos {
@@ -777,18 +785,33 @@ func (t *tail) String() string {
 // bootOutput turns boot script output into phase events and live log lines.
 type bootOutput struct {
 	r       *runner
-	phase   string
+	phases  bootPhases
 	partial []byte
 	tail    tail
 	caps    capabilityLines
 }
 
-// capabilityPhase reports whether the boot is still before its hooks and
-// scripts, the only part whose capability lines count: a repository's
-// scripts could print anything.
-func (o *bootOutput) capabilityPhase() bool {
+// bootPhases follows the boot's phases. Capability lines count only before
+// its first other phase (dependencies, hooks, scripts): a repository's code
+// runs from there and could print anything, a "::phase capability" too.
+type bootPhases struct {
+	phase string
+	done  bool // past the capability phases, for good
+}
+
+func (b *bootPhases) set(p string) {
+	b.phase = p
+	if !b.capabilities() {
+		b.done = true
+	}
+}
+
+func (b *bootPhases) capabilities() bool {
+	if b.done {
+		return false
+	}
 	for _, p := range []string{"boot", "clone", "fetch", "capability"} {
-		if o.phase == p || strings.HasPrefix(o.phase, p+" ") {
+		if b.phase == p || strings.HasPrefix(b.phase, p+" ") {
 			return true
 		}
 	}
@@ -818,13 +841,13 @@ func (o *bootOutput) Flush() {
 func (o *bootOutput) line(l string) {
 	switch {
 	case strings.HasPrefix(l, "::phase "):
-		o.phase = strings.TrimPrefix(l, "::phase ")
-		if o.phase != "ready" {
-			o.r.setSandbox("starting", o.phase, "")
+		o.phases.set(strings.TrimPrefix(l, "::phase "))
+		if o.phases.phase != "ready" {
+			o.r.setSandbox("starting", o.phases.phase, "")
 		}
 	case strings.HasPrefix(l, "::warn "):
 		o.r.emit(o.r.currentPrompt(), EvWarning, map[string]string{"message": strings.TrimPrefix(l, "::warn ")})
-	case o.capabilityPhase() && o.caps.line(l):
+	case o.phases.capabilities() && o.caps.line(l):
 	default:
 		if o.tail.max == 0 {
 			o.tail.max = 8 << 10

@@ -56,7 +56,7 @@ unset GH_TOKEN GH_TOKENS
 # look like they need, before the hooks and scripts that may need them.
 cap_setup
 fi
-unset GH_TOKEN GH_TOKENS
+unset GH_TOKEN GH_TOKENS # also in the rest stage, which doesn't clone
 if [ "${BOOT_STAGE:-}" = install ]; then exit 0; fi
 # The repositories' dependencies, then their hooks: their own code.
 cap_prepare
