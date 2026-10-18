@@ -36,7 +36,7 @@ function Root() {
   const code = route[0] === 'claim' ? route[1] : undefined;
   if (route[0] === 'claim' && (!auth.setup || auth.account)) return <Moved to="/" />; // claimed already: on to the workspace
   if (auth.setup && auth.claim && !code) return <Unclaimed />;
-  if (auth.required && !auth.account) return <SignIn setup={auth.setup} code={code} done={a => { setAuth(a); setMe(a); go('/'); }} />;
+  if (auth.required && !auth.account) return <SignIn setup={auth.setup} code={code} done={a => { setAuth(a); setMe(a); if (code) go('/'); }} />;
   return <App account={auth.account} />;
 }
 
