@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"flag"
@@ -22,14 +21,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/brdsmth/beethoven/internal/agent"
-	"github.com/brdsmth/beethoven/internal/api"
-	"github.com/brdsmth/beethoven/internal/automation"
 	"github.com/brdsmth/beethoven/internal/github"
 	"github.com/brdsmth/beethoven/internal/sandbox"
-	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/slack"
 	"github.com/brdsmth/beethoven/internal/store"
+	"github.com/brdsmth/beethoven/internal/workspace"
 	"github.com/brdsmth/beethoven/web"
 )
 
@@ -135,108 +131,46 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	db, err := store.Open(filepath.Join(*dataDir, "beethoven.db"), key)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	image := env("BEETHOVEN_IMAGE", sandbox.DefaultImage)
+	base, err := baseConfig(log)
+	if err != nil {
+		return err
+	}
 	_, port, err := net.SplitHostPort(*addr)
 	if err != nil {
 		return fmt.Errorf("addr: %w", err)
 	}
-	box, toolsBase, err := sandboxes(ctx, log, image, port, public)
+
+	box, toolsBase, err := sandboxes(ctx, log, base.Image, port, public, env("BEETHOVEN_MODAL_APP", "beethoven"))
 	if err != nil {
 		return err
-	}
-	idle, err := time.ParseDuration(env("BEETHOVEN_IDLE", "10m"))
-	if err != nil {
-		return fmt.Errorf("BEETHOVEN_IDLE: %w", err)
-	}
-	turnTimeout, err := time.ParseDuration(env("BEETHOVEN_TURN_TIMEOUT", "2h"))
-	if err != nil {
-		return fmt.Errorf("BEETHOVEN_TURN_TIMEOUT: %w", err)
-	}
-	author := store.Author{Name: env("BEETHOVEN_GIT_NAME", gitConfig("user.name")), Email: env("BEETHOVEN_GIT_EMAIL", gitConfig("user.email"))}
-	gh := github.New(os.Getenv("GITHUB_TOKEN"))
-	gh.DB = db
-	if v := os.Getenv("BEETHOVEN_GITHUB_APP"); v != "" {
-		if gh.EnvApp, err = github.LoadApp(v); err != nil {
-			return fmt.Errorf("BEETHOVEN_GITHUB_APP: %w", err)
-		}
-	}
-
-	passEnv := map[string]string{}
-	for _, k := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL"} {
-		if v := os.Getenv(k); v != "" {
-			passEnv[k] = v
-		}
-	}
-	tokenKey := sha256.Sum256(append([]byte("beethoven tool tokens:"), key...))
-	m := session.New(session.Config{
-		Image:       image,
-		IdleTimeout: idle,
-		TurnTimeout: turnTimeout,
-		Author:      author,
-		ToolsURL:    toolsBase + "/mcp",
-		TokenKey:    tokenKey[:],
-		Committer:   store.Author{Name: "Beethoven", Email: "beethoven@localhost"},
-		Env:         passEnv,
-	}, db, box, agent.Claude{}, gh, log)
-	auto := automation.New(m, log)
-	sl := &slack.Client{DB: db}
-	if v := os.Getenv("BEETHOVEN_SLACK_APP"); v != "" {
-		if sl.EnvApp, err = slack.LoadApp(v); err != nil {
-			return fmt.Errorf("BEETHOVEN_SLACK_APP: %w", err)
-		}
-	}
-	bot := slack.NewBot(sl, m, func(ctx context.Context) ([]string, error) {
-		if gh.Mode(ctx) == "" {
-			return nil, nil
-		}
-		repos, err := gh.Repos(ctx)
-		names := make([]string, len(repos))
-		for i, r := range repos {
-			names[i] = r.Repo
-		}
-		return names, err
-	}, log)
-	if err := m.Start(ctx); err != nil {
-		return err
-	}
-	go auto.Run(ctx)
-	go gh.TrackPullRequests(ctx, 10*time.Minute, log)
-
-	if model := os.Getenv("BEETHOVEN_MODEL"); model != "" {
-		if s, err := db.Settings(ctx); err == nil && s.Model == "" { // seed the setting from the environment once
-			s.Model = model
-			db.SaveSettings(ctx, s)
-		}
 	}
 	hosts := splitList(os.Getenv("BEETHOVEN_HOSTS"))
 	if u, err := url.Parse(public); err == nil && u.Hostname() != "" {
 		hosts = append(hosts, u.Hostname())
 	}
 	signIn := reachable(*addr, hosts)
-	if has, err := db.HasAccounts(ctx); err == nil && signIn && !has {
+	cfg := base
+	cfg.Dir, cfg.Key, cfg.Box, cfg.ToolsURL = *dataDir, key, box, toolsBase+"/mcp"
+	cfg.GitHubToken = os.Getenv("GITHUB_TOKEN")
+	cfg.API = workspace.API{SignIn: signIn, Token: os.Getenv("BEETHOVEN_TOKEN"), Hosts: hosts, UI: web.FS(), Version: version}
+	rt, err := workspace.Open(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	if has, err := rt.DB.HasAccounts(ctx); err == nil && signIn && !has {
 		where := public
 		if where == "" {
 			where = "http://" + *addr
 		}
 		log.Warn("this server has no account yet: the first person to open " + where + " creates the one that owns it")
 	}
-	srv := &http.Server{Addr: *addr, Handler: (&api.Server{
-		M: m, Auto: auto, GitHub: gh, Slack: sl, SlackBot: bot, SignIn: signIn, Token: os.Getenv("BEETHOVEN_TOKEN"),
-		Hosts: hosts, UI: web.FS(), Log: log, Version: version,
-	}).Handler(), ReadHeaderTimeout: 10 * time.Second}
-
+	srv := &http.Server{Addr: *addr, Handler: rt.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
-	log.Info("beethoven is running", "url", "http://"+*addr, "data", *dataDir, "github", gh.Mode(ctx))
+	log.Info("beethoven is running", "url", "http://"+*addr, "data", *dataDir, "github", rt.GitHub.Mode(ctx))
 	select {
 	case err := <-errc:
 		return err
@@ -246,11 +180,42 @@ func serve(args []string) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	srv.Shutdown(shutdownCtx)
-	m.Shutdown(15 * time.Second)
+	rt.Close(15 * time.Second)
 	if err := <-errc; err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// baseConfig is the configuration every workspace shares, from the
+// server's environment.
+func baseConfig(log *slog.Logger) (workspace.Config, error) {
+	cfg := workspace.Config{Image: env("BEETHOVEN_IMAGE", sandbox.DefaultImage), Log: log, Model: os.Getenv("BEETHOVEN_MODEL"),
+		Env: map[string]string{}}
+	var err error
+	if cfg.IdleTimeout, err = time.ParseDuration(env("BEETHOVEN_IDLE", "10m")); err != nil {
+		return cfg, fmt.Errorf("BEETHOVEN_IDLE: %w", err)
+	}
+	if cfg.TurnTimeout, err = time.ParseDuration(env("BEETHOVEN_TURN_TIMEOUT", "2h")); err != nil {
+		return cfg, fmt.Errorf("BEETHOVEN_TURN_TIMEOUT: %w", err)
+	}
+	cfg.Author = store.Author{Name: env("BEETHOVEN_GIT_NAME", gitConfig("user.name")), Email: env("BEETHOVEN_GIT_EMAIL", gitConfig("user.email"))}
+	if v := os.Getenv("BEETHOVEN_GITHUB_APP"); v != "" {
+		if cfg.GitHubApp, err = github.LoadApp(v); err != nil {
+			return cfg, fmt.Errorf("BEETHOVEN_GITHUB_APP: %w", err)
+		}
+	}
+	if v := os.Getenv("BEETHOVEN_SLACK_APP"); v != "" {
+		if cfg.SlackApp, err = slack.LoadApp(v); err != nil {
+			return cfg, fmt.Errorf("BEETHOVEN_SLACK_APP: %w", err)
+		}
+	}
+	for _, k := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL"} {
+		if v := os.Getenv(k); v != "" {
+			cfg.Env[k] = v
+		}
+	}
+	return cfg, nil
 }
 
 // secretKey loads the key that encrypts secrets and signs tool tokens,
@@ -275,7 +240,7 @@ func secretKey(dir string) ([]byte, error) {
 // sandboxes opens the sandbox provider, and says where sandboxes reach this
 // server: Modal when BEETHOVEN_SANDBOX says so or Modal credentials are set,
 // otherwise the host's Docker.
-func sandboxes(ctx context.Context, log *slog.Logger, image, port, public string) (sandbox.Provider, string, error) {
+func sandboxes(ctx context.Context, log *slog.Logger, image, port, public, modalApp string) (sandbox.Provider, string, error) {
 	kind := os.Getenv("BEETHOVEN_SANDBOX")
 	if kind == "" {
 		kind = "docker"
@@ -306,7 +271,7 @@ func sandboxes(ctx context.Context, log *slog.Logger, image, port, public string
 		if url == "" {
 			return nil, "", errors.New("Modal sandboxes reach this server over the internet: set BEETHOVEN_URL to its public HTTPS address")
 		}
-		m, err := sandbox.NewModal(env("BEETHOVEN_MODAL_APP", "beethoven"))
+		m, err := sandbox.NewModal(modalApp)
 		if err != nil {
 			return nil, "", fmt.Errorf("modal: %w", err)
 		}
