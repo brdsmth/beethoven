@@ -194,3 +194,39 @@ func TestHealthz(t *testing.T) {
 		t.Errorf("healthz: %d", resp.StatusCode)
 	}
 }
+
+func TestSessionSearch(t *testing.T) {
+	srv, env := server(t, "")
+	for _, x := range []struct {
+		title    string
+		archived bool
+	}{{"Redesign the sidebar", false}, {"Collapse the sidebar", true}, {"Unrelated", false}} {
+		s := store.Session{ID: store.NewID(), Title: x.title, Branch: "b", Source: "test", Status: "idle", Sandbox: "none", Archived: x.archived}
+		if err := env.DB.CreateSession(context.Background(), &s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	titles := func(query string) []string {
+		resp, err := http.Get(srv.URL + "/api/sessions?" + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var list []store.Session
+		json.NewDecoder(resp.Body).Decode(&list)
+		var out []string
+		for _, s := range list {
+			out = append(out, s.Title)
+		}
+		return out
+	}
+	if got := titles("q=sidebar"); len(got) != 1 || got[0] != "Redesign the sidebar" {
+		t.Errorf("active sessions matching: %v", got)
+	}
+	if got := titles("q=SIDEBAR&archived=all"); len(got) != 2 {
+		t.Errorf("all sessions matching: %v", got)
+	}
+	if got := titles("archived=1"); len(got) != 1 || got[0] != "Collapse the sidebar" {
+		t.Errorf("archived sessions: %v", got)
+	}
+}
