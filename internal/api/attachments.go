@@ -103,3 +103,51 @@ func (s *Server) attachment(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "private, max-age=31536000, immutable")
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(a.Data))
 }
+
+// artifacts lists the files shown in a session's viewer.
+func (s *Server) artifacts(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.session(w, r, nil, ""); !ok {
+		return
+	}
+	list, err := s.M.Artifacts(r.Context(), r.PathValue("id"))
+	if err != nil {
+		replyErr(w, err)
+		return
+	}
+	reply(w, http.StatusOK, orEmpty(list))
+}
+
+// artifact serves a shown file for the viewer. What an agent wrote is
+// untrusted, so it never runs as this origin: the Content-Security-Policy
+// sandbox gives HTML an opaque origin, where its scripts can run (mockups
+// need them) but can't read the app's cookies or call its API, and every
+// other type runs no scripts at all. ?download=1 saves it instead.
+func (s *Server) artifact(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.session(w, r, nil, ""); !ok {
+		return
+	}
+	a, err := s.M.Store().Artifact(r.Context(), r.PathValue("id"), r.PathValue("aid"))
+	if err != nil {
+		replyErr(w, err)
+		return
+	}
+	disposition := "inline"
+	if r.URL.Query().Get("download") != "" {
+		disposition = "attachment"
+	}
+	h := w.Header()
+	h.Set("Content-Type", a.ContentType)
+	h.Set("Content-Disposition", firstOf(mime.FormatMediaType(disposition, map[string]string{"filename": a.Name}), disposition))
+	h.Set("X-Content-Type-Options", "nosniff")
+	switch t, _, _ := mime.ParseMediaType(a.ContentType); t {
+	case "text/html":
+		h.Set("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-modals allow-popups")
+	case "application/pdf":
+		// Browsers refuse to show PDFs in a sandbox; their viewers don't run
+		// a document's scripts as the page.
+	default:
+		h.Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; media-src 'self'")
+	}
+	h.Set("Cache-Control", "private, max-age=31536000, immutable") // each version has its own id
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(a.Data))
+}

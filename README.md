@@ -124,7 +124,7 @@ events. The Claude Code harness runs `claude -p --output-format stream-json` and
 conversation with `--resume`. Adding another agent is one file.
 
 **Tools.** The server hosts an MCP server that every agent connects to with its session's token:
-`create_pull_request`, `comment` and `add_labels` (on issues and pull requests), `pull_request_status` (GitHub's mergeable state and CI checks for the
+`create_pull_request`, `show_file` (see Viewer), `comment` and `add_labels` (on issues and pull requests), `pull_request_status` (GitHub's mergeable state and CI checks for the
 session's PR), `spawn_session`, `send_prompt`, `get_session` (which can wait for a child to
 finish), `list_sessions`, `stop_session`, and `list_capabilities` and `add_capability` (see
 Capabilities). Agents only reach their own direct children; children nest at most two levels deep.
@@ -174,6 +174,15 @@ another git host would only need its own translation. A GitHub App created from 
 public HTTPS address subscribes to the events itself; otherwise add a repository webhook (JSON,
 the events above) with `BEETHOVEN_GITHUB_WEBHOOK_SECRET` as its secret. Apps created before this
 need the Issues, Checks and Actions permissions and the events turned on in their GitHub settings.
+
+**Viewer.** A resizable panel beside a session shows files from its sandbox: mockups, screenshots,
+generated images, Markdown, PDFs, CSV, code. The agent calls `show_file` when someone asks to see a
+file or after it makes something visual; the server copies the file out (up to 25 MB), so it stays
+viewable after the sandbox stops, and showing the same path again adds a version. Each file opens in
+a tab with its versions, a download, and, for HTML, phone, tablet and full widths. What an agent
+wrote is untrusted: files are served with a `Content-Security-Policy` sandbox, so HTML runs its own
+scripts in an opaque origin with no access to the app's cookies or API, and nothing else runs
+scripts at all.
 
 **Projects.** A named, reusable workspace (an *environment* in the API): an ordered list of up to ten
 repositories (the first is the primary, each with its own base branch), setup and start scripts, its
@@ -400,6 +409,7 @@ HTML and SVG included, downloads, so a file can't run script as the person viewi
 | `GET /api/sessions/{id}/events` | server-sent events; `Last-Event-ID` resumes |
 | `GET /api/events` | live state of every session |
 | `/api/automations[/{id}[/run\|/runs]]` | CRUD, run now, run history |
+| `GET /api/sessions/{id}/artifacts[/{aid}]` | files shown in the viewer; one file's content (`?download=1` saves it) |
 | `POST /hooks/{id}` | fire an automation; `Authorization: Bearer <hook token>` |
 | `POST /webhooks/github` | GitHub event deliveries, signed with the app's webhook secret |
 | `GET /api/automations/events` | the event kinds and conditions automations can trigger on |

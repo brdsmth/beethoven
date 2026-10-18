@@ -31,6 +31,10 @@ func Handler(m *session.Manager) http.Handler {
 		"repositories, as the person the session works for. Use it to answer the issue or pull request an automation started you on."}, t.comment)
 	mcp.AddTool(srv, &mcp.Tool{Name: "add_labels", Description: "Add labels to an issue or pull request in one of this session's repositories. " +
 		"Labels the repository doesn't have yet are created."}, t.addLabels)
+	mcp.AddTool(srv, &mcp.Tool{Name: "show_file", Description: "Open a file from this sandbox in the viewer beside the conversation: " +
+		"images, HTML mockups, Markdown, PDFs, code, CSV and more. Call it when the person asks to see a file, and after you make " +
+		"something visual (a mockup, a screenshot, a chart, a generated image). Showing the same file again after changing it " +
+		"adds a new version. HTML is shown on its own, so inline its CSS, scripts and images. Up to 25 MB."}, t.showFile)
 	mcp.AddTool(srv, &mcp.Tool{Name: "spawn_session", Description: "Start a child session: another agent in its own sandbox, on its own branch, " +
 		"working in parallel. Returns the child's id immediately. The child cannot see your uncommitted work, so give it self-contained instructions."}, t.spawn)
 	mcp.AddTool(srv, &mcp.Tool{Name: "send_prompt", Description: "Queue a follow-up prompt on one of your child sessions."}, t.send)
@@ -157,6 +161,23 @@ func (t *tools) addLabels(ctx context.Context, req *mcp.CallToolRequest, in labe
 		return nil, nil, err
 	}
 	return text("Added %s to #%d.", strings.Join(in.Labels, ", "), in.Number), nil, nil
+}
+
+type showFileIn struct {
+	Path  string `json:"path" jsonschema:"the file: absolute, or relative to your working directory"`
+	Title string `json:"title,omitempty" jsonschema:"a short caption, e.g. 'Checkout page, mobile'"`
+}
+
+func (t *tools) showFile(ctx context.Context, req *mcp.CallToolRequest, in showFileIn) (*mcp.CallToolResult, any, error) {
+	me, err := t.caller(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	a, err := t.m.ShowFile(ctx, me.ID, in.Path, in.Title)
+	if err != nil {
+		return nil, nil, err
+	}
+	return text("Showing %s (%s, %d bytes) in the viewer.", a.Path, a.ContentType, a.Size), nil, nil
 }
 
 type spawnIn struct {
