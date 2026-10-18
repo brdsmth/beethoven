@@ -9,6 +9,7 @@ import { span } from './insights';
 import { Link, Markdown, safeHref } from './markdown';
 import { TeamLabel, VisibilityBadge, useTeamIndex } from './teams';
 import { Icon, useDismiss } from './components';
+import { ShownCard, Viewer, ViewerContext, type Shown } from './viewer';
 import { Chip, Dot, MODELS, Spinner, ago, dur, effortLevels, fail, modEnter, money, toast, useLoad, useTick } from './util';
 
 type End = { id: string; status: string; error?: string; cost_usd: number; duration_ms?: number };
@@ -26,10 +27,11 @@ type Model = {
   deltas: Record<string, string>; // live text per prompt, until its full message lands
   logs: Record<string, string[]>; // live sandbox boot output per prompt
   caps: { enabled: string[]; suggested: string[] }; // the sandbox's capabilities, and those its repositories suggest
+  files: Shown[]; // shown in the viewer, oldest first
   seq: number;
 };
 const newModel = (): Model => ({
-  prompts: {}, blocks: [], groups: {}, results: {}, ends: {}, deltas: {}, logs: {}, caps: { enabled: [], suggested: [] }, seq: 0,
+  prompts: {}, blocks: [], groups: {}, results: {}, ends: {}, deltas: {}, logs: {}, caps: { enabled: [], suggested: [] }, files: [], seq: 0,
 });
 
 function group(m: Model, id: string) {
@@ -44,6 +46,7 @@ function apply(m: Model, e: Ev) {
   }
   const p = e.prompt || '', d = e.data || {};
   const patch = (id: string, v: Partial<Prompt>) => { if (m.prompts[id]) m.prompts[id] = { ...m.prompts[id], ...v }; };
+  if (e.type === 'artifact' && d.kind === 'file' && !m.files.some(f => f.id === d.id)) m.files.push(d); // also on the timeline
   if (e.type === 'capability') { // added during the session; also shown on the timeline
     m.caps = { enabled: [...new Set([...m.caps.enabled, d.id])], suggested: m.caps.suggested.filter(x => x !== d.id) };
   }
@@ -74,6 +77,9 @@ export function SessionView({ id }: { id: string }) {
   const [prs, setPrs] = useState<PullRequest[]>([]);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const [viewing, setViewing] = useState(''); // the shown file open in the viewer
+  const [viewer, setViewer] = useState(false);
+  const openFile = (fid: string) => { setViewing(fid); setViewer(true); };
   useTick();
 
   useEffect(() => {
@@ -83,6 +89,8 @@ export function SessionView({ id }: { id: string }) {
     const stop = subscribe(() => `/api/sessions/${id}/events${m.seq ? '?after=' + m.seq : ''}`, e => {
       apply(m, e);
       if (e.type === 'child') loadKids();
+      // A file the agent shows just now opens; replayed ones wait for a click.
+      if (e.type === 'artifact' && e.data?.kind === 'file' && Date.now() - Date.parse(e.at) < 60_000) openFile(e.data.id);
       bump();
     });
     get<{ session: Session; prompts: Prompt[]; pull_requests: PullRequest[] }>(`/api/sessions/${id}`).then(r => {
@@ -107,23 +115,33 @@ export function SessionView({ id }: { id: string }) {
   const s = m.session;
   if (missing) return <div class="page"><p class="empty">{missing}</p></div>;
   if (!s) return <div class="page"><p class="empty">Loading…</p></div>;
+  const files = m.files.length > 0 && (
+    <button type="button" class={'btn' + (viewer ? ' on' : '')} aria-pressed={viewer} onClick={() => setViewer(!viewer)}>
+      <Icon name="panel" size={14} /> Files <span class="dim">{new Set(m.files.map(f => f.path)).size}</span>
+    </button>
+  );
   return (
-    <div class="session">
-      <Header s={s} kids={kids} stats={<Stats m={m} prs={prs} />} caps={m.caps} changed={x => { m.session = x; rerender(0); }} />
-      <div class="timeline" ref={scroller} onScroll={() => {
-        const el = scroller.current!;
-        stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-      }}>
-        <div class="col">
-          {m.blocks.map((b, i) => 'items' in b
-            // Queued prompts wait in the composer's queue, and the strip above it shows a stopped sandbox.
-            ? m.prompts[b.id]?.status !== 'queued' && <PromptGroup key={b.id} g={b} m={m} />
-            : !(i === m.blocks.length - 1 && b.type === 'sandbox' && b.data?.state === s.sandbox && s.status !== 'running')
-              && <Item key={b.seq} e={b} m={m} live={false} />)}
+    <ViewerContext.Provider value={openFile}>
+      <div class="split">
+        <div class="session">
+          <Header s={s} kids={kids} stats={<Stats m={m} prs={prs} />} caps={m.caps} changed={x => { m.session = x; rerender(0); }} extra={files} />
+          <div class="timeline" ref={scroller} onScroll={() => {
+            const el = scroller.current!;
+            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          }}>
+            <div class="col">
+              {m.blocks.map((b, i) => 'items' in b
+                // Queued prompts wait in the composer's queue, and the strip above it shows a stopped sandbox.
+                ? m.prompts[b.id]?.status !== 'queued' && <PromptGroup key={b.id} g={b} m={m} />
+                : !(i === m.blocks.length - 1 && b.type === 'sandbox' && b.data?.state === s.sandbox && s.status !== 'running')
+                  && <Item key={b.seq} e={b} m={m} live={false} />)}
+            </div>
+          </div>
+          <Composer m={m} s={s} prs={prs} />
         </div>
+        {viewer && m.files.length > 0 && <Viewer session={s.id} files={m.files} open={viewing} setOpen={setViewing} close={() => setViewer(false)} />}
       </div>
-      <Composer m={m} s={s} prs={prs} />
-    </div>
+    </ViewerContext.Provider>
   );
 }
 
@@ -155,8 +173,8 @@ function Stats({ m, prs }: { m: Model; prs: PullRequest[] }) {
   );
 }
 
-function Header({ s, kids, stats, caps, changed }: {
-  s: Session; kids: Session[]; stats: ComponentChildren; caps: Model['caps']; changed: (s: Session) => void;
+function Header({ s, kids, stats, caps, changed, extra }: {
+  s: Session; kids: Session[]; stats: ComponentChildren; caps: Model['caps']; changed: (s: Session) => void; extra?: ComponentChildren;
 }) {
   const team = useTeamIndex()(s.team_id);
   const [pr, setPr] = useState<{ url: string; warning: string }>();
@@ -186,6 +204,7 @@ function Header({ s, kids, stats, caps, changed }: {
         <div class="s-top">
           <h1 class="s-title">{s.title || 'Untitled'}</h1>
           <div class="actions">
+            {extra}
             <button class="btn" disabled={busy} onClick={act(() => api('POST', `${base}/archive`, { archived: !s.archived }))}>
               {s.archived ? 'Unarchive' : 'Archive'}
             </button>
@@ -350,6 +369,7 @@ function Item({ e, m, live, sub }: { e: Ev; m: Model; live: boolean; sub?: Recor
         </div>
       );
     case 'artifact':
+      if (d.kind === 'file') return <ShownCard f={d} />;
       return (
         <div class="card">
           Pull request opened{d.repo && <> in <span class="mono">{d.repo}</span></>}: <Link href={d.url}>{d.title || d.url}</Link>
