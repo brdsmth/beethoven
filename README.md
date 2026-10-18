@@ -124,7 +124,7 @@ events. The Claude Code harness runs `claude -p --output-format stream-json` and
 conversation with `--resume`. Adding another agent is one file.
 
 **Tools.** The server hosts an MCP server that every agent connects to with its session's token:
-`create_pull_request`, `pull_request_status` (GitHub's mergeable state and CI checks for the
+`create_pull_request`, `comment` and `add_labels` (on issues and pull requests), `pull_request_status` (GitHub's mergeable state and CI checks for the
 session's PR), `spawn_session`, `send_prompt`, `get_session` (which can wait for a child to
 finish), `list_sessions`, `stop_session`, and `list_capabilities` and `add_capability` (see
 Capabilities). Agents only reach their own direct children; children nest at most two levels deep.
@@ -152,11 +152,28 @@ team, can read. The sidebar's switcher shows one team's sessions, the workspace'
 see, grouped by project; new sessions start in the chosen team. **⌘K** (Ctrl+K) searches every
 session, project and page you can open, and **C** starts a new session.
 
-**Automations.** A saved request: a prompt, a repository, and a cron schedule and/or a webhook.
-Firing one submits a prompt like any other source; that prompt is the run. Runs don't overlap,
-webhook redeliveries (same `Idempotency-Key` or `X-GitHub-Delivery`) fire once, the webhook body is
-handed to the agent, and three failures in a row pause the automation. With "reuse", every run
-continues one session.
+**Automations.** A saved request: a prompt, a repository, and a cron schedule, a repository event
+and/or a webhook. Firing one submits a prompt like any other source; that prompt is the run.
+Scheduled and webhook runs don't overlap, webhook redeliveries (same `Idempotency-Key` or
+`X-GitHub-Delivery`) fire once, the webhook body is handed to the agent, and three failures in a row
+pause the automation. With "reuse", every run continues one session.
+
+**Repository events.** An automation can fire when something happens in the repositories it
+targets: an issue opened, labeled, closed or commented on; a pull request opened, updated, ready for
+review, labeled, merged, closed, reviewed or commented on; CI finishing; a push. Conditions narrow it
+down, all of which must hold: the label just added, labels it has (or lacks), branch and target
+branch patterns, who did it, draft, text in the comment or description, CI conclusion and workflow
+name. So "issue labeled `agent`" fixes issues, "pull request opened, not a draft, into `main`"
+reviews them, and "CI finished with `failure` on `main`" investigates. Each run gets the event with
+the prompt, fenced as data the agent mustn't take instructions from, and starts from the pull
+request's branch when there is one; with "reuse", events about the same issue or pull request
+queue on one session. Bots' comments never trigger runs, so agents can't set each other off. The
+agent answers with the `comment` and `add_labels` tools. Events are host-neutral (`internal/event`):
+the GitHub integration verifies deliveries to `POST /webhooks/github` and translates them, and
+another git host would only need its own translation. A GitHub App created from this server at a
+public HTTPS address subscribes to the events itself; otherwise add a repository webhook (JSON,
+the events above) with `BEETHOVEN_GITHUB_WEBHOOK_SECRET` as its secret. Apps created before this
+need the Issues, Checks and Actions permissions and the events turned on in their GitHub settings.
 
 **Projects.** A named, reusable workspace (an *environment* in the API): an ordered list of up to ten
 repositories (the first is the primary, each with its own base branch), setup and start scripts, its
@@ -384,6 +401,8 @@ HTML and SVG included, downloads, so a file can't run script as the person viewi
 | `GET /api/events` | live state of every session |
 | `/api/automations[/{id}[/run\|/runs]]` | CRUD, run now, run history |
 | `POST /hooks/{id}` | fire an automation; `Authorization: Bearer <hook token>` |
+| `POST /webhooks/github` | GitHub event deliveries, signed with the app's webhook secret |
+| `GET /api/automations/events` | the event kinds and conditions automations can trigger on |
 | `GET/PUT/DELETE /api/secrets` | by scope; names only on read |
 | `POST /api/secrets/import` · `GET /api/secrets/effective` | `.env` import; what a session receives |
 | `/api/environments[/{id}]` | projects: CRUD; `team_id` on creation |
@@ -430,7 +449,8 @@ internal/session     sessions: queue, event log, sandbox lifecycle, PRs, boot sc
 internal/sandbox     Provider interface, Docker and Modal implementations, sandbox Dockerfile
 internal/agent       Harness interface, Claude Code implementation
 internal/tools       MCP tool server
-internal/automation  schedules, webhooks, failure policy
+internal/automation  schedules, webhooks, repository events, failure policy
+internal/event       host-neutral repository events and the triggers that match them
 internal/store       SQLite migrations and queries, environments, settings, encrypted secrets
 internal/github      the GitHub App, its tokens and accounts, clone URLs, pull requests
 internal/slack       the Slack app, its installations, and the bot

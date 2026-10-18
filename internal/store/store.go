@@ -537,18 +537,25 @@ type Automation struct {
 	NextRunAt     *time.Time `json:"next_run_at,omitempty"`
 	HookHash      string     `json:"-"`
 	CreatedAt     time.Time  `json:"created_at"`
+
+	// Trigger, when set, fires the automation on matching events from a
+	// git host. Its conditions are stored as JSON.
+	TriggerEvent      string          `json:"trigger_event"`
+	TriggerConditions json.RawMessage `json:"trigger_conditions"`
 }
 
 const automationCols = `id, name, repos, environment_id, prompt, model, effort, schedule, reuse, enabled,
-	failures, next_run_at, hook_hash, created_at, owner_team_id, account_id`
+	failures, next_run_at, hook_hash, created_at, owner_team_id, account_id, trigger_event, trigger_conditions`
 
 func scanAutomation(row scanner) (Automation, error) {
 	var a Automation
 	var repos string
 	var next sql.NullInt64
 	var created int64
+	var conds string
 	err := row.Scan(&a.ID, &a.Name, &repos, &a.EnvironmentID, &a.Prompt, &a.Model, &a.Effort, &a.Schedule,
-		&a.Reuse, &a.Enabled, &a.Failures, &next, &a.HookHash, &created, &a.TeamID, &a.AccountID)
+		&a.Reuse, &a.Enabled, &a.Failures, &next, &a.HookHash, &created, &a.TeamID, &a.AccountID, &a.TriggerEvent, &conds)
+	a.TriggerConditions = json.RawMessage(conds)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}
@@ -559,17 +566,18 @@ func scanAutomation(row scanner) (Automation, error) {
 
 func (s *Store) CreateAutomation(ctx context.Context, a *Automation) error {
 	a.CreatedAt = time.Now()
-	_, err := s.w.ExecContext(ctx, `INSERT INTO automations (`+automationCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err := s.w.ExecContext(ctx, `INSERT INTO automations (`+automationCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		a.ID, a.Name, encodeRepos(a.Repos), a.EnvironmentID, a.Prompt, a.Model, a.Effort, a.Schedule, a.Reuse,
-		a.Enabled, a.Failures, optToMS(a.NextRunAt), a.HookHash, ms(a.CreatedAt), a.TeamID, a.AccountID)
+		a.Enabled, a.Failures, optToMS(a.NextRunAt), a.HookHash, ms(a.CreatedAt), a.TeamID, a.AccountID,
+		a.TriggerEvent, conditionsJSON(a.TriggerConditions))
 	return err
 }
 
 func (s *Store) SaveAutomation(ctx context.Context, a *Automation) error {
 	_, err := s.w.ExecContext(ctx, `UPDATE automations SET name=?, repos=?, environment_id=?, prompt=?, model=?,
-		effort=?, schedule=?, reuse=?, enabled=?, failures=?, next_run_at=? WHERE id=?`,
+		effort=?, schedule=?, reuse=?, enabled=?, failures=?, next_run_at=?, trigger_event=?, trigger_conditions=? WHERE id=?`,
 		a.Name, encodeRepos(a.Repos), a.EnvironmentID, a.Prompt, a.Model, a.Effort, a.Schedule, a.Reuse,
-		a.Enabled, a.Failures, optToMS(a.NextRunAt), a.ID)
+		a.Enabled, a.Failures, optToMS(a.NextRunAt), a.TriggerEvent, conditionsJSON(a.TriggerConditions), a.ID)
 	return err
 }
 
@@ -584,6 +592,20 @@ func (s *Store) Automations(ctx context.Context) ([]Automation, error) {
 func (s *Store) DeleteAutomation(ctx context.Context, id string) error {
 	_, err := s.w.ExecContext(ctx, `DELETE FROM automations WHERE id=?`, id)
 	return err
+}
+
+// TriggeredAutomations lists the enabled automations that fire on events of
+// kind.
+func (s *Store) TriggeredAutomations(ctx context.Context, kind string) ([]Automation, error) {
+	return query(ctx, s.r, scanAutomation, `SELECT `+automationCols+` FROM automations
+		WHERE enabled=1 AND trigger_event=? ORDER BY created_at`, kind)
+}
+
+func conditionsJSON(c json.RawMessage) string {
+	if len(c) == 0 || string(c) == "null" {
+		return "[]"
+	}
+	return string(c)
 }
 
 func (s *Store) DueAutomations(ctx context.Context, now time.Time) ([]Automation, error) {

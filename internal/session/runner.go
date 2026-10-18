@@ -667,6 +667,7 @@ func systemPrompt(s store.Session, eff Effective) string {
 			b.WriteString(", once per repository you changed, naming the repository")
 		}
 		b.WriteString(". To check whether a pull request can merge or how its CI is doing, call pull_request_status.\n")
+		b.WriteString(". To reply on an issue or pull request, or label one, call the comment and add_labels tools.\n")
 	}
 	b.WriteString("For independent pieces of work that can proceed in parallel, you can start child sessions with spawn_session and follow them with get_session.\n")
 	b.WriteString("If the work needs a toolchain the sandbox lacks (a mobile app with Expo, Android builds, Go, Rust, Bun, Python with uv), " +

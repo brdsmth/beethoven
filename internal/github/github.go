@@ -40,7 +40,8 @@ type Client struct {
 	DB       *store.Store // the app registered here, connected accounts and a stored token
 	EnvApp   *App         // a preconfigured app; takes precedence over one registered here
 
-	MergeableWait time.Duration // before asking again for a pull request's mergeability; default 2s
+	MergeableWait     time.Duration // before asking again for a pull request's mergeability; default 2s
+	RepoWebhookSecret string        // signs deliveries from repository webhooks when there's no app
 
 	mu        sync.Mutex
 	token     string // a personal access token given to New
@@ -428,6 +429,29 @@ func (c *Client) OpenPR(ctx context.Context, pr session.PullRequest) (string, er
 		"title": pr.Title, "head": pr.Head, "base": pr.Base, "body": pr.Body, "draft": pr.Draft,
 	}, &created)
 	return created.HTMLURL, err
+}
+
+// Comment posts on an issue or pull request as the person.
+func (c *Client) Comment(ctx context.Context, repo string, number int, body string) (string, error) {
+	tok, err := c.bearer(ctx)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		HTMLURL string `json:"html_url"`
+	}
+	err = c.call(ctx, tok, "POST", fmt.Sprintf("/repos/%s/issues/%d/comments", repo, number), map[string]string{"body": body}, &out)
+	return out.HTMLURL, err
+}
+
+// AddLabels adds labels to an issue or pull request as the person; GitHub
+// creates labels the repository doesn't have yet.
+func (c *Client) AddLabels(ctx context.Context, repo string, number int, labels []string) error {
+	tok, err := c.bearer(ctx)
+	if err != nil {
+		return err
+	}
+	return c.call(ctx, tok, "POST", fmt.Sprintf("/repos/%s/issues/%d/labels", repo, number), map[string][]string{"labels": labels}, nil)
 }
 
 // apiError is a response from the GitHub API outside 2xx.

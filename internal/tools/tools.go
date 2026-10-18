@@ -27,6 +27,10 @@ func Handler(m *session.Manager) http.Handler {
 	mcp.AddTool(srv, &mcp.Tool{Name: "pull_request_status", Description: "Ask GitHub about this session's pull request: its state, " +
 		"whether it can merge (GitHub's own mergeable status, which accounts for conflicts, branch protection and required checks) " +
 		"and its CI checks. You have no GitHub credentials or gh CLI in the sandbox; use this instead."}, t.prStatus)
+	mcp.AddTool(srv, &mcp.Tool{Name: "comment", Description: "Post a comment on an issue or pull request in one of this session's " +
+		"repositories, as the person the session works for. Use it to answer the issue or pull request an automation started you on."}, t.comment)
+	mcp.AddTool(srv, &mcp.Tool{Name: "add_labels", Description: "Add labels to an issue or pull request in one of this session's repositories. " +
+		"Labels the repository doesn't have yet are created."}, t.addLabels)
 	mcp.AddTool(srv, &mcp.Tool{Name: "spawn_session", Description: "Start a child session: another agent in its own sandbox, on its own branch, " +
 		"working in parallel. Returns the child's id immediately. The child cannot see your uncommitted work, so give it self-contained instructions."}, t.spawn)
 	mcp.AddTool(srv, &mcp.Tool{Name: "send_prompt", Description: "Queue a follow-up prompt on one of your child sessions."}, t.send)
@@ -118,6 +122,41 @@ func (t *tools) prStatus(ctx context.Context, req *mcp.CallToolRequest, in prSta
 		return text("No pull request from %s yet. Open one with create_pull_request.", me.Branch), nil, nil
 	}
 	return jsonText(st), nil, nil
+}
+
+type commentIn struct {
+	Repo   string `json:"repo,omitempty" jsonschema:"owner/name of the repository; required when the session has several"`
+	Number int    `json:"number" jsonschema:"the issue or pull request number"`
+	Body   string `json:"body" jsonschema:"the comment, in Markdown"`
+}
+
+func (t *tools) comment(ctx context.Context, req *mcp.CallToolRequest, in commentIn) (*mcp.CallToolResult, any, error) {
+	me, err := t.caller(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	url, err := t.m.Comment(ctx, me.ID, in.Repo, in.Number, in.Body)
+	if err != nil {
+		return nil, nil, err
+	}
+	return text("Commented: %s", url), nil, nil
+}
+
+type labelsIn struct {
+	Repo   string   `json:"repo,omitempty" jsonschema:"owner/name of the repository; required when the session has several"`
+	Number int      `json:"number" jsonschema:"the issue or pull request number"`
+	Labels []string `json:"labels" jsonschema:"labels to add"`
+}
+
+func (t *tools) addLabels(ctx context.Context, req *mcp.CallToolRequest, in labelsIn) (*mcp.CallToolResult, any, error) {
+	me, err := t.caller(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := t.m.AddLabels(ctx, me.ID, in.Repo, in.Number, in.Labels); err != nil {
+		return nil, nil, err
+	}
+	return text("Added %s to #%d.", strings.Join(in.Labels, ", "), in.Number), nil, nil
 }
 
 type spawnIn struct {

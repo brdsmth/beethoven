@@ -30,7 +30,9 @@ func TestDocker(t *testing.T) {
 	cleanupContainer(t, s.ID)
 	slowWait(t, env, p.ID, store.Done)
 	evs, _ := db.Events(ctx, s.ID, 0, 1000)
-	if !slices.ContainsFunc(evs, func(e store.Event) bool { return e.Type == "sandbox" && strings.Contains(string(e.Data), `"clone demo"`) }) {
+	if !slices.ContainsFunc(evs, func(e store.Event) bool {
+		return e.Type == "sandbox" && strings.Contains(string(e.Data), `"clone demo"`)
+	}) {
 		t.Error("no clone phase reported")
 	}
 
@@ -115,7 +117,9 @@ func TestDockerEnvironment(t *testing.T) {
 	slowWait(t, env, p.ID, store.Done)
 
 	name := "beethoven-" + s.ID
-	sh := func(script string) string { return strings.TrimSpace(run(t, "", "docker", "exec", name, "sh", "-c", script)) }
+	sh := func(script string) string {
+		return strings.TrimSpace(run(t, "", "docker", "exec", name, "sh", "-c", script))
+	}
 	for _, dir := range []string{"api", "web"} {
 		if got := sh("git -C /workspace/" + dir + " branch --show-current"); got != s.Branch {
 			t.Errorf("%s is on %q, want %q", dir, got, s.Branch)

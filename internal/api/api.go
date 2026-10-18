@@ -18,6 +18,7 @@ import (
 
 	"github.com/brdsmth/beethoven/internal/access"
 	"github.com/brdsmth/beethoven/internal/automation"
+	"github.com/brdsmth/beethoven/internal/event"
 	"github.com/brdsmth/beethoven/internal/github"
 	"github.com/brdsmth/beethoven/internal/insights"
 	"github.com/brdsmth/beethoven/internal/session"
@@ -151,6 +152,8 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok\n") })
 	mux.HandleFunc("POST /hooks/{id}", s.hook)
+	mux.HandleFunc("POST /webhooks/github", s.githubWebhook) // signed with the app's webhook secret
+	api("GET /api/automations/events", s.eventKinds)
 	mux.HandleFunc("GET /github/{step}", returnTo("github"))
 	if s.Slack != nil && s.SlackBot != nil {
 		api("GET /api/slack", s.slackStatus)
@@ -818,6 +821,38 @@ func (s *Server) hook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, http.StatusAccepted, map[string]string{"session_id": sess.ID, "prompt_id": p.ID})
+}
+
+// githubWebhook receives the GitHub App's (or a repository webhook's) event
+// deliveries and fires the automations they trigger.
+func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
+	e, err := s.GitHub.ParseWebhook(r)
+	switch {
+	case errors.Is(err, github.ErrBadSignature):
+		fail(w, http.StatusUnauthorized, err.Error())
+		return
+	case err != nil:
+		fail(w, http.StatusBadRequest, err.Error())
+		return
+	case e == nil:
+		reply(w, http.StatusOK, map[string]any{"ignored": true})
+		return
+	}
+	started, err := s.Auto.Dispatch(r.Context(), *e)
+	if err != nil {
+		s.Log.Warn("github event: some automations didn't run", "kind", e.Kind, "repo", e.Repo, "err", err)
+	}
+	ids := []string{}
+	for _, p := range started {
+		ids = append(ids, p.SessionID)
+	}
+	reply(w, http.StatusAccepted, map[string]any{"event": e.Kind, "sessions": ids})
+}
+
+// eventKinds lists the events automations can trigger on.
+func (s *Server) eventKinds(w http.ResponseWriter, r *http.Request) {
+	reply(w, http.StatusOK, map[string]any{"kinds": event.Kinds,
+		"webhook": map[string]any{"path": "/webhooks/github", "secret": s.GitHub.WebhookSecret(r.Context()) != ""}})
 }
 
 // ----------------------------------------------------------------------- ui

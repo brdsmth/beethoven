@@ -3,6 +3,9 @@ package api_test
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -145,6 +148,43 @@ func TestWebhook(t *testing.T) {
 	_, again := do(t, "POST", hook, `{"ref":"main"}`, "Authorization", "Bearer "+token, "Idempotency-Key", "d1")
 	if again["prompt_id"] != first["prompt_id"] {
 		t.Errorf("redelivery fired again: %v vs %v", again, first)
+	}
+}
+
+func TestGitHubEvents(t *testing.T) {
+	env := fake.NewEnv(t)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gh := github.New("test-token")
+	gh.RepoWebhookSecret = "s3cret"
+	srv := httptest.NewServer((&api.Server{M: env.M, Auto: automation.New(env.M, log), GitHub: gh, Token: "api-token", Log: log}).Handler())
+	defer srv.Close()
+
+	code, out := do(t, "POST", srv.URL+"/api/automations", `{"name":"fix","prompt":"Fix it.","repos":[{"repo":"acme/app"}],"enabled":true,
+		"trigger":{"event":"issue.labeled","conditions":[{"type":"added_label","values":["agent"]}]}}`, "Authorization", "Bearer api-token")
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, out)
+	}
+	if code, out := do(t, "GET", srv.URL+"/api/automations/events", "", "Authorization", "Bearer api-token"); code != 200 || out["webhook"] == nil {
+		t.Errorf("event kinds: %d %v", code, out)
+	}
+	body := `{"action":"labeled","label":{"name":"agent"},"issue":{"number":7,"title":"Crash"},
+		"repository":{"full_name":"acme/app"},"sender":{"login":"jane","type":"User"}}`
+	sign := func(secret string) string {
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write([]byte(body))
+		return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	}
+	if code, _ := do(t, "POST", srv.URL+"/webhooks/github", body, "X-GitHub-Event", "issues", "X-Hub-Signature-256", sign("nope")); code != http.StatusUnauthorized {
+		t.Errorf("forged delivery: %d", code)
+	}
+	code, out = do(t, "POST", srv.URL+"/webhooks/github", body, "X-GitHub-Event", "issues", "X-GitHub-Delivery", "d1",
+		"X-Hub-Signature-256", sign("s3cret"))
+	if ids, _ := out["sessions"].([]any); code != http.StatusAccepted || len(ids) != 1 {
+		t.Fatalf("delivery: %d %v", code, out)
+	}
+	if code, out := do(t, "POST", srv.URL+"/webhooks/github", `{"zen":"hi"}`, "X-GitHub-Event", "ping",
+		"X-Hub-Signature-256", func() string { b := body; body = `{"zen":"hi"}`; s := sign("s3cret"); body = b; return s }()); code != 200 || out["ignored"] != true {
+		t.Errorf("ping: %d %v", code, out)
 	}
 }
 

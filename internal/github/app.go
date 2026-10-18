@@ -124,7 +124,7 @@ func (c *Client) InstallURL(app *App) string {
 func Manifest(base string, public bool) map[string]any {
 	suffix := make([]byte, 3)
 	rand.Read(suffix)
-	return map[string]any{
+	m := map[string]any{
 		"name":            "Beethoven " + hex.EncodeToString(suffix), // app names are unique across GitHub
 		"url":             "https://github.com/brdsmth/beethoven",
 		"description":     "Background coding agents: clones repositories, pushes work branches and opens pull requests.",
@@ -141,8 +141,18 @@ func Manifest(base string, public bool) map[string]any {
 			// Start new projects. Unlike administration, it allows nothing
 			// else, and the app gets access to the repositories it creates.
 			"repository_creation": "write",
+			// Events for automations: issues, pull requests, comments and CI.
+			"issues":  "write", // and comment and label as the person
+			"checks":  "read",
+			"actions": "read",
 		},
+		"default_events": WebhookEvents,
 	}
+	// GitHub delivers events only to an address it can reach.
+	if strings.HasPrefix(base, "https://") {
+		m["hook_attributes"] = map[string]any{"url": base + "/webhooks/github", "active": true}
+	}
+	return m
 }
 
 // ManifestURL is where the browser posts the manifest: to register the app

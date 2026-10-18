@@ -242,6 +242,8 @@ type SCM struct {
 	mu       sync.Mutex
 	PRs      []session.PullRequest
 	Status   *session.PRStatus // what PRStatus answers
+	Comments []string          // "repo#number: body"
+	Labeled  []string          // "repo#number: label"
 	Err      error
 	Identity store.Author // whom the host acts for
 }
@@ -265,4 +267,20 @@ func (s *SCM) PRStatus(context.Context, string, string) (*session.PRStatus, erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.Status, s.Err
+}
+
+func (s *SCM) Comment(_ context.Context, repo string, number int, body string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Comments = append(s.Comments, fmt.Sprintf("%s#%d: %s", repo, number, body))
+	return fmt.Sprintf("https://github.com/%s/issues/%d#issuecomment-%d", repo, number, len(s.Comments)), s.Err
+}
+
+func (s *SCM) AddLabels(_ context.Context, repo string, number int, labels []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, l := range labels {
+		s.Labeled = append(s.Labeled, fmt.Sprintf("%s#%d: %s", repo, number, l))
+	}
+	return s.Err
 }
