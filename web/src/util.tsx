@@ -18,6 +18,9 @@ export const hashParam = (name: string) => new URLSearchParams(location.hash.spl
 
 export const go = (path: string) => { location.hash = path; };
 
+// title sets the browser tab title, "Beethoven | page".
+export const title = (page?: string) => { document.title = page ? `Beethoven | ${page}` : 'Beethoven'; };
+
 /** Re-renders the caller periodically so relative times stay fresh. */
 export function useTick(ms = 30000) {
   const [, set] = useState(0);
