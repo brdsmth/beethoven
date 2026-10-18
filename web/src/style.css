@@ -321,7 +321,6 @@ kbd {
 .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 6px; font-size: var(--fs-small); color: var(--muted); }
 .kids a { display: inline-flex; align-items: center; gap: 5px; }
 .caps-row { gap: 4px 6px; }
-.cap-add { width: auto; height: 22px; padding: 0 6px; font-size: 12px; color: var(--muted); }
 
 /* capability checklists */
 .caps { display: flex; flex-direction: column; gap: 10px; }
