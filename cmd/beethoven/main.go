@@ -72,6 +72,11 @@ Server environment:
   GITHUB_TOKEN            GitHub token until someone connects the app (default: gh auth token)
   ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN
                           passed to sandboxes unless overridden by secrets
+
+Many workspaces on one server, each at <slug>.<domain>:
+  BEETHOVEN_CLOUD_DOMAIN  the domain; app.<domain> has the admin pages and GitHub's and Slack's callbacks
+  BEETHOVEN_CLOUD_SCHEME  the scheme in workspaces' addresses (https; http for localhost)
+  BEETHOVEN_ADMIN_TOKEN   the admin pages' password, at least 16 characters
 `
 
 func main() {
@@ -141,6 +146,9 @@ func serve(args []string) error {
 	_, port, err := net.SplitHostPort(*addr)
 	if err != nil {
 		return fmt.Errorf("addr: %w", err)
+	}
+	if domain := os.Getenv("BEETHOVEN_CLOUD_DOMAIN"); domain != "" {
+		return serveCloud(ctx, log, *addr, port, *dataDir, key, domain, base)
 	}
 
 	box, toolsBase, err := sandboxes(ctx, log, base.Image, port, public, env("BEETHOVEN_MODAL_APP", "beethoven"))
