@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,12 +40,30 @@ type Server struct {
 	Log      *slog.Logger
 	Version  string
 
+	// The cloud runs many workspaces under one domain, with the operator's
+	// GitHub and Slack apps. These are zero on a self-hosted server.
+	Cloud bool // people can't register their own apps, nor give subscription tokens
+	// CallbackBase is where GitHub and Slack send browsers back, the same
+	// for every workspace: "" is the browser's own origin.
+	CallbackBase string
+	// StatePrefix starts the state of every round trip to GitHub or Slack,
+	// so the cloud knows whose it is.
+	StatePrefix string
+	// SetupClaim, when set, must accept the code given with the first
+	// account: a workspace is claimed by whoever was sent its link.
+	SetupClaim func(ctx context.Context, code string) bool
+	// SlackInstalled hears of each Slack workspace added; an error undoes
+	// the addition. SlackUninstalled hears of each removed.
+	SlackInstalled   func(ctx context.Context, teamID string) error
+	SlackUninstalled func(ctx context.Context, teamID string)
+
 	flows flows    // GitHub round trips in progress
 	tries throttle // failed sign-ins
 }
 
 type Info struct {
 	Version   string       `json:"version"`
+	Cloud     bool         `json:"cloud"` // a workspace of the hosted service
 	Author    store.Author `json:"author"`
 	GitHub    bool         `json:"github"`    // the server can reach GitHub: a connected app or a token
 	Anthropic bool         `json:"anthropic"` // a model credential reaches sandboxes
@@ -59,11 +78,12 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 		replyErr(w, err)
 		return
 	}
-	reply(w, http.StatusOK, Info{Version: s.Version, Author: eff.Author, GitHub: s.GitHub.Mode(r.Context()) != "",
+	reply(w, http.StatusOK, Info{Version: s.Version, Cloud: s.Cloud, Author: eff.Author, GitHub: s.GitHub.Mode(r.Context()) != "",
 		Anthropic: s.anthropicSource(r.Context()) != "", Model: eff.Model, Effort: eff.Effort, Efforts: session.Efforts})
 }
 
 func (s *Server) Handler() http.Handler {
+	s.flows.prefix = s.StatePrefix
 	mux := http.NewServeMux()
 	api := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.guard(h)) }
 	open := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.checked(h)) }

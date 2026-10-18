@@ -41,6 +41,7 @@ type AuthState struct {
 	Team     string            `json:"default_team_id"` // where their work goes when nothing else says
 	Admin    bool              `json:"admin"`           // the viewer manages the workspace
 	People   bool              `json:"people"`          // the server has accounts: people and teams apply
+	Claim    bool              `json:"claim"`           // creating the first account needs the code from its claim link
 }
 
 func (s *Server) signInRequired() bool { return s.SignIn || s.Token != "" }
@@ -123,6 +124,7 @@ func (s *Server) state(r *http.Request) (AuthState, error) {
 		return st, err
 	}
 	st.Setup, st.People = st.Required && !has, has
+	st.Claim = st.Setup && s.SetupClaim != nil
 	if a, err := s.account(r); err == nil {
 		st.Account = &a
 	}
@@ -140,6 +142,7 @@ type credentials struct {
 	Name     string `json:"name"`
 	Email    string `json:"email"`
 	Password string `json:"password"`
+	Code     string `json:"code,omitempty"` // a claim code, where the first account needs one
 }
 
 func (c *credentials) clean() {
@@ -159,6 +162,10 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	}
 	if msg := checkCredentials(in); msg != "" {
 		fail(w, http.StatusBadRequest, msg)
+		return
+	}
+	if s.SetupClaim != nil && !s.SetupClaim(r.Context(), in.Code) {
+		fail(w, http.StatusForbidden, "this workspace is claimed through the link it was created with; that link has expired or was used")
 		return
 	}
 	hash, err := hashPassword(in.Password)

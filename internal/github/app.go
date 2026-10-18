@@ -114,7 +114,11 @@ func (a *App) raw() string {
 
 // InstallURL is where a person installs the app on their repositories.
 func (c *Client) InstallURL(app *App) string {
-	return c.web() + "/apps/" + app.Slug + "/installations/new"
+	u := c.web() + "/apps/" + app.Slug + "/installations/new"
+	if c.InstallState != "" {
+		u += "?state=" + url.QueryEscape(c.InstallState)
+	}
+	return u
 }
 
 // Manifest describes the GitHub App a server registers for itself. base is
