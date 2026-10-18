@@ -411,6 +411,7 @@ HTML and SVG included, downloads, so a file can't run script as the person viewi
 | `/api/automations[/{id}[/run\|/runs]]` | CRUD, run now, run history |
 | `GET /api/sessions/{id}/artifacts[/{aid}]` | files shown in the viewer; one file's content (`?download=1` saves it) |
 | `POST /hooks/{id}` | fire an automation; `Authorization: Bearer <hook token>` |
+| `POST /api/automations/{id}/hook-token` | make a new webhook token for an automation, replacing the old one; shown once |
 | `POST /webhooks/github` | GitHub event deliveries, signed with the app's webhook secret |
 | `GET /api/automations/events` | the event kinds and conditions automations can trigger on |
 | `GET/PUT/DELETE /api/secrets` | by scope; names only on read |

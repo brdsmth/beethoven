@@ -304,6 +304,13 @@ func firstOf(vals ...string) string {
 }
 
 // CheckHook authenticates a webhook delivery for automation id.
+// NewHookToken gives an automation a new webhook token, which replaces the
+// one before; only its hash is kept.
+func (s *Service) NewHookToken(ctx context.Context, id string) (string, error) {
+	token := randomHex(24)
+	return token, s.db.SetAutomationHookHash(ctx, id, hash(token))
+}
+
 func (s *Service) CheckHook(ctx context.Context, id, token string) (store.Automation, error) {
 	a, err := s.db.Automation(ctx, id)
 	if err != nil {

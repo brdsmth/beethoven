@@ -589,6 +589,18 @@ func (s *Store) Automations(ctx context.Context) ([]Automation, error) {
 	return query(ctx, s.r, scanAutomation, `SELECT `+automationCols+` FROM automations ORDER BY created_at DESC`)
 }
 
+// SetAutomationHookHash replaces an automation's webhook token.
+func (s *Store) SetAutomationHookHash(ctx context.Context, id, hash string) error {
+	res, err := s.w.ExecContext(ctx, `UPDATE automations SET hook_hash=? WHERE id=?`, hash, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) DeleteAutomation(ctx context.Context, id string) error {
 	_, err := s.w.ExecContext(ctx, `DELETE FROM automations WHERE id=?`, id)
 	return err

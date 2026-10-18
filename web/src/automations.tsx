@@ -90,7 +90,7 @@ export function AutomationEdit({ id }: { id: string }) {
   const [target, setTarget] = useState<Pick>(() => fromTarget());
   const [current, setCurrent] = useState<Automation>();
   const [runs, setRuns] = useState<Prompt[]>();
-  const [hook, setHook] = useState<{ id: string; url: string; token: string }>();
+  const [hook, setHook] = useState<{ url: string; token: string }>();
   const [busy, setBusy] = useState(false);
   const [kinds] = useLoad<Kinds>('/api/automations/events');
 
@@ -104,6 +104,14 @@ export function AutomationEdit({ id }: { id: string }) {
     get<Prompt[]>(`/api/automations/${id}/runs`).then(setRuns, fail);
   }, [id]);
 
+  const newToken = async () => {
+    if (hook && !confirm('Make a new token? The current one stops working.')) return;
+    try {
+      const r = await api<{ hook_token: string; hook_path: string }>('POST', `/api/automations/${id}/hook-token`);
+      setHook({ url: location.origin + r.hook_path, token: r.hook_token });
+    } catch (err) { fail(err); }
+  };
+
   const problem = targetProblem(target);
   const save = async (e: Event) => {
     e.preventDefault();
@@ -112,8 +120,11 @@ export function AutomationEdit({ id }: { id: string }) {
     try {
       const spec = { ...f, ...toTarget(target) };
       if (isNew) {
-        const r = await api<{ automation: Automation; hook_token: string; hook_path: string }>('POST', '/api/automations', spec);
-        setHook({ id: r.automation.id, url: location.origin + r.hook_path, token: r.hook_token });
+        // Nothing to copy: events, schedules and Run now need no setup. A
+        // webhook token is made on the automation's page when wanted.
+        const r = await api<{ automation: Automation }>('POST', '/api/automations', spec);
+        toast('Automation created');
+        location.hash = `#/automations/${r.automation.id}`;
       } else {
         setCurrent(await api<Automation>('PUT', `/api/automations/${id}`, spec));
         toast('Saved');
@@ -122,7 +133,6 @@ export function AutomationEdit({ id }: { id: string }) {
     setBusy(false);
   };
 
-  if (hook) return <HookCreated {...hook} />;
   if (!isNew && !current) return <div class="page"><p class="empty">Loading…</p></div>;
   return (
     <div class="page narrow">
@@ -170,6 +180,16 @@ export function AutomationEdit({ id }: { id: string }) {
           <button class="btn primary" disabled={busy}>{isNew ? 'Create automation' : 'Save'}</button>
         </div>
       </form>
+      {current && (
+        <section class="section">
+          <h2>Webhook</h2>
+          <p class="hint">Optional: lets another system run this automation with an HTTP request. Repository events, the schedule
+            and Run now don't need it.</p>
+          {hook ? <HookInfo {...hook} /> : null}
+          <button class="btn" onClick={newToken}>{hook ? 'Make another token' : 'Create a webhook token'}</button>
+          {!hook && <span class="hint"> Making one replaces any earlier token.</span>}
+        </section>
+      )}
       {runs && (
         <section class="section">
           <h2>Runs</h2>
@@ -242,25 +262,19 @@ function TriggerEditor({ kinds, v, set }: { kinds?: Kinds; v?: Trigger; set: (t?
   );
 }
 
-function HookCreated({ id, url, token }: { id: string; url: string; token: string }) {
+/** A new webhook token, with how to call it; shown once. */
+function HookInfo({ url, token }: { url: string; token: string }) {
   const curl = `curl -X POST ${url} \\\n  -H "Authorization: Bearer ${token}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"example":true}'`;
   const copy = (t: string) => navigator.clipboard?.writeText(t).then(() => toast('Copied'), fail);
   return (
-    <div class="page narrow">
-      <h1>Automation created</h1>
-      <p class="warn">Copy the webhook token now. It is shown only once.</p>
-      <div class="form">
-        <label>Webhook URL<div class="copy"><code>{url}</code><button class="btn" onClick={() => copy(url)}>Copy</button></div></label>
-        <label>Token<div class="copy"><code>{token}</code><button class="btn" onClick={() => copy(token)}>Copy</button></div></label>
-        <label>Example
-          <div class="copy"><pre class="code">{curl}</pre><button class="btn" onClick={() => copy(curl)}>Copy</button></div>
-        </label>
-        <p class="hint">The request body is passed to the agent along with the prompt. Send an Idempotency-Key header to make retries fire once.</p>
-        <div class="form-foot">
-          <a class="btn" href="#/automations">All automations</a>
-          <a class="btn primary" href={`#/automations/${id}`}>Open automation</a>
-        </div>
-      </div>
+    <div class="form">
+      <p class="warn">Copy the token now. It is shown only once.</p>
+      <label>Webhook URL<div class="copy"><code>{url}</code><button class="btn" onClick={() => copy(url)}>Copy</button></div></label>
+      <label>Token<div class="copy"><code>{token}</code><button class="btn" onClick={() => copy(token)}>Copy</button></div></label>
+      <label>Example
+        <div class="copy"><pre class="code">{curl}</pre><button class="btn" onClick={() => copy(curl)}>Copy</button></div>
+      </label>
+      <p class="hint">The request body is passed to the agent along with the prompt. Send an Idempotency-Key header to make retries fire once.</p>
     </div>
   );
 }
