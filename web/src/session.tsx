@@ -8,7 +8,7 @@ import { useCapabilities } from './capabilities';
 import { span } from './insights';
 import { Link, Markdown, safeHref } from './markdown';
 import { TeamLabel, VisibilityBadge, useTeamIndex } from './teams';
-import { Icon, useDismiss } from './sidebar';
+import { Icon, useDismiss } from './components';
 import { Chip, Dot, MODELS, Spinner, ago, dur, effortLevels, fail, modEnter, money, toast, useLoad, useTick } from './util';
 
 type End = { id: string; status: string; error?: string; cost_usd: number; duration_ms?: number };
