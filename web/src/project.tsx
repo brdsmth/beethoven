@@ -52,7 +52,7 @@ export function NewProject({ info }: { info?: Info }) {
     return (
       <div class="page narrow">
         <h1>New project</h1>
-        <GitHubSetup />
+        <GitHubSetup cloud={info.cloud} />
         <p class="muted">Connect GitHub first: a project starts with a repository there.</p>
       </div>
     );

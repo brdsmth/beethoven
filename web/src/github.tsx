@@ -59,7 +59,7 @@ export function GitHubReturn() {
 
 /** The next step towards a connected GitHub account, wherever the server
  * stands: without an app, with one nobody has authorized, or connected. */
-export function ConnectGitHub({ status }: { status: GitHubStatus }) {
+export function ConnectGitHub({ status, cloud }: { status: GitHubStatus; cloud?: boolean }) {
   const [owner, setOwner] = useState<'me' | 'org'>('me');
   const [org, setOrg] = useState('');
   const [shared, setShared] = useState(false);
@@ -77,6 +77,7 @@ export function ConnectGitHub({ status }: { status: GitHubStatus }) {
       </div>
     );
   }
+  if (cloud) return <p class="muted">GitHub isn't available on this service yet.</p>; // its app is the service's to set up
   return (
     <form class="stack" onSubmit={e => { e.preventDefault(); run(() => registerApp(owner === 'org' ? org.trim() : '', shared))(); }}>
       <p class="muted">
@@ -96,13 +97,13 @@ export function ConnectGitHub({ status }: { status: GitHubStatus }) {
 }
 
 /** First-run prompt: shown until the server can reach GitHub. */
-export function GitHubSetup() {
+export function GitHubSetup({ cloud }: { cloud?: boolean }) {
   const [st] = useLoad<GitHubStatus>('/api/github');
   if (!st || st.account) return null;
   return (
     <section class="card setup">
       <h2>Connect GitHub</h2>
-      <ConnectGitHub status={st} />
+      <ConnectGitHub status={st} cloud={cloud} />
     </section>
   );
 }

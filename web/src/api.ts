@@ -31,6 +31,8 @@ export type Spec = Target & {
 export type Automation = Spec & { id: string; failures: number; next_run_at?: string; created_at: string; account_id?: string };
 export type Info = {
   version: string; author: Author; github: boolean; anthropic: boolean; model: string; effort: string; efforts: string[];
+  /** A workspace on Beethoven Cloud: its GitHub and Slack apps are the service's, and agents use an API key. */
+  cloud?: boolean;
 };
 export type Overrides = {
   model?: string; effort?: string; instructions?: string; image?: string; cpus?: number; memory_mb?: number; capabilities?: string[];
@@ -121,6 +123,8 @@ export type AuthState = {
   required: boolean;
   /** No account exists yet: the first one created owns the server. */
   setup: boolean;
+  /** Creating that first account takes the link the workspace was created with. */
+  claim?: boolean;
   account: Account | null;
   /** The viewer's teams: id → lead or member. */
   teams: Record<string, 'lead' | 'member'>;
