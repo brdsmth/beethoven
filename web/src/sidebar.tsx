@@ -19,6 +19,13 @@ const ICONS: Record<string, string> = {
   chat: 'M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5a2 2 0 0 1-1.5-2z',
   person: 'M8 2.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5zM3 13.5c.6-2.3 2.6-3.5 5-3.5s4.4 1.2 5 3.5',
   caret: 'm6 4.5 3.5 3.5L6 11.5',
+  down: 'm4.5 6.5 3.5 3.5 3.5-3.5',
+  up: 'M8 13V3M3.5 7.5 8 3l4.5 4.5',
+  gauge: 'M2.5 12a5.5 5.5 0 1 1 11 0M8 12l2.5-3',
+  pen: 'M10.5 2.5l3 3L6 13H3v-3z',
+  x: 'M4 4l8 8M12 4l-8 8',
+  queue: 'M2.5 4h11M2.5 8h7M2.5 12h5M12 9.5v5M9.5 12h5',
+  pr: 'M4.5 2.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zM4.5 10.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zM11.5 10.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zM4.5 5.5v5M11.5 10.5V6.5a2 2 0 0 0-2-2H7.5M9 3l-1.5 1.5L9 6',
 };
 
 export const Icon = ({ name, size = 16 }: { name: string; size?: number }) => (
@@ -35,7 +42,7 @@ const typing = (e: KeyboardEvent) => {
 };
 
 /** Closes a popup on a press outside ref or on Escape. */
-function useDismiss(open: boolean, close: () => void, ref: RefObject<HTMLElement>) {
+export function useDismiss(open: boolean, close: () => void, ref: RefObject<HTMLElement>) {
   useEffect(() => {
     if (!open) return;
     const out = (e: Event) => { if (!ref.current?.contains(e.target as Node)) close(); };

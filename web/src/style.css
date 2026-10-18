@@ -389,16 +389,85 @@ kbd {
 .md hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 pre.code { background: var(--code); padding: 8px 10px; border-radius: var(--radius); }
 
-.composer { border-top: 1px solid var(--border); background: var(--bg); padding: 10px 0 calc(10px + env(safe-area-inset-bottom)); }
-.composer-row { display: flex; gap: 8px; align-items: flex-end; }
-.composer textarea { min-height: 38px; max-height: 40vh; }
-.composer-side { display: flex; align-items: center; gap: 6px; flex: none; }
-.compact select { width: auto; height: 28px; padding: 0 4px; font-size: 12px; color: var(--muted); }
+/* the follow-up box: a status strip and queue docked to the top of one card */
+.composer { background: var(--bg); padding: 6px 0 calc(14px + env(safe-area-inset-bottom)); }
+.cbox {
+  position: relative; display: flex; flex-direction: column; border: 1px solid var(--border-strong); border-radius: 12px;
+  background: var(--panel); box-shadow: 0 1px 2px rgb(0 0 0 / .04);
+}
+.cbox:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.cbox textarea {
+  border: 0; background: none; resize: none; padding: 11px 14px 2px; min-height: 0; max-height: 40vh; overflow-y: auto; box-shadow: none;
+}
+.cbox .files { margin: 0; padding: 10px 12px 0; }
+.cbox-bar { display: flex; align-items: center; gap: 2px; padding: 6px 8px 8px; }
+.cbox-bar .grow { flex: 1; }
+.cbox-bar .btn.icon { border: 0; background: none; border-radius: 7px; }
+.cbox-bar .btn.icon:hover { background: var(--hover); color: var(--text); }
+.cbox-hint { font-size: 11.5px; color: var(--dim); margin-right: 8px; white-space: nowrap; }
+.cbox-drop {
+  position: absolute; inset: -1px; z-index: 2; display: flex; align-items: center; justify-content: center; gap: 6px;
+  border: 2px dashed var(--accent); border-radius: 12px; background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+  color: var(--accent); font-weight: 550; pointer-events: none;
+}
+.composer.dropping { outline: none; }
+.send {
+  display: inline-flex; align-items: center; justify-content: center; flex: none; width: 30px; height: 30px; padding: 0;
+  border: 0; border-radius: 50%; background: var(--accent); color: var(--accent-text); cursor: pointer;
+}
+.send:hover { filter: brightness(1.08); }
+.send:disabled { background: var(--gray-bg); color: var(--dim); cursor: default; filter: none; }
+.send .ico { stroke-width: 2; }
+.pick { position: relative; }
+.pick .menu.up { left: 0; right: auto; min-width: 200px; }
+.tb {
+  display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 8px; border: 0; border-radius: 7px;
+  background: none; color: var(--muted); font-size: 12.5px; cursor: pointer; white-space: nowrap;
+}
+.tb:hover, .tb.on { background: var(--hover); color: var(--text); }
+.tb.set { color: var(--text); }
+.tb .ico:last-child { opacity: .7; }
+.menu-note { margin-left: auto; font-size: 11.5px; }
+.menu-input { margin: 2px 0; height: 28px; font-size: 12px; }
+.strip, .queue { margin: 0 14px; border: 1px solid var(--border); border-bottom: 0; background: var(--side); }
+.strip:first-child, .queue:first-child { border-radius: 10px 10px 0 0; }
+.strip {
+  display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 4px 8px 4px 12px; font-size: 12.5px; color: var(--muted);
+}
+.strip-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; white-space: nowrap; overflow: hidden; }
+.strip-main b { color: var(--text); font-weight: 550; flex: none; }
+.strip-main .mono { font-size: 12px; min-width: 0; }
+.strip-main .ellipsis { min-width: 0; }
+.strip-then { flex: none; }
+.strip-num { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.strip a { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.strip .btn.sm { gap: 6px; }
+.stop-sq { width: 8px; height: 8px; border-radius: 2px; background: var(--red); }
+.strip-ok { color: var(--green); }
+.strip.warn { background: var(--amber-bg); border-color: color-mix(in srgb, var(--amber) 30%, transparent); color: var(--amber); }
+.strip.warn b { color: var(--amber); }
+.strip.warn .dot { background: var(--amber); }
+.strip.bad { background: var(--red-bg); border-color: color-mix(in srgb, var(--red) 30%, transparent); color: var(--red); }
+.strip.bad b { color: var(--red); }
+.strip + .queue { border-top: 1px solid var(--border); }
+.queue { padding: 3px 4px; }
+.queue-row { display: flex; align-items: center; gap: 8px; padding: 2px 4px 2px 6px; border-radius: 6px; font-size: 12.5px; }
+.queue-row:hover { background: var(--hover); }
+.queue-n { width: 14px; flex: none; display: inline-flex; justify-content: flex-end; font: 11px var(--mono); color: var(--dim); }
+.queue-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-opts { font-size: 11.5px; white-space: nowrap; }
+.queue-act {
+  display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; flex: none;
+  border: 0; border-radius: 5px; background: none; color: var(--dim); cursor: pointer;
+}
+.queue-act:hover { background: var(--panel); color: var(--text); }
 
 /* attachments */
 .files { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
 .user .files { margin-top: 6px; }
-.composer .files { margin-bottom: 8px; }
 .file {
   display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 28px; padding: 0 4px 0 8px;
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); color: var(--text); font-size: var(--fs-small);
@@ -418,7 +487,6 @@ a.file:hover { background: var(--hover); text-decoration: none; }
 .prompt-files { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .prompt-files .btn { margin-left: auto; }
 .dropping { outline: 2px dashed var(--accent); outline-offset: 2px; }
-.composer.dropping { outline-offset: -4px; }
 
 /* overlays */
 .toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; max-width: min(420px, calc(100vw - 32px)); }
