@@ -50,6 +50,10 @@ func (s *Server) slackStatus(w http.ResponseWriter, r *http.Request) {
 // createSlackApp creates the server's own Slack app with a person's app
 // configuration token, then continues to installing it.
 func (s *Server) createSlackApp(w http.ResponseWriter, r *http.Request) {
+	if s.Cloud {
+		fail(w, http.StatusConflict, "this workspace uses Beethoven's Slack app: add it to your Slack instead")
+		return
+	}
 	if !actor(r).Admin() {
 		forbid(w, "set up Slack: ask an admin")
 		return
@@ -108,7 +112,7 @@ func (s *Server) installSlack(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) slackInstallURL(app *slack.App, base string) string {
-	return s.Slack.InstallURL(app, base+"/slack/installed", s.flows.start("slack", base))
+	return s.Slack.InstallURL(app, s.callback(base)+"/slack/installed", s.flows.start("slack", base))
 }
 
 // slackInstalled completes an installation.
@@ -122,13 +126,21 @@ func (s *Server) slackInstalled(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "this Slack link has expired or was already used; start again")
 		return
 	}
-	if _, err := s.Slack.Install(r.Context(), in.Code, base+"/slack/installed", base); err != nil {
+	installed, err := s.Slack.Install(r.Context(), in.Code, s.callback(base)+"/slack/installed", base)
+	if err != nil {
 		if errors.Is(err, store.ErrInvalid) {
 			replyErr(w, err)
 		} else {
 			fail(w, http.StatusBadGateway, err.Error())
 		}
 		return
+	}
+	if s.SlackInstalled != nil {
+		if err := s.SlackInstalled(r.Context(), installed.TeamID); err != nil {
+			s.Slack.Uninstall(r.Context(), installed.TeamID)
+			fail(w, http.StatusConflict, err.Error())
+			return
+		}
 	}
 	s.slackStatus(w, r)
 }
@@ -141,6 +153,9 @@ func (s *Server) uninstallSlack(w http.ResponseWriter, r *http.Request) {
 	if err := s.Slack.Uninstall(r.Context(), r.PathValue("team")); err != nil {
 		replyErr(w, err)
 		return
+	}
+	if s.SlackUninstalled != nil {
+		s.SlackUninstalled(r.Context(), r.PathValue("team"))
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

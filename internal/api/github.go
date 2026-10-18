@@ -24,8 +24,9 @@ import (
 
 // flows are the GitHub round trips in progress, by state.
 type flows struct {
-	mu sync.Mutex
-	m  map[string]flow
+	mu     sync.Mutex
+	m      map[string]flow
+	prefix string // starts every state: see Server.StatePrefix
 }
 
 type flow struct {
@@ -41,7 +42,7 @@ func (f *flows) start(kind, base string) string { return f.startFor(kind, base, 
 func (f *flows) startFor(kind, base, accountID string) string {
 	b := make([]byte, 16)
 	rand.Read(b)
-	state := hex.EncodeToString(b)
+	state := f.prefix + hex.EncodeToString(b)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.m == nil {
@@ -79,6 +80,10 @@ func baseURL(s string) (string, bool) {
 	return u.Scheme + "://" + u.Host, true
 }
 
+// callback is where GitHub or Slack sends the browser back: the cloud's
+// shared address, or the server's own as the browser reached it.
+func (s *Server) callback(base string) string { return firstOf(s.CallbackBase, base) }
+
 // returnTo sends a browser that GitHub or Slack returned to the UI, with
 // their parameters and the step.
 func returnTo(service string) http.HandlerFunc {
@@ -106,6 +111,9 @@ func (s *Server) registerApp(w http.ResponseWriter, r *http.Request) {
 	}
 	base, ok := baseURL(in.BaseURL)
 	switch {
+	case s.Cloud:
+		fail(w, http.StatusConflict, "this workspace uses Beethoven's GitHub App: connect your GitHub account instead")
+		return
 	case !actor(r).Admin():
 		forbid(w, "register a GitHub App: ask an admin")
 		return
@@ -168,7 +176,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 
 // authorizeURL sends the viewer to authorize the app for themselves.
 func (s *Server) authorizeURL(r *http.Request, app *github.App, base string) string {
-	return s.GitHub.AuthorizeURL(app, base+"/github/authorized", s.flows.startFor("authorize", base, accountOf(r)))
+	return s.GitHub.AuthorizeURL(app, s.callback(base)+"/github/authorized", s.flows.startFor("authorize", base, accountOf(r)))
 }
 
 // connectAccount completes an authorization. Its reply says where to send
@@ -184,7 +192,7 @@ func (s *Server) connectAccount(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "this GitHub link has expired or was already used; start again")
 		return
 	}
-	if _, err := s.GitHub.Connect(r.Context(), in.Code, base+"/github/authorized"); err != nil {
+	if _, err := s.GitHub.Connect(r.Context(), in.Code, s.callback(base)+"/github/authorized"); err != nil {
 		if errors.Is(err, store.ErrInvalid) {
 			replyErr(w, err)
 		} else {
