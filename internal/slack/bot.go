@@ -818,6 +818,12 @@ func option(text, value string) map[string]any {
 
 // ----------------------------------------------------------------- helpers
 
+// Verify reports whether a request came from Slack, for an app's requests
+// received elsewhere: see verify.
+func Verify(app *App, h http.Header, body []byte) bool {
+	return app != nil && verify(app.SigningSecret, h, body, time.Now())
+}
+
 // verify checks that a request comes from Slack: signed with the app's
 // signing secret, within five minutes.
 func verify(secret string, h http.Header, body []byte, now time.Time) bool {
