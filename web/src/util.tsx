@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { get, type RepoRef } from './api';
+import { Select } from './components';
 
 export function useRoute(): string[] {
   const [hash, setHash] = useState(location.hash);
@@ -144,15 +145,10 @@ export function ModelField({ value, set, def }: { value: string; set: (v: string
   const isCustom = custom || (value !== '' && !MODELS.includes(value));
   return (
     <span class="stack">
-      <select value={isCustom ? '*' : value} onChange={e => {
-        const v = e.currentTarget.value;
+      <Select label="Model" value={isCustom ? '*' : value} set={v => {
         setCustom(v === '*');
         set(v === '*' ? (isCustom ? value : '') : v);
-      }}>
-        <option value="">{def}</option>
-        {MODELS.map(m => <option key={m} value={m}>{m}</option>)}
-        <option value="*">Custom…</option>
-      </select>
+      }} options={[{ value: '', label: def }, ...MODELS.map(m => ({ value: m, label: m })), { value: '*', label: 'Custom…' }]} />
       {isCustom && <input class="mono" placeholder="Model ID, e.g. claude-sonnet-4-5" spellcheck={false}
         value={value} onInput={e => set(e.currentTarget.value.trim())} />}
     </span>
@@ -160,10 +156,7 @@ export function ModelField({ value, set, def }: { value: string; set: (v: string
 }
 
 export const EffortSelect = ({ value, set, def }: { value: string; set: (v: string) => void; def: string }) => (
-  <select value={value} onChange={e => set(e.currentTarget.value)}>
-    <option value="">{def}</option>
-    {efforts.map(x => <option key={x} value={x}>{x}</option>)}
-  </select>
+  <Select label="Effort" value={value} set={set} options={[{ value: '', label: def }, ...efforts.map(x => ({ value: x, label: x }))]} />
 );
 
 /** A destructive action that asks for a second click. */
