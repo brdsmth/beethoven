@@ -73,6 +73,48 @@ with the Docker socket mounted. To reach it from the internet, put it behind HTT
 tunnel such as `cloudflared tunnel --url http://localhost:7070` works) and set `BEETHOVEN_URL` and
 `BEETHOVEN_HOSTS`; the server then asks people to sign in.
 
+### Many workspaces on one server
+
+One server can host workspaces for many teams, each at its own subdomain. Set
+`BEETHOVEN_CLOUD_DOMAIN` to a domain whose wildcard (`*.example.com`) points at the server:
+
+```
+<slug>.example.com    a workspace: its own people, sessions, settings and secrets
+app.example.com       where GitHub and Slack call back, and the operator's admin pages
+```
+
+Each workspace has its own SQLite database and encryption key under `workspaces/<id>/` in the data
+directory. Its key is sealed with the server's `secret.key`, and `cloud.db` records the workspaces. A
+workspace opens on first use. At boot, every active one opens in the background so schedules run and
+migrations happen early. A database with pending migrations is copied to its `backups/` folder first
+(the newest five are kept). A workspace whose database fails to open is unavailable until the
+operator reopens it; the others carry on.
+
+The operator creates workspaces at `app.example.com/admin`, signing in with any user name and
+`BEETHOVEN_ADMIN_TOKEN` as the password. Creating one gives a claim link,
+`https://<slug>.example.com/#/claim/<code>`, which works once, for 7 days: whoever opens it creates
+the workspace's first account and owns it. The admin pages list each workspace's status, its applied
+migrations and any failure, and can reopen, suspend or reactivate a workspace or issue a new claim
+link (`/admin/workspaces.json` has the same as JSON).
+
+Every workspace uses the operator's apps:
+
+- **GitHub**: a preconfigured app in `BEETHOVEN_GITHUB_APP`, with callback URL
+  `https://app.example.com/github/authorized` and setup URL `https://app.example.com/github/installed`.
+- **Slack**: a preconfigured app in `BEETHOVEN_SLACK_APP`, with redirect URL
+  `https://app.example.com/slack/installed`, event URL `https://app.example.com/slack/events` and
+  interactivity URL `https://app.example.com/slack/interactions`. Events reach the workspace that
+  added the Slack workspace they come from; a Slack workspace belongs to one workspace at a time.
+
+Workspaces can't create their own apps or use personal access tokens, and agents use an Anthropic
+API key saved in the workspace. Subscription tokens and the server's environment credentials aren't
+used. On Modal, each workspace's sandboxes belong to their own Modal app,
+`<BEETHOVEN_MODAL_APP>-<slug>`. Sandboxes reach their workspace's tools on the server at
+`/ws/<slug>/mcp`, through `BEETHOVEN_SANDBOX_URL` (on Modal, by default `https://app.example.com`).
+
+To try it on one machine, use `BEETHOVEN_CLOUD_DOMAIN=localhost`: workspaces are then at
+`http://<slug>.localhost:7070` (browsers resolve `*.localhost` to this machine).
+
 ## How it works
 
 ```
@@ -329,6 +371,9 @@ keep their history.
 | `BEETHOVEN_MODEL` | — | initial default model; then edit it in Settings |
 | `BEETHOVEN_GITHUB_APP` | — | a preconfigured GitHub App: its credentials as JSON, or a file (see [GitHub](#github)) |
 | `BEETHOVEN_SLACK_APP` | — | a preconfigured Slack app: its credentials as JSON, or a file (see [Slack](#slack)) |
+| `BEETHOVEN_CLOUD_DOMAIN` | — | host many workspaces, at `<slug>.<domain>` (see [Many workspaces on one server](#many-workspaces-on-one-server)) |
+| `BEETHOVEN_CLOUD_SCHEME` | `https`; `http` for `localhost` | the scheme in workspaces' addresses |
+| `BEETHOVEN_ADMIN_TOKEN` | — | with `BEETHOVEN_CLOUD_DOMAIN`: the password for the admin pages, at least 16 characters |
 | `GITHUB_TOKEN` | `gh auth token` | personal access token used until someone connects GitHub, unless one is saved in Settings |
 | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` | — | passed to sandboxes unless saved in Settings |
 
@@ -431,6 +476,8 @@ internal/agent       Harness interface, Claude Code implementation
 internal/tools       MCP tool server
 internal/automation  schedules, webhooks, failure policy
 internal/store       SQLite migrations and queries, environments, settings, encrypted secrets
+internal/workspace   one workspace's database and everything that runs on it
+internal/cloud       many workspaces on one server: their registry, routing and admin pages
 internal/github      the GitHub App, its tokens and accounts, clone URLs, pull requests
 internal/slack       the Slack app, its installations, and the bot
 internal/insights    cycles, first-try rate, pull request outcomes and usage
