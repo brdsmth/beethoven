@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sidebar redesign mockups · Beethoven</title>
+<style>
+/* Design tokens copied from web/src/style.css so the mockups match the app. */
+:root {
+  --bg: #fcfcfd; --side: #f6f6f8; --panel: #ffffff; --hover: #eeeef2; --border: #e3e3e8; --border-strong: #d0d0d8;
+  --text: #1c1c21; --muted: #62626e; --dim: #8d8d98; --code: #f2f2f5; --accent: #3e63dd; --accent-text: #fff;
+  --blue: #2563eb; --blue-bg: #e8effe; --green: #18864b; --green-bg: #e3f5ea; --red: #cf3434; --red-bg: #fdecec;
+  --amber: #a15c07; --amber-bg: #fdf3e1; --gray: #8d8d98; --gray-bg: #efeff2; --shadow: 0 6px 24px rgb(0 0 0 / .12);
+  --radius: 6px; --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; --fs: 13.5px; --fs-small: 12px;
+}
+.dark {
+  --bg: #111113; --side: #18181b; --panel: #1c1c20; --hover: #26262b; --border: #2b2b31; --border-strong: #3a3a42;
+  --text: #e8e8ec; --muted: #a0a0ab; --dim: #73737e; --code: #222227; --accent: #5b7cf0; --blue: #6b9bff;
+  --blue-bg: #1b2747; --green: #4cc38a; --green-bg: #15301f; --red: #f2696a; --red-bg: #3a1a1b; --amber: #e5a43a;
+  --amber-bg: #33260f; --gray: #80808b; --gray-bg: #26262b; --shadow: 0 6px 24px rgb(0 0 0 / .5);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: #e9e9ee; color: var(--text); font: var(--fs)/1.5 var(--font); -webkit-font-smoothing: antialiased; }
+body.dark { background: #08080a; }
+a { color: inherit; text-decoration: none; }
+button { font: inherit; color: inherit; }
+
+/* page chrome (not part of the design) */
+.intro { max-width: 1180px; margin: 0 auto; padding: 32px 24px 8px; color: var(--text); }
+.intro h1 { font-size: 22px; margin: 0 0 6px; }
+.intro p { margin: 0 0 6px; color: var(--muted); max-width: 760px; }
+.intro .toggle { margin-top: 10px; }
+.mock { max-width: 1180px; margin: 28px auto; padding: 0 24px; }
+.mock-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.mock-head h2 { font-size: 16px; margin: 0; }
+.mock-head .tag { font-size: 11px; border: 1px solid var(--border-strong); border-radius: 4px; padding: 0 6px; color: var(--muted); }
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 4px 28px; margin: 0 0 12px; padding: 0 0 0 18px; color: var(--muted); font-size: 13px; }
+.frame { display: flex; height: 640px; border: 1px solid var(--border-strong); border-radius: 10px; overflow: hidden; background: var(--bg); box-shadow: var(--shadow); }
+.frame .main-ghost { flex: 1; padding: 28px 32px; min-width: 0; }
+.ghost-line { height: 10px; border-radius: 5px; background: var(--hover); margin-bottom: 12px; }
+.ghost-box { height: 160px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); margin: 20px 0; }
+.frames { display: flex; gap: 24px; flex-wrap: wrap; }
+.frames .frame { flex: 1 1 360px; }
+
+/* shared primitives, as in the app */
+.dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--gray); }
+.dot.blue { background: var(--blue); animation: pulse 1.6s ease-in-out infinite; }
+.dot.green { background: var(--green); }
+.dot.red { background: var(--red); }
+.dot.amber { background: var(--amber); }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .dot.blue { animation: none; } }
+.mark { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 18px; height: 18px; border-radius: 5px; color: #fff; font-weight: 600; font-size: 11px; }
+.mark.gray { background: var(--gray-bg); color: var(--muted); }
+.kbd { font: 11px var(--mono); color: var(--dim); border: 1px solid var(--border-strong); border-radius: 4px; padding: 0 4px; line-height: 16px; }
+.count { font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.pill { font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 999px; background: var(--gray-bg); color: var(--muted); font-variant-numeric: tabular-nums; }
+.pill.blue { background: var(--blue-bg); color: var(--blue); }
+.pill.red { background: var(--red-bg); color: var(--red); }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dim { color: var(--dim); }
+.ico { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.avatar { width: 24px; height: 24px; border-radius: 50%; background: linear-gradient(135deg, #8e6cf0, #3e63dd); color: #fff; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+
+.sb { width: 272px; flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--side); border-right: 1px solid var(--border); }
+.sb-scroll { flex: 1; overflow-y: auto; min-height: 0; }
+.row-btn { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: var(--radius); color: var(--text); cursor: pointer; border: 0; background: none; width: 100%; text-align: left; }
+.row-btn:hover { background: var(--hover); }
+.row-btn.on { background: var(--hover); font-weight: 550; }
+.row-btn .ico { color: var(--muted); }
+.row-btn .count, .row-btn .pill { margin-left: auto; }
+.search { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); color: var(--dim); }
+.search span:first-of-type { flex: 1; }
+.newbtn { display: flex; align-items: center; justify-content: center; gap: 6px; height: 30px; border-radius: var(--radius); background: var(--accent); color: var(--accent-text); font-weight: 500; }
+.newbtn .kbd { color: color-mix(in srgb, var(--accent-text) 75%, transparent); border-color: color-mix(in srgb, var(--accent-text) 35%, transparent); }
+.label { display: flex; align-items: center; gap: 6px; padding: 12px 8px 4px; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; font-weight: 500; }
+.label .caret { font-size: 9px; }
+.label .count { margin-left: auto; }
+
+/* session item, two-line like today */
+.it { display: flex; gap: 9px; align-items: baseline; padding: 5px 8px; border-radius: var(--radius); }
+.it:hover { background: var(--hover); }
+.it.on { background: var(--hover); box-shadow: inset 2px 0 0 var(--accent); }
+.it .dot { transform: translateY(-1px); }
+.it-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.it-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.it-meta { display: flex; gap: 6px; font-size: var(--fs-small); color: var(--dim); overflow: hidden; white-space: nowrap; }
+.it-meta .ellipsis { min-width: 0; }
+.it-meta .pr { color: var(--green); }
+.it.child { padding-left: 24px; }
+.it.child::before { content: ""; }
+
+/* single-line compact item */
+.li { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: var(--radius); }
+.li:hover { background: var(--hover); }
+.li.on { background: var(--hover); box-shadow: inset 2px 0 0 var(--accent); }
+.li .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.li .time { font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+
+.foot { border-top: 1px solid var(--border); padding: 8px; display: flex; align-items: center; gap: 8px; }
+.foot .who { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.foot .who small { color: var(--dim); font-size: 11px; }
+.icon-only { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius); color: var(--muted); }
+.icon-only:hover { background: var(--hover); color: var(--text); }
+
+/* A — header */
+.a-head { display: flex; align-items: center; gap: 8px; padding: 12px 10px 8px; }
+.a-team { flex: 1; display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: var(--radius); min-width: 0; }
+.a-team:hover { background: var(--hover); }
+.a-team b { font-weight: 650; letter-spacing: -.01em; }
+.a-team .sub { font-size: 11px; color: var(--dim); display: block; line-height: 1.2; }
+.a-tools { display: flex; flex-direction: column; gap: 8px; padding: 0 10px 6px; }
+.tabs { display: flex; gap: 2px; padding: 0 10px 4px; border-bottom: 1px solid var(--border); }
+.tabs button { border: 0; background: none; padding: 6px 8px; font-size: 12.5px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; display: flex; gap: 5px; align-items: center; }
+.tabs button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 550; }
+
+/* B — status sections */
+.attn { margin: 4px 0; background: var(--red-bg); border-radius: 8px; padding: 2px 0 4px; }
+.attn .label { color: var(--red); }
+
+/* C — rail */
+.rail { width: 56px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 0; background: color-mix(in srgb, var(--side) 60%, var(--hover)); border-right: 1px solid var(--border); }
+.rail .logo { width: 32px; height: 32px; border-radius: 9px; background: var(--text); color: var(--bg); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; margin-bottom: 6px; }
+.rail .tm { position: relative; width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 600; font-size: 14px; cursor: pointer; }
+.rail .tm.on::before { content: ""; position: absolute; left: -10px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--text); }
+.rail .tm .badge { position: absolute; right: -8px; top: -7px; min-width: 15px; height: 15px; border-radius: 8px; background: var(--blue); color: #fff; font-size: 10px; line-height: 15px; text-align: center; padding: 0 3px; border: 2px solid var(--side); box-sizing: content-box; }
+.rail .tm .badge.red { background: var(--red); }
+.rail .sep { width: 24px; height: 1px; background: var(--border-strong); margin: 4px 0; }
+.rail .spacer { flex: 1; }
+.rail .icon-only { width: 36px; height: 36px; }
+.rail .icon-only.on { background: var(--hover); color: var(--text); }
+.c-panel { width: 248px; }
+.c-head { padding: 14px 12px 8px; display: flex; align-items: center; gap: 8px; }
+.c-head b { flex: 1; font-size: 14px; }
+
+/* D — collapsed */
+.mini { width: 56px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 0; background: var(--side); border-right: 1px solid var(--border); }
+.mini .newsq { width: 36px; height: 36px; border-radius: 9px; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 20px; margin: 6px 0 8px; }
+.mini .s { position: relative; width: 36px; height: 36px; border-radius: 9px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: var(--muted); background: var(--panel); border: 1px solid var(--border); }
+.mini .s.on { border-color: var(--accent); color: var(--text); }
+.mini .s .dot { position: absolute; right: -2px; bottom: -2px; border: 2px solid var(--side); width: 11px; height: 11px; box-sizing: border-box; }
+.tooltip { position: absolute; left: 46px; top: 4px; background: var(--text); color: var(--bg); font-size: 12px; font-weight: 400; padding: 3px 8px; border-radius: 5px; white-space: nowrap; z-index: 2; box-shadow: var(--shadow); }
+
+/* Command palette overlay used by A */
+.palette { position: absolute; left: 50%; top: 70px; transform: translateX(-50%); width: 460px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; }
+.palette .q { padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 14px; }
+.palette .q span { color: var(--dim); }
+.palette .li { margin: 2px 6px; }
+.palette .li.on { box-shadow: none; }
+.palette .grp { padding: 8px 14px 2px; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 16 16"><path d="M2.5 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7l-3 2.5v-2.5h0a2 2 0 0 1-1.5-2z"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 16 16"><path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 16 16"><path d="M2.5 13.5h11M4.5 11V8M8 11V4.5M11.5 11V6.5"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></symbol>
+  <symbol id="i-box" viewBox="0 0 16 16"><path d="M2.5 5 8 2l5.5 3v6L8 14l-5.5-3z"/><path d="M2.5 5 8 8l5.5-3M8 8v6"/></symbol>
+  <symbol id="i-archive" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="3" rx="1"/><path d="M3 6v6.5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6M6.5 9h3"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 16 16"><path d="m5 6 3 3 3-3"/></symbol>
+  <symbol id="i-sidebar" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="2"/><path d="M6 2.5v11"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 16 16"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></symbol>
+  <symbol id="i-repo" viewBox="0 0 16 16"><path d="M4 2.5h8.5v10H4a1.5 1.5 0 0 0 0 3h8.5M4 2.5A1.5 1.5 0 0 0 2.5 4v10"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 16 16"><path d="M6 2.5h4l-.5 4 2.5 2v1H4v-1l2.5-2zM8 9.5v4"/></symbol>
+</svg>
+
+<div class="intro">
+  <h1>Left sidebar redesign: four directions</h1>
+  <p>Static mockups of the left sidebar (<code>Sidebar</code> in <code>web/src/main.tsx</code>), built with the app's own colour, type and radius tokens. The main area is greyed out so the sidebar stands out. The data is made up.</p>
+  <p>Problems with today's sidebar these try to fix: you can't search, the primary nav is a row of three text links at the bottom, sessions that need you (failed, waiting for review) look like any other, the Active/Archived switch takes a whole row, and the team switcher and brand stack up and push the list down.</p>
+  <label class="toggle"><input type="checkbox" onchange="document.body.classList.toggle('dark', this.checked)"> Dark theme</label>
+</div>
+
+<!-- ============ CURRENT ============ -->
+<section class="mock">
+  <div class="mock-head"><h2>Today, for reference</h2><span class="tag">current</span></div>
+  <div class="frame">
+    <nav class="sb" style="width:264px">
+      <div style="display:flex;flex-direction:column;gap:10px;padding:14px 12px 10px">
+        <b style="font-weight:650">Beethoven</b>
+        <div class="row-btn" style="border:1px solid var(--border-strong);background:var(--panel)"><span class="mark" style="background:#3e63dd">P</span><span class="ellipsis" style="flex:1">Platform</span><span class="dim">▾</span></div>
+        <a class="newbtn">New session</a>
+        <div style="display:flex;background:var(--hover);border-radius:6px;padding:2px;font-size:12px"><span style="flex:1;text-align:center;background:var(--panel);border-radius:4px;padding:3px">Active</span><span style="flex:1;text-align:center;padding:3px;color:var(--muted)">Archived</span></div>
+      </div>
+      <div class="sb-scroll" style="padding:0 6px">
+        <div class="label" style="text-transform:none;letter-spacing:0;font-size:12px">brdsmth/beethoven</div>
+        <a class="it on"><span class="dot blue"></span><span class="it-main"><span class="it-title">Redesign the left sidebar</span><span class="it-meta"><span>Ada Byron</span><span>now</span></span></span></a>
+        <a class="it"><span class="dot green"></span><span class="it-main"><span class="it-title">Fix flaky test in auth_test.go</span><span class="it-meta"><span>Ada Byron</span><span>12m</span></span></span></a>
+        <a class="it"><span class="dot red"></span><span class="it-main"><span class="it-title">Detect missing containers on Docker 29</span><span class="it-meta"><span>Grace H.</span><span>1h</span></span></span></a>
+        <div class="label" style="text-transform:none;letter-spacing:0;font-size:12px">web stack</div>
+        <a class="it"><span class="dot blue"></span><span class="it-main"><span class="it-title">Rename the user endpoint</span><span class="it-meta"><span>Ada Byron</span><span>3m</span></span></span></a>
+        <a class="it"><span class="dot blue"></span><span class="it-main"><span class="it-title"><span class="dim">↳ </span>Update the frontend client</span><span class="it-meta"><span>Ada Byron</span><span>3m</span></span></span></a>
+        <a class="it"><span class="dot"></span><span class="it-main"><span class="it-title">Add pagination to /api/sessions</span><span class="it-meta"><span>Linus T.</span><span>2d</span></span></span></a>
+        <div class="label" style="text-transform:none;letter-spacing:0;font-size:12px">Scratch</div>
+        <a class="it"><span class="dot green"></span><span class="it-main"><span class="it-title">Benchmark SQLite WAL settings</span><span class="it-meta"><span>Grace H.</span><span>3d</span></span></span></a>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-top:1px solid var(--border)"><span>Ada Byron</span><span style="font-size:12px;border:1px solid var(--border-strong);border-radius:6px;padding:1px 8px">Sign out</span></div>
+      <div style="display:flex;gap:4px;padding:8px 6px;border-top:1px solid var(--border);color:var(--muted)"><span style="flex:1;text-align:center">Automations</span><span style="flex:1;text-align:center">Insights</span><span style="flex:1;text-align:center">Settings</span></div>
+    </nav>
+    <div class="main-ghost"><div class="ghost-line" style="width:40%"></div><div class="ghost-box"></div><div class="ghost-line" style="width:70%"></div><div class="ghost-line" style="width:55%"></div></div>
+  </div>
+</section>
+
+<!-- ============ A ============ -->
+<section class="mock">
+  <div class="mock-head"><h2>A. Refined: same shape, less clutter</h2><span class="tag">smallest change</span></div>
+  <ul class="notes">
+    <li>Brand and team switcher become one header: the team name is the title, the product name sits under it.</li>
+    <li>Search plus a <span class="kbd">⌘K</span> command palette to jump to a session, repository or page.</li>
+    <li>Active/Archived becomes tabs with counts. A new <b>Running</b> tab answers "what's working right now?"</li>
+    <li>Repository and project groups collapse and show counts. Child sessions nest under their parent.</li>
+    <li>The meta line puts the PR state ahead of the author.</li>
+    <li>Automations, Insights and Settings move up as icon rows. Account and sign out move into an avatar menu in the footer.</li>
+  </ul>
+  <div class="frame" style="position:relative">
+    <nav class="sb">
+      <div class="a-head">
+        <div class="a-team"><span class="mark" style="background:#3e63dd;width:26px;height:26px;border-radius:7px;font-size:13px">P</span><span style="min-width:0"><b class="ellipsis" style="display:block">Platform</b><span class="sub">Beethoven</span></span><svg class="ico" style="color:var(--dim);margin-left:auto"><use href="#i-chev"/></svg></div>
+        <span class="icon-only" title="Collapse sidebar"><svg class="ico"><use href="#i-sidebar"/></svg></span>
+      </div>
+      <div class="a-tools">
+        <a class="newbtn"><svg class="ico"><use href="#i-plus"/></svg>New session<span class="kbd" style="margin-left:4px">C</span></a>
+        <div class="search"><svg class="ico"><use href="#i-search"/></svg><span>Search</span><span class="kbd">⌘K</span></div>
+      </div>
+      <div style="padding:2px 6px 6px">
+        <a class="row-btn"><svg class="ico"><use href="#i-bolt"/></svg>Automations<span class="count">4</span></a>
+        <a class="row-btn"><svg class="ico"><use href="#i-chart"/></svg>Insights</a>
+        <a class="row-btn"><svg class="ico"><use href="#i-gear"/></svg>Settings</a>
+      </div>
+      <div class="tabs"><button class="on">Active <span class="count">9</span></button><button>Running <span class="pill blue">3</span></button><button>Archived</button></div>
+      <div class="sb-scroll" style="padding:0 6px">
+        <div class="label"><span class="caret">▼</span><svg class="ico" style="width:12px;height:12px"><use href="#i-repo"/></svg><span class="ellipsis" style="text-transform:none;letter-spacing:0">brdsmth/beethoven</span><span class="count">3</span></div>
+        <a class="it on"><span class="dot blue"></span><span class="it-main"><span class="it-title">Redesign the left sidebar</span><span class="it-meta"><span>Running</span><span>·</span><span>now</span></span></span></a>
+        <a class="it"><span class="dot green"></span><span class="it-main"><span class="it-title">Fix flaky test in auth_test.go</span><span class="it-meta"><span class="pr">PR #212 open</span><span>·</span><span>12m</span></span></span></a>
+        <a class="it"><span class="dot red"></span><span class="it-main"><span class="it-title">Detect missing containers on Docker 29</span><span class="it-meta"><span style="color:var(--red)">Failed</span><span>·</span><span class="ellipsis">Grace H.</span><span>1h</span></span></span></a>
+        <div class="label"><span class="caret">▼</span><svg class="ico" style="width:12px;height:12px"><use href="#i-box"/></svg><span class="ellipsis" style="text-transform:none;letter-spacing:0">web stack</span><span class="count">2</span></div>
+        <a class="it"><span class="dot blue"></span><span class="it-main"><span class="it-title">Rename the user endpoint</span><span class="it-meta"><span>Running · 1 child</span><span>3m</span></span></span></a>
+        <a class="it child"><span class="dot blue"></span><span class="it-main"><span class="it-title">Update the frontend client</span><span class="it-meta"><span>Running</span><span>3m</span></span></span></a>
+        <a class="it"><span class="dot"></span><span class="it-main"><span class="it-title">Add pagination to /api/sessions</span><span class="it-meta"><span>Idle</span><span>·</span><span>Linus T.</span><span>2d</span></span></span></a>
+        <div class="label"><span class="caret">▶</span><span style="text-transform:none;letter-spacing:0">Scratch</span><span class="count">4</span></div>
+      </div>
+      <div class="foot"><span class="avatar">AB</span><span class="who"><span class="ellipsis">Ada Byron</span><small class="ellipsis">ada@example.com</small></span><span class="icon-only">⋯</span></div>
+    </nav>
+    <div class="main-ghost" style="position:relative;opacity:.5"><div class="ghost-line" style="width:40%"></div><div class="ghost-box"></div><div class="ghost-line" style="width:70%"></div><div class="ghost-line" style="width:55%"></div></div>
+    <div class="palette" style="left:calc(272px + (100% - 272px)/2)">
+      <div class="q">side<span>bar</span></div>
+      <div class="grp">Sessions</div>
+      <div class="li on"><span class="dot blue"></span><span class="t">Redesign the left sidebar</span><span class="time">brdsmth/beethoven</span></div>
+      <div class="li"><span class="dot green"></span><span class="t">Collapse the sidebar on narrow screens</span><span class="time">archived · 3w</span></div>
+      <div class="grp">Actions</div>
+      <div class="li"><svg class="ico" style="color:var(--muted)"><use href="#i-sidebar"/></svg><span class="t">Toggle sidebar</span><span class="kbd">⌘B</span></div>
+      <div class="li" style="margin-bottom:8px"><svg class="ico" style="color:var(--muted)"><use href="#i-plus"/></svg><span class="t">New session in brdsmth/beethoven…</span><span class="kbd">C</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ B ============ -->
+<section class="mock">
+  <div class="mock-head"><h2>B. Inbox: sessions grouped by what needs you</h2><span class="tag">changes the grouping</span></div>
+  <ul class="notes">
+    <li>Sessions are grouped by state, not by repository. <b>Needs you</b> (failed, or done with a PR to review) is tinted and always first.</li>
+    <li>Then <b>Running</b> and <b>Recent</b>, the latter bucketed by Today, Yesterday and This week. The repository goes on the meta line.</li>
+    <li>Pinned sessions stay at the top whatever their state.</li>
+    <li>A "Group by" menu (state, repository, person) keeps today's repository grouping for people who prefer it.</li>
+    <li>Rows are one line with the time on the right, so about twice as many fit. The full title shows on hover.</li>
+    <li>Archive is a nav entry, not a toggle, alongside Automations and Insights.</li>
+  </ul>
+  <div class="frame">
+    <nav class="sb">
+      <div style="display:flex;align-items:center;gap:8px;padding:12px 12px 10px">
+        <b style="font-weight:650;flex:1">Beethoven</b>
+        <span class="icon-only"><svg class="ico"><use href="#i-search"/></svg></span>
+        <span class="icon-only" style="background:var(--accent);color:#fff"><svg class="ico"><use href="#i-plus"/></svg></span>
+      </div>
+      <div style="padding:0 10px 8px"><div class="row-btn" style="border:1px solid var(--border);background:var(--panel)"><span class="mark" style="background:#3e63dd">P</span><span class="ellipsis" style="flex:1">Platform</span><svg class="ico" style="color:var(--dim)"><use href="#i-chev"/></svg></div></div>
+      <div style="padding:0 6px 6px;border-bottom:1px solid var(--border)">
+        <a class="row-btn on"><svg class="ico"><use href="#i-chat"/></svg>Sessions</a>
+        <a class="row-btn"><svg class="ico"><use href="#i-bolt"/></svg>Automations</a>
+        <a class="row-btn"><svg class="ico"><use href="#i-chart"/></svg>Insights</a>
+        <a class="row-btn"><svg class="ico"><use href="#i-archive"/></svg>Archive</a>
+      </div>
+      <div class="sb-scroll" style="padding:0 6px 6px">
+        <div class="label" style="padding-top:10px"><svg class="ico" style="width:12px;height:12px"><use href="#i-pin"/></svg>Pinned<span class="dim" style="margin-left:auto;text-transform:none;letter-spacing:0;display:flex;align-items:center;gap:2px">by state <svg class="ico" style="width:12px;height:12px"><use href="#i-chev"/></svg></span></div>
+        <a class="li"><span class="dot"></span><span class="t">Weekly dependency bumps</span><span class="time">auto</span></a>
+        <div class="attn">
+          <div class="label">Needs you<span class="pill red" style="margin-left:auto">2</span></div>
+          <a class="li"><span class="dot red"></span><span class="t">Detect missing containers on Docker 29</span><span class="time">1h</span></a>
+          <a class="li"><span class="dot green"></span><span class="t">Fix flaky test in auth_test.go</span><span class="pill" style="background:var(--green-bg);color:var(--green)">PR</span></a>
+        </div>
+        <div class="label">Running<span class="count">3</span></div>
+        <a class="li on"><span class="dot blue"></span><span class="t">Redesign the left sidebar</span><span class="time">now</span></a>
+        <a class="li"><span class="dot blue"></span><span class="t">Rename the user endpoint</span><span class="time">3m</span></a>
+        <a class="li" style="padding-left:24px"><span class="dot blue"></span><span class="t">Update the frontend client</span><span class="time">3m</span></a>
+        <div class="label">Today</div>
+        <a class="li"><span class="dot green"></span><span class="t">Document environment secrets</span><span class="time">4h</span></a>
+        <a class="li"><span class="dot green"></span><span class="t">Start new projects in a team</span><span class="time">6h</span></a>
+        <div class="label">This week</div>
+        <a class="li"><span class="dot"></span><span class="t">Add pagination to /api/sessions</span><span class="time">2d</span></a>
+        <a class="li"><span class="dot green"></span><span class="t">Benchmark SQLite WAL settings</span><span class="time">3d</span></a>
+        <a class="li"><span class="dot"></span><span class="t">Slack thread replies for follow-ups</span><span class="time">4d</span></a>
+        <a class="li"><span class="dot green"></span><span class="t">Modal sandbox cold-start cache</span><span class="time">5d</span></a>
+      </div>
+      <div class="foot"><span class="avatar">AB</span><span class="who"><span class="ellipsis">Ada Byron</span></span><span class="icon-only"><svg class="ico"><use href="#i-gear"/></svg></span></div>
+    </nav>
+    <div class="main-ghost" style="opacity:.5"><div class="ghost-line" style="width:40%"></div><div class="ghost-box"></div><div class="ghost-line" style="width:70%"></div><div class="ghost-line" style="width:55%"></div></div>
+  </div>
+</section>
+
+<!-- ============ C ============ -->
+<section class="mock">
+  <div class="mock-head"><h2>C. Team rail plus session panel</h2><span class="tag">for multi-team servers</span></div>
+  <ul class="notes">
+    <li>A 56px rail shows teams as Slack-style marks, with a badge for running (blue) or failed (red) sessions. Switching teams takes one click instead of opening a menu.</li>
+    <li>"All" and "Workspace" sit at the top of the rail. Automations, Insights and Settings sit at the bottom as icons.</li>
+    <li>The panel next to the rail is only about the chosen team: its projects first, then its sessions.</li>
+    <li>On servers without teams the rail drops away and the panel is the whole sidebar, close to A.</li>
+  </ul>
+  <div class="frame">
+    <div class="rail">
+      <div class="logo">B</div>
+      <span class="tm" style="background:var(--gray-bg);color:var(--muted)" title="All sessions">∗</span>
+      <span class="tm" style="background:var(--gray-bg);color:var(--muted)" title="Workspace">◇</span>
+      <span class="sep"></span>
+      <span class="tm on" style="background:#3e63dd">P<span class="badge">3</span></span>
+      <span class="tm" style="background:#18864b">G<span class="badge red">1</span></span>
+      <span class="tm" style="background:#a15c07">D</span>
+      <span class="tm" style="border:1.5px dashed var(--border-strong);color:var(--dim);font-weight:400;font-size:18px">+</span>
+      <span class="spacer"></span>
+      <span class="icon-only"><svg class="ico"><use href="#i-bolt"/></svg></span>
+      <span class="icon-only"><svg class="ico"><use href="#i-chart"/></svg></span>
+      <span class="icon-only"><svg class="ico"><use href="#i-gear"/></svg></span>
+      <span class="avatar" style="margin-top:6px;width:30px;height:30px">AB</span>
+    </div>
+    <nav class="sb c-panel">
+      <div class="c-head"><b>Platform</b><span class="icon-only"><svg class="ico"><use href="#i-search"/></svg></span><span class="icon-only" style="background:var(--accent);color:#fff"><svg class="ico"><use href="#i-plus"/></svg></span></div>
+      <div class="sb-scroll" style="padding:0 6px">
+        <div class="label" style="padding-top:2px">Projects</div>
+        <a class="row-btn"><svg class="ico"><use href="#i-box"/></svg><span class="ellipsis">web stack</span><span class="pill blue">2</span></a>
+        <a class="row-btn"><svg class="ico"><use href="#i-repo"/></svg><span class="ellipsis">brdsmth/beethoven</span><span class="pill blue">1</span></a>
+        <a class="row-btn"><svg class="ico"><use href="#i-repo"/></svg><span class="ellipsis">brdsmth/infra</span></a>
+        <div class="label" style="margin-top:4px">Sessions<span style="margin-left:auto;display:flex;gap:2px;text-transform:none;letter-spacing:0"><span class="pill">Active</span></span></div>
+        <a class="it on"><span class="dot blue"></span><span class="it-main"><span class="it-title">Redesign the left sidebar</span><span class="it-meta"><span>beethoven</span><span>·</span><span>now</span></span></span></a>
+        <a class="it"><span class="dot blue"></span><span class="it-main"><span class="it-title">Rename the user endpoint</span><span class="it-meta"><span>web stack · 1 child</span><span>3m</span></span></span></a>
+        <a class="it"><span class="dot green"></span><span class="it-main"><span class="it-title">Fix flaky test in auth_test.go</span><span class="it-meta"><span class="pr">PR #212</span><span>·</span><span>12m</span></span></span></a>
+        <a class="it"><span class="dot red"></span><span class="it-main"><span class="it-title">Detect missing containers on Docker 29</span><span class="it-meta"><span>beethoven</span><span>·</span><span>1h</span></span></span></a>
+        <a class="it"><span class="dot"></span><span class="it-main"><span class="it-title">Add pagination to /api/sessions</span><span class="it-meta"><span>web stack</span><span>·</span><span>2d</span></span></span></a>
+        <a class="it"><span class="dot green"></span><span class="it-main"><span class="it-title">Terraform the Modal secrets</span><span class="it-meta"><span>infra</span><span>·</span><span>2d</span></span></span></a>
+      </div>
+      <div class="foot" style="justify-content:space-between;color:var(--muted);font-size:12px"><span>8 members</span><a style="color:var(--accent)">Team settings</a></div>
+    </nav>
+    <div class="main-ghost" style="opacity:.5"><div class="ghost-line" style="width:40%"></div><div class="ghost-box"></div><div class="ghost-line" style="width:70%"></div><div class="ghost-line" style="width:55%"></div></div>
+  </div>
+</section>
+
+<!-- ============ D ============ -->
+<section class="mock">
+  <div class="mock-head"><h2>D. Collapsible: a focus mode for long sessions</h2><span class="tag">pairs with A, B or C</span></div>
+  <ul class="notes">
+    <li><span class="kbd">⌘B</span> or the header button collapses the sidebar to a 56px strip, leaving more room for the transcript and diffs.</li>
+    <li>The strip keeps New session, the running and recent sessions as tiles with status dots, and the nav icons. Hover shows the full title.</li>
+    <li>The setting is remembered (<code>writePref</code>). On narrow screens the drawer stays as it is today.</li>
+  </ul>
+  <div class="frames">
+    <div class="frame" style="height:460px">
+      <div class="mini">
+        <span class="icon-only"><svg class="ico"><use href="#i-sidebar"/></svg></span>
+        <span class="newsq">+</span>
+        <span class="s on">RS<span class="dot blue"></span></span>
+        <span class="s" style="position:relative">RU<span class="dot blue"></span><span class="tooltip">Rename the user endpoint · web stack</span></span>
+        <span class="s">FF<span class="dot green"></span></span>
+        <span class="s">DM<span class="dot red"></span></span>
+        <span class="s">AP<span class="dot"></span></span>
+        <span style="flex:1"></span>
+        <span class="icon-only"><svg class="ico"><use href="#i-search"/></svg></span>
+        <span class="icon-only"><svg class="ico"><use href="#i-bolt"/></svg></span>
+        <span class="icon-only"><svg class="ico"><use href="#i-gear"/></svg></span>
+        <span class="avatar" style="margin-top:4px">AB</span>
+      </div>
+      <div class="main-ghost" style="opacity:.5"><div class="ghost-line" style="width:40%"></div><div class="ghost-box" style="height:220px"></div><div class="ghost-line" style="width:70%"></div><div class="ghost-line" style="width:55%"></div><div class="ghost-line" style="width:62%"></div></div>
+    </div>
+  </div>
+</section>
+
+<div class="intro" style="padding-bottom:48px">
+  <h1 style="font-size:16px">Suggested path</h1>
+  <p>Ship <b>A</b> first. Most of it is CSS and moving things around inside the existing <code>Sidebar</code> component; search can filter the list on the client before there's a server endpoint. Add <b>D</b>'s collapse toggle next, since it's self-contained. Try <b>B</b>'s "Needs you" section as an optional "Group by" mode before making it the default. Keep <b>C</b> in mind for when servers routinely have several teams.</p>
+</div>
+
+</body>
+</html>
