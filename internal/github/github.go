@@ -40,6 +40,8 @@ type Client struct {
 	DB       *store.Store // the app registered here, connected accounts and a stored token
 	EnvApp   *App         // a preconfigured app; takes precedence over one registered here
 
+	MergeableWait time.Duration // before asking again for a pull request's mergeability; default 2s
+
 	mu        sync.Mutex
 	token     string // a personal access token given to New
 	gh        bool   // fall back to `gh auth token`

@@ -38,6 +38,7 @@ type GitHub struct {
 	PRAuth     []string // the Authorization of every pull request opened
 	Revoked    []string
 	pulls      map[string]map[string]any // "repo#number" → what GET pulls/{number} says
+	checks     map[string]map[string]any // "repo@sha" → check runs and commit statuses
 	PullReads  map[string]int            // "200" or "304" → count
 	accounts   map[int64][2]string       // installation → the login and type of its account; octo, User by default
 	perms      map[int64]map[string]string
@@ -58,7 +59,7 @@ func NewGitHub(t testing.TB) *GitHub {
 	}
 	g := &GitHub{Key: key, ClientID: "Iv1.fake", installs: map[string]int64{}, userCan: map[int64]bool{},
 		public: map[string]bool{}, userTokens: map[string]bool{}, tokenUser: map[string]string{}, refresh: map[string]bool{},
-		pulls: map[string]map[string]any{}, PullReads: map[string]int{}, accounts: map[int64][2]string{},
+		pulls: map[string]map[string]any{}, checks: map[string]map[string]any{}, PullReads: map[string]int{}, accounts: map[int64][2]string{},
 		perms: map[int64]map[string]string{}, appPerms: basePerms}
 	srv := httptest.NewServer(g.handler(t))
 	t.Cleanup(srv.Close)
@@ -109,6 +110,14 @@ func (g *GitHub) SetPull(repo string, number int, pr map[string]any) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.pulls[fmt.Sprintf("%s#%d", repo, number)] = pr
+}
+
+// SetChecks sets the check runs and commit statuses on a commit, each a list
+// of what GitHub's API returns for one.
+func (g *GitHub) SetChecks(repo, sha string, runs, statuses []map[string]any) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.checks[repo+"@"+sha] = map[string]any{"runs": runs, "statuses": statuses}
 }
 
 // AppJSON is the app's credentials as the manifest conversion returns them.
@@ -294,8 +303,35 @@ func (g *GitHub) handler(t testing.TB) http.Handler {
 		w.Write(body)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{name}/pulls", func(w http.ResponseWriter, r *http.Request) {
+		if !asUser(w, r) {
+			return
+		}
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		found := []any{}
+		_, head, _ := strings.Cut(r.URL.Query().Get("head"), ":")
+		prefix := r.PathValue("owner") + "/" + r.PathValue("name") + "#"
+		for key, pr := range g.pulls {
+			if ref, _ := pr["head"].(map[string]any); strings.HasPrefix(key, prefix) && ref != nil && ref["ref"] == head {
+				found = append(found, map[string]any{"number": pr["number"]})
+			}
+		}
+		reply(w, 200, found)
+	})
+	mux.HandleFunc("GET /repos/{owner}/{name}/commits/{sha}/check-runs", func(w http.ResponseWriter, r *http.Request) {
 		if asUser(w, r) {
-			reply(w, 200, []any{})
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			c := g.checks[r.PathValue("owner")+"/"+r.PathValue("name")+"@"+r.PathValue("sha")]
+			reply(w, 200, map[string]any{"check_runs": orNone(c["runs"])})
+		}
+	})
+	mux.HandleFunc("GET /repos/{owner}/{name}/commits/{sha}/status", func(w http.ResponseWriter, r *http.Request) {
+		if asUser(w, r) {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			c := g.checks[r.PathValue("owner")+"/"+r.PathValue("name")+"@"+r.PathValue("sha")]
+			reply(w, 200, map[string]any{"statuses": orNone(c["statuses"])})
 		}
 	})
 	mux.HandleFunc("POST /repos/{owner}/{name}/pulls", func(w http.ResponseWriter, r *http.Request) {
@@ -390,4 +426,11 @@ func (g *GitHub) verifyJWT(tok string) error {
 		return fmt.Errorf("iss = %q", c.Iss)
 	}
 	return nil
+}
+
+func orNone(v any) any {
+	if v == nil {
+		return []any{}
+	}
+	return v
 }

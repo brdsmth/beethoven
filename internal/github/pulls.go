@@ -8,9 +8,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/brdsmth/beethoven/internal/access"
+	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/store"
 )
 
@@ -119,4 +122,98 @@ func (c *Client) syncPull(ctx context.Context, tok string, p store.PullRequest) 
 	}
 	p.SyncedAt = time.Now()
 	return c.DB.SavePullRequest(ctx, p)
+}
+
+// PRStatus reads the latest pull request from head in repo, with whether it
+// can merge and its checks. GitHub computes mergeability in the background
+// after a push, so a first read may not have it yet; it is asked once more.
+func (c *Client) PRStatus(ctx context.Context, repo, head string) (*session.PRStatus, error) {
+	tok, err := c.bearer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	owner, _, _ := strings.Cut(repo, "/")
+	var found []struct {
+		Number int `json:"number"`
+	}
+	q := url.Values{"head": {owner + ":" + head}, "state": {"all"}, "per_page": {"1"}}
+	if err := c.call(ctx, tok, "GET", "/repos/"+repo+"/pulls?"+q.Encode(), nil, &found); err != nil {
+		return nil, err
+	}
+	if len(found) == 0 {
+		return nil, nil
+	}
+	var pr struct {
+		HTMLURL        string     `json:"html_url"`
+		Number         int        `json:"number"`
+		State          string     `json:"state"`
+		Draft          bool       `json:"draft"`
+		MergedAt       *time.Time `json:"merged_at"`
+		Mergeable      *bool      `json:"mergeable"`
+		MergeableState string     `json:"mergeable_state"`
+		Base           struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	path := fmt.Sprintf("/repos/%s/pulls/%d", repo, found[0].Number)
+	for attempt := 0; ; attempt++ {
+		if err := c.call(ctx, tok, "GET", path, nil, &pr); err != nil {
+			return nil, err
+		}
+		if pr.Mergeable != nil || pr.State != "open" || attempt == 1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(c.mergeableWait()):
+		}
+	}
+	st := &session.PRStatus{URL: pr.HTMLURL, Number: pr.Number, State: pr.State, Draft: pr.Draft, Base: pr.Base.Ref,
+		HeadSHA: pr.Head.SHA, Mergeable: pr.Mergeable, MergeableState: pr.MergeableState, Checks: []session.Check{}}
+	if pr.MergedAt != nil {
+		st.State = "merged"
+	}
+
+	var runs struct {
+		CheckRuns []struct {
+			Name       string `json:"name"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+		} `json:"check_runs"`
+	}
+	if err := c.call(ctx, tok, "GET", "/repos/"+repo+"/commits/"+pr.Head.SHA+"/check-runs?per_page=100", nil, &runs); err != nil {
+		return nil, err
+	}
+	for _, r := range runs.CheckRuns {
+		st.Checks = append(st.Checks, session.Check{Name: r.Name, Status: r.Status, Conclusion: r.Conclusion})
+	}
+	// Older CI reports commit statuses instead of check runs.
+	var combined struct {
+		Statuses []struct {
+			Context string `json:"context"`
+			State   string `json:"state"` // pending, success, failure or error
+		} `json:"statuses"`
+	}
+	if err := c.call(ctx, tok, "GET", "/repos/"+repo+"/commits/"+pr.Head.SHA+"/status", nil, &combined); err != nil {
+		return nil, err
+	}
+	for _, s := range combined.Statuses {
+		ch := session.Check{Name: s.Context, Status: "completed", Conclusion: s.State}
+		if s.State == "pending" {
+			ch = session.Check{Name: s.Context, Status: "in_progress"}
+		}
+		st.Checks = append(st.Checks, ch)
+	}
+	return st, nil
+}
+
+func (c *Client) mergeableWait() time.Duration {
+	if c.MergeableWait > 0 {
+		return c.MergeableWait
+	}
+	return 2 * time.Second
 }

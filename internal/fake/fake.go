@@ -241,6 +241,7 @@ func argAfter(args []string, flag string) string {
 type SCM struct {
 	mu       sync.Mutex
 	PRs      []session.PullRequest
+	Status   *session.PRStatus // what PRStatus answers
 	Err      error
 	Identity store.Author // whom the host acts for
 }
@@ -258,4 +259,10 @@ func (s *SCM) OpenPR(_ context.Context, pr session.PullRequest) (string, error) 
 	}
 	s.PRs = append(s.PRs, pr)
 	return "https://github.com/" + pr.Repo + "/pull/" + fmt.Sprint(len(s.PRs)), nil
+}
+
+func (s *SCM) PRStatus(context.Context, string, string) (*session.PRStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Status, s.Err
 }
