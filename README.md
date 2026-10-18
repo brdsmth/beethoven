@@ -124,7 +124,8 @@ events. The Claude Code harness runs `claude -p --output-format stream-json` and
 conversation with `--resume`. Adding another agent is one file.
 
 **Tools.** The server hosts an MCP server that every agent connects to with its session's token:
-`create_pull_request`, `spawn_session`, `send_prompt`, `get_session` (which can wait for a child to
+`create_pull_request`, `pull_request_status` (GitHub's mergeable state and CI checks for the
+session's PR), `spawn_session`, `send_prompt`, `get_session` (which can wait for a child to
 finish), `list_sessions`, `stop_session`, and `list_capabilities` and `add_capability` (see
 Capabilities). Agents only reach their own direct children; children nest at most two levels deep.
 

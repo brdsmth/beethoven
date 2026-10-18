@@ -76,8 +76,8 @@ func TestTools(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	slices.Sort(names)
-	if want := []string{"add_capability", "create_pull_request", "get_session", "list_capabilities", "list_sessions", "send_prompt",
-		"spawn_session", "stop_session"}; !slices.Equal(names, want) {
+	if want := []string{"add_capability", "create_pull_request", "get_session", "list_capabilities", "list_sessions", "pull_request_status",
+		"send_prompt", "spawn_session", "stop_session"}; !slices.Equal(names, want) {
 		t.Errorf("tools = %v", names)
 	}
 
@@ -122,6 +122,18 @@ func TestTools(t *testing.T) {
 	out, isErr = call(t, cs, "create_pull_request", map[string]any{"title": "Add things", "body": "Body"})
 	if isErr || !strings.Contains(out, "https://github.com/acme/app/pull/1") {
 		t.Errorf("create_pull_request = %q (error=%v)", out, isErr)
+	}
+
+	if out, isErr := call(t, cs, "pull_request_status", nil); isErr || !strings.Contains(out, "No pull request") {
+		t.Errorf("pull_request_status without one = %q (error=%v)", out, isErr)
+	}
+	yes := true
+	env.SCM.Status = &session.PRStatus{URL: "https://github.com/acme/app/pull/1", Number: 1, State: "open", Mergeable: &yes,
+		MergeableState: "clean", Checks: []session.Check{{Name: "test", Status: "completed", Conclusion: "success"}}}
+	out, isErr = call(t, cs, "pull_request_status", nil)
+	var st session.PRStatus
+	if err := json.Unmarshal([]byte(out), &st); isErr || err != nil || st.Mergeable == nil || !*st.Mergeable || len(st.Checks) != 1 {
+		t.Errorf("pull_request_status = %q (error=%v)", out, isErr)
 	}
 }
 

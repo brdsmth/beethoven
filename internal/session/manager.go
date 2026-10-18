@@ -40,12 +40,33 @@ type SCM interface {
 	Token(ctx context.Context, repo string) (string, error) // credential to clone and push repo; "" if none
 	DefaultBranch(ctx context.Context, repo string) (string, error)
 	OpenPR(ctx context.Context, pr PullRequest) (url string, err error)
-	Author(ctx context.Context) store.Author // the identity of the person the host acts for; zero if unknown
+	PRStatus(ctx context.Context, repo, head string) (*PRStatus, error) // the latest pull request from head; nil if none
+	Author(ctx context.Context) store.Author                            // the identity of the person the host acts for; zero if unknown
 }
 
 type PullRequest struct {
 	Repo, Head, Base, Title, Body string
 	Draft                         bool
+}
+
+// PRStatus is what the git host says about a pull request now.
+type PRStatus struct {
+	URL            string  `json:"url"`
+	Number         int     `json:"number"`
+	State          string  `json:"state"` // open, closed or merged
+	Draft          bool    `json:"draft"`
+	Base           string  `json:"base"`
+	HeadSHA        string  `json:"head_sha"`
+	Mergeable      *bool   `json:"mergeable"`       // nil while the host is still computing it
+	MergeableState string  `json:"mergeable_state"` // GitHub's clean, dirty, blocked, behind, unstable…
+	Checks         []Check `json:"checks"`
+}
+
+// Check is one CI check or commit status on a pull request's head.
+type Check struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`               // queued, in_progress or completed
+	Conclusion string `json:"conclusion,omitempty"` // success, failure, neutral… once completed
 }
 
 // Notifier hears about every finished prompt. Integrations (automations
@@ -371,6 +392,20 @@ func (m *Manager) OpenPR(ctx context.Context, sessionID, repo, title, body strin
 		return "", err
 	}
 	return r.openPR(ctx, repo, title, body, draft)
+}
+
+// PRStatus asks the git host about the pull request from the session's
+// branch in repo, as the person the session works for. Nil if none is open.
+func (m *Manager) PRStatus(ctx context.Context, sessionID, repo string) (*PRStatus, error) {
+	s, err := m.db.Session(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	i, err := pickRepo(s, repo)
+	if err != nil {
+		return nil, err
+	}
+	return m.scm.PRStatus(forPerson(ctx, s), s.Repos[i].Repo, s.Branch)
 }
 
 // SetVisibility changes who may read a session.

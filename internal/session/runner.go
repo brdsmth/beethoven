@@ -449,16 +449,9 @@ git -c credential.helper= \
 
 func (r *runner) openPR(ctx context.Context, repo, title, body string, draft *bool) (string, error) {
 	s := r.snapshot()
-	i := slices.IndexFunc(s.Repos, func(ref store.RepoRef) bool { return strings.EqualFold(ref.Repo, repo) })
-	switch {
-	case len(s.Repos) == 0:
-		return "", fmt.Errorf("%w: this session has no repository", ErrInvalid)
-	case repo == "" && len(s.Repos) == 1:
-		i = 0
-	case repo == "":
-		return "", fmt.Errorf("%w: say which repository: %s", ErrInvalid, strings.Join(store.RepoNames(s.Repos), ", "))
-	case i < 0:
-		return "", fmt.Errorf("%w: %s is not in this session", ErrInvalid, repo)
+	i, err := pickRepo(s, repo)
+	if err != nil {
+		return "", err
 	}
 	ref := s.Repos[i]
 	eff, err := r.m.Effective(ctx, s.EnvironmentID)
@@ -512,6 +505,23 @@ func (r *runner) openPR(ctx context.Context, repo, title, body string, draft *bo
 		return url, errUncommitted
 	}
 	return url, nil
+}
+
+// pickRepo finds the session's repository named repo, which may be left
+// out when the session has only one.
+func pickRepo(s store.Session, repo string) (int, error) {
+	i := slices.IndexFunc(s.Repos, func(ref store.RepoRef) bool { return strings.EqualFold(ref.Repo, repo) })
+	switch {
+	case len(s.Repos) == 0:
+		return 0, fmt.Errorf("%w: this session has no repository", ErrInvalid)
+	case repo == "" && len(s.Repos) == 1:
+		return 0, nil
+	case repo == "":
+		return 0, fmt.Errorf("%w: say which repository: %s", ErrInvalid, strings.Join(store.RepoNames(s.Repos), ", "))
+	case i < 0:
+		return 0, fmt.Errorf("%w: %s is not in this session", ErrInvalid, repo)
+	}
+	return i, nil
 }
 
 var errUncommitted = errors.New("the working tree has uncommitted changes that are not in the pull request")
@@ -656,7 +666,7 @@ func systemPrompt(s store.Session, eff Effective) string {
 		if len(s.Repos) > 1 {
 			b.WriteString(", once per repository you changed, naming the repository")
 		}
-		b.WriteString(".\n")
+		b.WriteString(". To check whether a pull request can merge or how its CI is doing, call pull_request_status.\n")
 	}
 	b.WriteString("For independent pieces of work that can proceed in parallel, you can start child sessions with spawn_session and follow them with get_session.\n")
 	b.WriteString("If the work needs a toolchain the sandbox lacks (a mobile app with Expo, Android builds, Go, Rust, Bun, Python with uv), " +

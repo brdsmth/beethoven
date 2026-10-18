@@ -24,6 +24,9 @@ func Handler(m *session.Manager) http.Handler {
 	t := &tools{m: m}
 	mcp.AddTool(srv, &mcp.Tool{Name: "create_pull_request", Description: "Push this session's branch to GitHub and open a pull request, " +
 		"or return the one already open. Commit your changes first: uncommitted changes are not included."}, t.createPR)
+	mcp.AddTool(srv, &mcp.Tool{Name: "pull_request_status", Description: "Ask GitHub about this session's pull request: its state, " +
+		"whether it can merge (GitHub's own mergeable status, which accounts for conflicts, branch protection and required checks) " +
+		"and its CI checks. You have no GitHub credentials or gh CLI in the sandbox; use this instead."}, t.prStatus)
 	mcp.AddTool(srv, &mcp.Tool{Name: "spawn_session", Description: "Start a child session: another agent in its own sandbox, on its own branch, " +
 		"working in parallel. Returns the child's id immediately. The child cannot see your uncommitted work, so give it self-contained instructions."}, t.spawn)
 	mcp.AddTool(srv, &mcp.Tool{Name: "send_prompt", Description: "Queue a follow-up prompt on one of your child sessions."}, t.send)
@@ -96,6 +99,25 @@ func (t *tools) createPR(ctx context.Context, req *mcp.CallToolRequest, in prIn)
 		return nil, nil, err
 	}
 	return text("Pull request: %s", url), nil, nil
+}
+
+type prStatusIn struct {
+	Repo string `json:"repo,omitempty" jsonschema:"owner/name of the repository; required when the session has several"`
+}
+
+func (t *tools) prStatus(ctx context.Context, req *mcp.CallToolRequest, in prStatusIn) (*mcp.CallToolResult, any, error) {
+	me, err := t.caller(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	st, err := t.m.PRStatus(ctx, me.ID, in.Repo)
+	if err != nil {
+		return nil, nil, err
+	}
+	if st == nil {
+		return text("No pull request from %s yet. Open one with create_pull_request.", me.Branch), nil, nil
+	}
+	return jsonText(st), nil, nil
 }
 
 type spawnIn struct {

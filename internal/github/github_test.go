@@ -204,6 +204,44 @@ func TestPullRequestsAreTrackedUntilMerged(t *testing.T) {
 	}
 }
 
+func TestPullRequestStatus(t *testing.T) {
+	gh := fake.NewGitHub(t)
+	gh.Install("acme/app", 1, true)
+	c := connected(t, gh)
+	c.MergeableWait = time.Millisecond
+
+	if st, err := c.PRStatus(ctx, "acme/app", "b"); st != nil || err != nil {
+		t.Fatalf("before opening one: %+v, %v", st, err)
+	}
+	pr := map[string]any{"number": 5, "html_url": "https://github.com/acme/app/pull/5", "state": "open",
+		"head": map[string]any{"ref": "b", "sha": "abc"}, "base": map[string]any{"ref": "main"}}
+	gh.SetPull("acme/app", 5, pr)
+	gh.SetChecks("acme/app", "abc", []map[string]any{{"name": "test", "status": "completed", "conclusion": "failure"}},
+		[]map[string]any{{"context": "ci/legacy", "state": "pending"}})
+	st, err := c.PRStatus(ctx, "acme/app", "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Number != 5 || st.Base != "main" || st.HeadSHA != "abc" || st.Mergeable != nil || gh.PullReads["200"] != 2 {
+		t.Errorf("still computing: %+v after %v reads; want it asked twice", st, gh.PullReads)
+	}
+	want := []session.Check{{Name: "test", Status: "completed", Conclusion: "failure"}, {Name: "ci/legacy", Status: "in_progress"}}
+	if !slices.Equal(st.Checks, want) {
+		t.Errorf("checks = %+v", st.Checks)
+	}
+
+	pr["mergeable"], pr["mergeable_state"] = false, "dirty"
+	gh.SetPull("acme/app", 5, pr)
+	if st, _ := c.PRStatus(ctx, "acme/app", "b"); st.Mergeable == nil || *st.Mergeable || st.MergeableState != "dirty" {
+		t.Errorf("with conflicts: %+v", st)
+	}
+	pr["state"], pr["merged_at"] = "closed", "2026-10-01T13:00:00Z"
+	gh.SetPull("acme/app", 5, pr)
+	if st, _ := c.PRStatus(ctx, "acme/app", "b"); st.State != "merged" {
+		t.Errorf("after merging: state %q", st.State)
+	}
+}
+
 func TestEachPersonUsesTheirOwnGitHub(t *testing.T) {
 	gh := fake.NewGitHub(t)
 	gh.Install("acme/app", 1, true)
