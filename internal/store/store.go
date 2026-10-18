@@ -125,15 +125,23 @@ func Migrate(db *sql.DB, files fs.FS, dir string, before func(pending []string, 
 	}
 	rows.Close()
 	base := func(name string) string { return strings.TrimPrefix(name, dir+"/") }
-	if len(applied) == 0 && version > 0 { // counted, not yet named
+	if len(applied) == 0 && version > 0 { // counted, not yet named: name them all at once, or none
 		if version > len(names) {
 			return fmt.Errorf("the database has %d migrations, more than this version of Beethoven knows", version)
 		}
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
 		for _, name := range names[:version] {
-			if _, err := db.Exec(`INSERT INTO schema_migrations (name, applied_at) VALUES (?, 0)`, base(name)); err != nil {
+			if _, err := tx.Exec(`INSERT INTO schema_migrations (name, applied_at) VALUES (?, 0)`, base(name)); err != nil {
+				tx.Rollback()
 				return err
 			}
 			applied[base(name)] = true
+		}
+		if err := tx.Commit(); err != nil {
+			return err
 		}
 	}
 	var pending []string
