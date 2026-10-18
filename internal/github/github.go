@@ -39,6 +39,12 @@ type Client struct {
 	HTTP     *http.Client
 	DB       *store.Store // the app registered here, connected accounts and a stored token
 	EnvApp   *App         // a preconfigured app; takes precedence over one registered here
+	// InstallState rides on installation links, and GitHub hands it back
+	// when it returns the browser: the cloud routes that return by it.
+	InstallState string
+	// NoToken turns off personal access tokens: each person connects their
+	// own GitHub (the cloud), and the server's gh login is never used.
+	NoToken bool
 
 	mu        sync.Mutex
 	token     string // a personal access token given to New
@@ -185,6 +191,9 @@ func (c *Client) storedToken(ctx context.Context) string {
 }
 
 func (c *Client) personalToken(ctx context.Context) string {
+	if c.NoToken {
+		return ""
+	}
 	if tok := c.storedToken(ctx); tok != "" {
 		return tok
 	}
