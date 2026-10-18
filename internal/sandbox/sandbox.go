@@ -22,10 +22,10 @@ type Spec struct {
 }
 
 type Cmd struct {
-	Args   []string
-	Env    map[string]string // per-process; the place for secrets
-	Dir    string
-	Stdin  io.Reader
+	Args  []string
+	Env   map[string]string // per-process; the place for secrets
+	Dir   string
+	Stdin io.Reader
 	// Stdout and Stderr may be the same writer, which then gets one Write
 	// at a time, as with os/exec.
 	Stdout io.Writer

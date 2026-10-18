@@ -76,8 +76,8 @@ func TestTools(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	slices.Sort(names)
-	if want := []string{"add_capability", "create_pull_request", "get_session", "list_capabilities", "list_sessions", "pull_request_status",
-		"send_prompt", "spawn_session", "stop_session"}; !slices.Equal(names, want) {
+	if want := []string{"add_capability", "add_labels", "comment", "create_pull_request", "get_session", "list_capabilities", "list_sessions",
+		"pull_request_status", "send_prompt", "spawn_session", "stop_session"}; !slices.Equal(names, want) {
 		t.Errorf("tools = %v", names)
 	}
 
@@ -134,6 +134,18 @@ func TestTools(t *testing.T) {
 	var st session.PRStatus
 	if err := json.Unmarshal([]byte(out), &st); isErr || err != nil || st.Mergeable == nil || !*st.Mergeable || len(st.Checks) != 1 {
 		t.Errorf("pull_request_status = %q (error=%v)", out, isErr)
+	}
+	if out, isErr := call(t, cs, "comment", map[string]any{"number": 7, "body": "Fixed in the PR."}); isErr || !strings.Contains(out, "issuecomment") {
+		t.Errorf("comment = %q (error=%v)", out, isErr)
+	}
+	if out, isErr := call(t, cs, "add_labels", map[string]any{"number": 7, "labels": []string{"agent-done"}}); isErr {
+		t.Errorf("add_labels = %q", out)
+	}
+	if out, isErr := call(t, cs, "comment", map[string]any{"repo": "acme/other", "number": 7, "body": "x"}); !isErr {
+		t.Errorf("commented outside the session's repositories: %q", out)
+	}
+	if got := strings.Join(env.SCM.Comments, "|") + "|" + strings.Join(env.SCM.Labeled, "|"); got != "acme/app#7: Fixed in the PR.|acme/app#7: agent-done" {
+		t.Errorf("host saw %q", got)
 	}
 }
 

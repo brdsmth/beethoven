@@ -40,8 +40,10 @@ type SCM interface {
 	Token(ctx context.Context, repo string) (string, error) // credential to clone and push repo; "" if none
 	DefaultBranch(ctx context.Context, repo string) (string, error)
 	OpenPR(ctx context.Context, pr PullRequest) (url string, err error)
-	PRStatus(ctx context.Context, repo, head string) (*PRStatus, error) // the latest pull request from head; nil if none
-	Author(ctx context.Context) store.Author                            // the identity of the person the host acts for; zero if unknown
+	PRStatus(ctx context.Context, repo, head string) (*PRStatus, error)                        // the latest pull request from head; nil if none
+	Comment(ctx context.Context, repo string, number int, body string) (url string, err error) // on an issue or pull request
+	AddLabels(ctx context.Context, repo string, number int, labels []string) error
+	Author(ctx context.Context) store.Author // the identity of the person the host acts for; zero if unknown
 }
 
 type PullRequest struct {
@@ -406,6 +408,47 @@ func (m *Manager) PRStatus(ctx context.Context, sessionID, repo string) (*PRStat
 		return nil, err
 	}
 	return m.scm.PRStatus(forPerson(ctx, s), s.Repos[i].Repo, s.Branch)
+}
+
+// Comment posts on an issue or pull request in one of the session's
+// repositories, as the person the session works for.
+func (m *Manager) Comment(ctx context.Context, sessionID, repo string, number int, body string) (string, error) {
+	s, ref, err := m.threadIn(ctx, sessionID, repo, number)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(body) == "" {
+		return "", fmt.Errorf("%w: the comment is empty", ErrInvalid)
+	}
+	return m.scm.Comment(forPerson(ctx, s), ref, number, body)
+}
+
+// AddLabels labels an issue or pull request in one of the session's
+// repositories, as the person the session works for.
+func (m *Manager) AddLabels(ctx context.Context, sessionID, repo string, number int, labels []string) error {
+	s, ref, err := m.threadIn(ctx, sessionID, repo, number)
+	if err != nil {
+		return err
+	}
+	if len(labels) == 0 {
+		return fmt.Errorf("%w: no labels given", ErrInvalid)
+	}
+	return m.scm.AddLabels(forPerson(ctx, s), ref, number, labels)
+}
+
+func (m *Manager) threadIn(ctx context.Context, sessionID, repo string, number int) (store.Session, string, error) {
+	s, err := m.db.Session(ctx, sessionID)
+	if err != nil {
+		return s, "", err
+	}
+	if number <= 0 {
+		return s, "", fmt.Errorf("%w: say which issue or pull request number", ErrInvalid)
+	}
+	i, err := pickRepo(s, repo)
+	if err != nil {
+		return s, "", err
+	}
+	return s, s.Repos[i].Repo, nil
 }
 
 // SetVisibility changes who may read a session.

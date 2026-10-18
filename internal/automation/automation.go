@@ -1,8 +1,9 @@
-// Package automation turns schedules and webhooks into session requests.
+// Package automation turns schedules, webhooks and git host events into
+// session requests.
 //
 // An automation is a saved request template. Firing it — on its cron
-// schedule, from its webhook, or by hand — submits one prompt through the
-// same path as every other source; that prompt is the run. Three failed runs
+// schedule, from its webhook, on a matching event, or by hand — submits one
+// prompt through the same path as every other source; that prompt is the run. Three failed runs
 // in a row pause the automation.
 package automation
 
@@ -12,14 +13,17 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/robfig/cron/v3"
 
+	"github.com/brdsmth/beethoven/internal/event"
 	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/store"
 )
@@ -57,6 +61,10 @@ type Spec struct {
 	Schedule      string          `json:"schedule"` // 5-field cron, optionally prefixed "CRON_TZ=Area/City "
 	Reuse         bool            `json:"reuse"`
 	Enabled       bool            `json:"enabled"`
+	// Trigger fires it on events from the git host, in the repositories it
+	// targets. With Reuse, every event about the same issue or pull request
+	// goes to one session.
+	Trigger *event.Trigger `json:"trigger,omitempty"`
 }
 
 // Create stores a new automation, which runs as accountID ("" for the
@@ -111,6 +119,20 @@ func (s *Service) apply(ctx context.Context, a *store.Automation, spec Spec, now
 	a.Name, a.Repos, a.EnvironmentID, a.Prompt = spec.Name, repos, spec.EnvironmentID, spec.Prompt
 	a.Model, a.Effort = spec.Model, spec.Effort
 	a.Schedule, a.Reuse, a.Enabled = strings.TrimSpace(spec.Schedule), spec.Reuse, spec.Enabled
+	a.TriggerEvent, a.TriggerConditions = "", nil
+	if t := spec.Trigger; t != nil && t.Event != "" {
+		if err := t.Validate(); err != nil {
+			return fmt.Errorf("%w: trigger: %v", session.ErrInvalid, err)
+		}
+		if len(repos) == 0 && spec.EnvironmentID == "" {
+			return fmt.Errorf("%w: an event trigger needs repositories or a project to watch", session.ErrInvalid)
+		}
+		if t.Conditions == nil {
+			t.Conditions = []event.Condition{}
+		}
+		a.TriggerEvent = t.Event
+		a.TriggerConditions, _ = json.Marshal(t.Conditions)
+	}
 	a.NextRunAt = nil
 	if a.Schedule != "" {
 		sched, err := cron.ParseStandard(a.Schedule)
@@ -150,13 +172,99 @@ func (s *Service) Fire(ctx context.Context, a store.Automation, source, payload,
 	if err := s.mayRun(ctx, a); err != nil {
 		return store.Session{}, store.Prompt{}, err
 	}
-	req := session.Request{
-		Prompt: prompt, EnvironmentID: a.EnvironmentID, Repos: a.Repos, Model: a.Model, Effort: a.Effort,
-		Title:  a.Name + " · " + time.Now().Format("Jan 2 15:04"),
-		Author: s.m.AuthorFor(ctx, a.AccountID), AccountID: a.AccountID, TeamID: a.TeamID, Source: source, AutomationID: a.ID,
-	}
+	req := s.request(ctx, a, source, prompt, a.Name+" · "+time.Now().Format("Jan 2 15:04"))
 	if a.Reuse {
 		req.Key = "automation:" + a.ID
+	}
+	req.DedupKey = dedupKey
+	return s.m.Submit(ctx, req)
+}
+
+func (s *Service) request(ctx context.Context, a store.Automation, source, prompt, title string) session.Request {
+	return session.Request{
+		Prompt: prompt, EnvironmentID: a.EnvironmentID, Repos: a.Repos, Model: a.Model, Effort: a.Effort, Title: title,
+		Author: s.m.AuthorFor(ctx, a.AccountID), AccountID: a.AccountID, TeamID: a.TeamID, Source: source, AutomationID: a.ID,
+	}
+}
+
+// Dispatch fires every enabled automation whose trigger matches e and that
+// watches e's repository, and returns the runs it started. Unlike other
+// sources, events don't wait for an automation's previous run: each is
+// about its own issue or pull request, and with Reuse, events about the
+// same one queue on its session.
+func (s *Service) Dispatch(ctx context.Context, e event.Event) ([]store.Prompt, error) {
+	if e.Bot && e.Comment != "" {
+		return nil, nil // bots' comments and reviews, ours included, would set off loops
+	}
+	cands, err := s.db.TriggeredAutomations(ctx, e.Kind)
+	if err != nil {
+		return nil, err
+	}
+	var started []store.Prompt
+	var errs []error
+	for _, a := range cands {
+		if !Trigger(a).Matches(e) || !s.watches(ctx, a, e.Repo) {
+			continue
+		}
+		_, p, err := s.fireEvent(ctx, a, e)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("automation %s: %w", a.ID, err))
+			continue
+		}
+		started = append(started, p)
+	}
+	return started, errors.Join(errs...)
+}
+
+// Trigger is an automation's stored trigger.
+func Trigger(a store.Automation) event.Trigger {
+	t := event.Trigger{Event: a.TriggerEvent, Conditions: []event.Condition{}}
+	json.Unmarshal(a.TriggerConditions, &t.Conditions)
+	return t
+}
+
+// watches reports whether repo is one the automation targets, directly or
+// through its project.
+func (s *Service) watches(ctx context.Context, a store.Automation, repo string) bool {
+	repos := a.Repos
+	if a.EnvironmentID != "" {
+		env, err := s.db.Environment(ctx, a.EnvironmentID)
+		if err != nil {
+			return false
+		}
+		repos = env.Repos
+	}
+	return slices.ContainsFunc(repos, func(r store.RepoRef) bool { return strings.EqualFold(r.Repo, repo) })
+}
+
+func (s *Service) fireEvent(ctx context.Context, a store.Automation, e event.Event) (store.Session, store.Prompt, error) {
+	dedupKey := "automation:" + a.ID + ":" + e.Host + ":" + e.Occurrence
+	if p, err := s.db.PromptByDedupKey(ctx, dedupKey); err == nil {
+		sess, err := s.db.Session(ctx, p.SessionID)
+		return sess, p, err
+	}
+	if err := s.mayRun(ctx, a); err != nil {
+		return store.Session{}, store.Prompt{}, err
+	}
+	title := a.Name + " · " + e.Repo
+	if e.Number > 0 {
+		title = fmt.Sprintf("%s · #%d %s", a.Name, e.Number, e.Title)
+	}
+	req := s.request(ctx, a, "event", a.Prompt+"\n\n"+e.Describe(), title)
+	if a.EnvironmentID == "" {
+		// Work in the repository the event happened in, on the pull
+		// request's branch when it has one there.
+		ref := store.RepoRef{Repo: e.Repo}
+		if i := slices.IndexFunc(a.Repos, func(r store.RepoRef) bool { return strings.EqualFold(r.Repo, e.Repo) }); i >= 0 {
+			ref = a.Repos[i]
+		}
+		if strings.HasPrefix(e.Subject, "pr:") && e.Branch != "" && !e.Fork && e.Kind != event.PRMerged && e.Kind != event.PRClosed {
+			ref.BaseBranch = e.Branch
+		}
+		req.Repos = []store.RepoRef{ref}
+	}
+	if a.Reuse {
+		req.Key = "automation:" + a.ID + ":" + e.Host + ":" + e.Repo + ":" + e.Subject
 	}
 	req.DedupKey = dedupKey
 	return s.m.Submit(ctx, req)

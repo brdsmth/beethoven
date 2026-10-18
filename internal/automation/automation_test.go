@@ -5,9 +5,11 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/brdsmth/beethoven/internal/event"
 	"github.com/brdsmth/beethoven/internal/fake"
 	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/store"
@@ -118,5 +120,68 @@ func TestTickFiresDueSchedulesOnce(t *testing.T) {
 	got, _ := env.DB.Automation(ctx, a.ID)
 	if !got.NextRunAt.After(time.Now()) {
 		t.Errorf("next run not advanced: %v", got.NextRunAt)
+	}
+}
+
+func TestDispatchEvents(t *testing.T) {
+	svc, env := setup(t)
+	labeled := &event.Trigger{Event: event.IssueLabeled, Conditions: []event.Condition{{Type: event.CondAddedLabel, Values: []string{"agent"}}}}
+	if _, _, err := svc.Create(ctx, Spec{Name: "n", Prompt: "p", Trigger: labeled, Enabled: true}, ""); !errors.Is(err, session.ErrInvalid) {
+		t.Errorf("trigger without a target: err = %v", err)
+	}
+	fix, _, err := svc.Create(ctx, Spec{Name: "Fix labeled issues", Prompt: "Fix the issue.", Repos: []store.RepoRef{{Repo: "acme/app"}},
+		Trigger: labeled, Reuse: true, Enabled: true}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, _, _ := svc.Create(ctx, Spec{Name: "Review", Prompt: "Review it.", Repos: []store.RepoRef{{Repo: "acme/app"}},
+		Trigger: &event.Trigger{Event: event.PROpened}, Enabled: true}, "")
+	if got, _ := env.DB.Automation(ctx, fix.ID); Trigger(got).Event != event.IssueLabeled || len(Trigger(got).Conditions) != 1 {
+		t.Fatalf("stored trigger = %+v", Trigger(got))
+	}
+
+	issue := event.Event{Host: "github", Kind: event.IssueLabeled, Repo: "acme/app", Number: 7, Title: "Crash on save",
+		Label: "agent", Labels: []string{"agent"}, Subject: "issue:7", Occurrence: "issue:7:labeled:agent"}
+	started, err := svc.Dispatch(ctx, issue)
+	if err != nil || len(started) != 1 || started[0].AutomationID != fix.ID {
+		t.Fatalf("dispatch = %+v, %v", started, err)
+	}
+	if !strings.Contains(started[0].Content, "Fix the issue.") || !strings.Contains(started[0].Content, "#7 Crash on save") {
+		t.Errorf("prompt = %q", started[0].Content)
+	}
+	sess, _ := env.DB.Session(ctx, started[0].SessionID)
+	if !strings.Contains(sess.Title, "#7") || len(sess.Repos) != 1 || sess.Repos[0].Repo != "acme/app" {
+		t.Errorf("session = %+v", sess)
+	}
+
+	// A redelivery fires nothing new; a later event on the same issue joins its session.
+	if again, _ := svc.Dispatch(ctx, issue); len(again) != 1 || again[0].ID != started[0].ID {
+		t.Errorf("redelivery = %+v", again)
+	}
+	issue.Occurrence = "issue:7:labeled:agent:2"
+	if later, _ := svc.Dispatch(ctx, issue); len(later) != 1 || later[0].SessionID != sess.ID || later[0].ID == started[0].ID {
+		t.Errorf("second event on the issue = %+v", later)
+	}
+
+	// Other labels, other repositories and other kinds don't match.
+	for _, e := range []event.Event{
+		{Host: "github", Kind: event.IssueLabeled, Repo: "acme/app", Number: 8, Label: "bug", Subject: "issue:8", Occurrence: "a"},
+		{Host: "github", Kind: event.IssueLabeled, Repo: "acme/other", Number: 8, Label: "agent", Subject: "issue:8", Occurrence: "b"},
+		{Host: "github", Kind: event.IssueOpened, Repo: "acme/app", Number: 8, Subject: "issue:8", Occurrence: "c"},
+	} {
+		if got, _ := svc.Dispatch(ctx, e); len(got) != 0 {
+			t.Errorf("%+v fired %d runs", e, len(got))
+		}
+	}
+
+	// A pull request's run starts from its branch.
+	pr := event.Event{Host: "github", Kind: event.PROpened, Repo: "acme/app", Number: 3, Branch: "feature", Base: "main",
+		Subject: "pr:3", Occurrence: "pr:3:opened"}
+	got, err := svc.Dispatch(ctx, pr)
+	if err != nil || len(got) != 1 || got[0].AutomationID != review.ID {
+		t.Fatalf("pull request dispatch = %+v, %v", got, err)
+	}
+	if s, _ := env.DB.Session(ctx, got[0].SessionID); s.Repos[0].BaseBranch != "feature" {
+		t.Errorf("review session repos = %+v", s.Repos)
 	}
 }

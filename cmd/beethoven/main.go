@@ -74,6 +74,8 @@ Server environment:
   BEETHOVEN_MODEL         initial default model (then: Settings)
   BEETHOVEN_GITHUB_APP    a preconfigured GitHub App: credentials JSON, or a file holding it
   BEETHOVEN_SLACK_APP     a preconfigured Slack app: credentials JSON, or a file holding it
+  BEETHOVEN_GITHUB_WEBHOOK_SECRET
+                          secret for repository webhooks to /webhooks/github, when the app has none
   GITHUB_TOKEN            GitHub token until someone connects the app (default: gh auth token)
   ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN
                           passed to sandboxes unless overridden by secrets
@@ -167,6 +169,7 @@ func serve(args []string) error {
 	author := store.Author{Name: env("BEETHOVEN_GIT_NAME", gitConfig("user.name")), Email: env("BEETHOVEN_GIT_EMAIL", gitConfig("user.email"))}
 	gh := github.New(os.Getenv("GITHUB_TOKEN"))
 	gh.DB = db
+	gh.RepoWebhookSecret = os.Getenv("BEETHOVEN_GITHUB_WEBHOOK_SECRET")
 	if v := os.Getenv("BEETHOVEN_GITHUB_APP"); v != "" {
 		if gh.EnvApp, err = github.LoadApp(v); err != nil {
 			return fmt.Errorf("BEETHOVEN_GITHUB_APP: %w", err)
