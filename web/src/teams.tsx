@@ -355,7 +355,7 @@ function TeamAutomations({ t }: { t: Team }) {
   return (
     <>
       <div class="page-head small">
-        <p class="muted">Automations run a saved prompt on a schedule or a webhook, as the person who made them.</p>
+        <p class="muted">Automations run a saved prompt on a schedule, a repository event or a webhook, as the person who made them.</p>
         {t.role && <a class="btn" href={`#/automations/new?team=${t.id}`}>New automation</a>}
       </div>
       {own?.length === 0 && <p class="empty small">No automations yet.</p>}
@@ -363,7 +363,7 @@ function TeamAutomations({ t }: { t: Team }) {
         {own?.map(a => (
           <a key={a.id} class="row link" href={`#/automations/${a.id}`}>
             <span class="row-main"><span class="row-title">{a.name}</span>
-              <span class="row-meta"><span class="mono">{a.schedule || 'webhook / manual'}</span>{!a.enabled && <span>paused</span>}</span></span>
+              <span class="row-meta"><span class="mono">{a.schedule || (a.trigger_event ? 'on ' + a.trigger_event : 'webhook / manual')}</span>{!a.enabled && <span>paused</span>}</span></span>
             <span class="dim">›</span>
           </a>
         ))}
