@@ -9,8 +9,12 @@
 #                 written to disk or shown to scripts
 #   ENV_SETUP     environment setup script: once per sandbox, and again when it changes (ENV_SETUP_ID)
 #   ENV_START     environment start script: on every start
-#   CAPABILITIES  capabilities to install, besides those the repositories name;
-#                 the catalog arrives on stdin (capabilities.sh, prepended)
+#   CAPABILITIES  capabilities to install, besides those the repositories name or
+#                 look like they need; the catalog arrives on stdin (capabilities.sh,
+#                 prepended)
+#   BOOT_STAGE    "install": stop once the capabilities are installed, before any
+#                 of the repositories' code runs; "rest": carry on from there.
+#                 Unset: both.
 set -eu
 phase() { echo "::phase $*"; }
 git_auth() {
@@ -25,6 +29,7 @@ cap_unpack
 
 mkdir -p /workspace
 cd /workspace
+if [ "${BOOT_STAGE:-}" != rest ]; then
 if [ -z "${REPOS:-}" ] && [ ! -d .git ]; then
   git init -q -b "$WORK_BRANCH" # a scratch workspace
 fi
@@ -47,9 +52,14 @@ printf '%s\n' "${REPOS:-}" | while read -r dir url base; do
 done
 unset GH_TOKEN GH_TOKENS
 
-# Capabilities: toolchains the server enabled or the repositories name, before
-# the hooks and scripts that may need them.
+# Capabilities: toolchains the server enabled or the repositories name or
+# look like they need, before the hooks and scripts that may need them.
 cap_setup
+fi
+unset GH_TOKEN GH_TOKENS
+if [ "${BOOT_STAGE:-}" = install ]; then exit 0; fi
+# The repositories' dependencies, then their hooks: their own code.
+cap_prepare
 
 # Repository hooks: .beethoven/setup.sh provisions once per sandbox and may
 # fail with a warning; .beethoven/start.sh runs on every start and must pass.

@@ -7,7 +7,9 @@ const arch = `arch=$(dpkg --print-architecture 2>/dev/null || uname -m | sed 's/
 // Catalog is every capability a sandbox can be given. Install scripts run
 // as the agent, without root, so toolchains go in its home: binaries are
 // linked into ~/.local/bin, which is on the PATH. They must be safe to run
-// again. Node 24 with npm and Python 3 are part of the sandbox image.
+// again, and link what they install every time: a later sandbox gets the
+// Paths unpacked and runs Install only for its links and checks. Node 24
+// with npm and Python 3 are part of the sandbox image.
 var Catalog = []Capability{
 	{
 		ID:   "expo",
@@ -21,6 +23,7 @@ fi`,
 		Prepare: `# The app's packages, once it has any.
 if [ -f package-lock.json ]; then npm ci --no-fund --no-audit; elif [ -f package.json ]; then npm install --no-fund --no-audit; fi`,
 		Detect:  `grep -qsE '"(expo|react-native)"[[:space:]]*:' package.json || grep -qsE '"expo"[[:space:]]*:' app.json`,
+		Paths:   []string{".local/lib/node_modules/eas-cli", ".local/bin/eas"},
 		Secrets: []Secret{{Name: "EXPO_TOKEN", Why: "an Expo access token, for EAS builds, updates and submissions"}},
 		CPUs:    2, MemoryMB: 4096,
 		Skill: `# Expo and React Native in this sandbox
@@ -95,6 +98,7 @@ export JAVA_HOME="$jdk" ANDROID_HOME="$sdk"
 yes 2>/dev/null | "$sdk/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
 "$sdk/cmdline-tools/latest/bin/sdkmanager" platform-tools >/dev/null
 ln -sf "$sdk/cmdline-tools/latest/bin/sdkmanager" "$sdk/platform-tools/adb" "$HOME/.local/bin/"`,
+		Paths:  []string{".local/jdk-17", "android-sdk"},
 		Detect: `[ -f android/build.gradle ] || [ -f android/build.gradle.kts ] || [ -f android/settings.gradle ] || [ -f android/settings.gradle.kts ]`,
 		CPUs:   4, MemoryMB: 8192,
 		Skill: `# Android builds in this sandbox
@@ -119,13 +123,15 @@ licenses are accepted. There is no emulator or device, so build and test, but do
 		Name:        "Go",
 		Description: "The latest Go toolchain, and the project's modules",
 		Install: `# The latest Go, in the agent's home.
-if ! command -v go >/dev/null; then
+if [ ! -x "$HOME/.local/go/bin/go" ]; then
   ` + arch + `
   v=$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1)
-  mkdir -p "$HOME/.local/bin"
+  mkdir -p "$HOME/.local"
   curl -fsSL "https://go.dev/dl/$v.linux-$arch.tar.gz" | tar -xz -C "$HOME/.local"
-  ln -sf "$HOME/.local/go/bin/go" "$HOME/.local/go/bin/gofmt" "$HOME/.local/bin/"
-fi`,
+fi
+mkdir -p "$HOME/.local/bin"
+ln -sf "$HOME/.local/go/bin/go" "$HOME/.local/go/bin/gofmt" "$HOME/.local/bin/"`,
+		Paths:   []string{".local/go"},
 		Prepare: `if [ -f go.mod ]; then go mod download; fi`,
 		Detect:  `[ -f go.mod ]`,
 		Skill: `# Go in this sandbox
@@ -138,12 +144,13 @@ Before you finish, run ` + "`gofmt -l .`" + `, ` + "`go vet ./...`" + ` and ` + 
 		Name:        "Bun",
 		Description: "The Bun runtime and package manager, and the project's packages",
 		Install: `# Bun, in the agent's home.
-if ! command -v bun >/dev/null; then
+if [ ! -x "$HOME/.bun/bin/bun" ]; then
   curl -fsSL https://bun.sh/install | bash >/dev/null
-  mkdir -p "$HOME/.local/bin"
-  ln -sf "$HOME/.bun/bin/bun" "$HOME/.local/bin/bun"
-  ln -sf "$HOME/.bun/bin/bun" "$HOME/.local/bin/bunx"
-fi`,
+fi
+mkdir -p "$HOME/.local/bin"
+ln -sf "$HOME/.bun/bin/bun" "$HOME/.local/bin/bun"
+ln -sf "$HOME/.bun/bin/bun" "$HOME/.local/bin/bunx"`,
+		Paths:   []string{".bun"},
 		Prepare: `if [ -f package.json ]; then bun install; fi`,
 		Detect:  `[ -f bun.lock ] || [ -f bun.lockb ] || [ -f bunfig.toml ]`,
 		Skill: `# Bun in this sandbox
@@ -156,11 +163,12 @@ Bun is installed, with bun and bunx on the PATH. Install packages with ` + "`bun
 		Name:        "Rust",
 		Description: "Stable Rust with Cargo, Clippy and rustfmt, and the project's crates",
 		Install: `# Stable Rust, in the agent's home.
-if ! command -v cargo >/dev/null; then
+if [ ! -x "$HOME/.cargo/bin/cargo" ]; then
   curl -fsSL https://sh.rustup.rs | sh -s -- -y -q --profile minimal -c clippy,rustfmt --no-modify-path
-  mkdir -p "$HOME/.local/bin"
-  ln -sf "$HOME"/.cargo/bin/* "$HOME/.local/bin/"
-fi`,
+fi
+mkdir -p "$HOME/.local/bin"
+ln -sf "$HOME"/.cargo/bin/* "$HOME/.local/bin/"`,
+		Paths:   []string{".cargo", ".rustup"},
 		Prepare: `if [ -f Cargo.toml ]; then cargo fetch; fi`,
 		Detect:  `[ -f Cargo.toml ]`,
 		CPUs:    2, MemoryMB: 4096,
@@ -178,6 +186,7 @@ Tools installed with ` + "`cargo install`" + ` land in ~/.cargo/bin, which is no
 if ! command -v uv >/dev/null; then
   curl -fsSL https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh >/dev/null
 fi`,
+		Paths:   []string{".local/bin/uv", ".local/bin/uvx"},
 		Prepare: `if [ -f pyproject.toml ]; then uv sync; elif [ -f requirements.txt ]; then python3 -m pip install -q -r requirements.txt; fi`,
 		Detect:  `[ -f uv.lock ] || [ -f pyproject.toml ]`,
 		Skill: `# Python with uv in this sandbox

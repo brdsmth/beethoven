@@ -89,6 +89,7 @@ type Config struct {
 	MaxDepth    int               // child session nesting limit
 	Committer   store.Author      // git committer; prompt authors are the commit authors
 	Env         map[string]string // base sandbox environment; secrets override it
+	CacheDir    string            // where installed capabilities are kept for later sandboxes; empty: nowhere
 }
 
 type Manager struct {

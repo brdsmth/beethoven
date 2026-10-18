@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/brdsmth/beethoven/internal/agent"
+	"github.com/brdsmth/beethoven/internal/capability"
 	"github.com/brdsmth/beethoven/internal/fake"
 	"github.com/brdsmth/beethoven/internal/sandbox"
 	"github.com/brdsmth/beethoven/internal/session"
@@ -129,7 +130,8 @@ func TestDockerEnvironment(t *testing.T) {
 		t.Errorf("setup script saw %q", got)
 	}
 	sh("test -f /tmp/started")
-	// Capabilities: the catalog arrived, the unknown one was reported and Go was suggested.
+	// Capabilities: the catalog arrived, the unknown one was reported, and Go
+	// was detected (its install fails offline) and remembered for the repository.
 	sh(`test -f "$HOME/.beethoven/catalog/expo/SKILL.md"`)
 	evs, _ := env.DB.Events(ctx, s.ID, 0, 1000)
 	if !slices.ContainsFunc(evs, func(e store.Event) bool {
@@ -137,10 +139,8 @@ func TestDockerEnvironment(t *testing.T) {
 	}) {
 		t.Error("the unknown capability wasn't reported")
 	}
-	if !slices.ContainsFunc(evs, func(e store.Event) bool {
-		return e.Type == session.EvCapabilities && strings.Contains(string(e.Data), `"suggested":["go"]`)
-	}) {
-		t.Errorf("go wasn't suggested: %v", evs)
+	if known, err := env.DB.RepoCapabilities(ctx, []string{"acme/api"}); err != nil || !slices.Equal(known, []string{"go"}) {
+		t.Errorf("acme/api needs %v, %v; want go", known, err)
 	}
 	if got := strings.TrimSpace(run(t, "", "docker", "inspect", "-f", "{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}}", name)); got != "1500000000 536870912" {
 		t.Errorf("resources = %s", got)
@@ -158,9 +158,55 @@ func TestDockerEnvironment(t *testing.T) {
 	}
 }
 
+// TestDockerCapabilityCache: a repository that looks like it needs a
+// capability gets it installed; the install is kept, and the next new
+// sandbox unpacks it instead of installing again.
+func TestDockerCapabilityCache(t *testing.T) {
+	saved := capability.Catalog
+	t.Cleanup(func() { capability.Catalog = saved })
+	capability.Catalog = []capability.Capability{{ID: "kit", Name: "Kit", Description: "A test toolchain",
+		Install: `[ -f "$HOME/kit/v" ] || { mkdir -p "$HOME/kit" && date +%s%N > "$HOME/kit/v" && echo installed >> "$HOME/kit-log"; }`,
+		Prepare: `touch prepared`, Paths: []string{"kit"}, Detect: `[ -f kit.txt ]`, Skill: "Use kit."}}
+	cache := t.TempDir()
+	env, remote := dockerEnv(t, func(c *session.Config) { c.CacheDir = cache })
+	bare := bareRepo(t, remote, "acme/kit")
+	seed := t.TempDir()
+	run(t, "", "git", "clone", "-q", bare, seed)
+	os.WriteFile(filepath.Join(seed, "kit.txt"), nil, 0o644)
+	run(t, seed, "git", "add", ".")
+	run(t, seed, "git", "-c", "user.name=seed", "-c", "user.email=seed@example.com", "commit", "-q", "-m", "kit")
+	run(t, seed, "git", "push", "-q", "origin", "main")
+
+	boot := func() (string, string) {
+		s, p := submit(t, env, "look around", func(r *session.Request) { r.Repos = []store.RepoRef{{Repo: "acme/kit"}} })
+		cleanupContainer(t, s.ID)
+		slowWait(t, env, p.ID, store.Done)
+		sh := func(script string) string {
+			return strings.TrimSpace(run(t, "", "docker", "exec", "beethoven-"+s.ID, "sh", "-c", script))
+		}
+		sh("test -f /workspace/kit/prepared")
+		sh(`test -f "$HOME/.claude/skills/kit/SKILL.md"`)
+		return sh(`cat "$HOME/kit/v"`), sh(`cat "$HOME/kit-log" 2>/dev/null || true`)
+	}
+	v1, log1 := boot()
+	if log1 != "installed" {
+		t.Fatalf("first sandbox: install log %q", log1)
+	}
+	if kept, _ := filepath.Glob(filepath.Join(cache, "kit-*.tar.gz")); len(kept) != 1 {
+		t.Fatalf("kept %v", kept)
+	}
+	if known, _ := env.DB.RepoCapabilities(ctx, []string{"acme/kit"}); !slices.Equal(known, []string{"kit"}) {
+		t.Errorf("acme/kit needs %v", known)
+	}
+	v2, log2 := boot()
+	if v2 != v1 || log2 != "" {
+		t.Errorf("second sandbox installed again (v %q vs %q, log %q)", v2, v1, log2)
+	}
+}
+
 // dockerEnv is a manager over real containers using the fake agent image,
 // with remote repositories served from a local directory mounted at /remote.
-func dockerEnv(t *testing.T) (*fake.Env, string) {
+func dockerEnv(t *testing.T, opts ...func(*session.Config)) (*fake.Env, string) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("uses Docker")
@@ -175,9 +221,12 @@ func dockerEnv(t *testing.T) (*fake.Env, string) {
 		t.Fatal(err)
 	}
 	scm := &fake.SCM{}
-	m := session.New(session.Config{Image: "beethoven-fake:test", IdleTimeout: 3 * time.Second, TurnTimeout: time.Minute,
-		ToolsURL: "http://host.docker.internal:1/mcp", TokenKey: []byte("k")},
-		db, &sandbox.Docker{Args: []string{"-v", remote + ":/remote"}}, agent.Claude{}, scm,
+	cfg := session.Config{Image: "beethoven-fake:test", IdleTimeout: 3 * time.Second, TurnTimeout: time.Minute,
+		ToolsURL: "http://host.docker.internal:1/mcp", TokenKey: []byte("k")}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	m := session.New(cfg, db, &sandbox.Docker{Args: []string{"-v", remote + ":/remote"}}, agent.Claude{}, scm,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(func() {
 		m.Shutdown(10 * time.Second)

@@ -321,7 +321,8 @@ func (r *runner) ensure(ctx context.Context) (string, error) {
 		return "", err
 	}
 	// Image and resources apply when the sandbox is created; an existing
-	// sandbox keeps what it was created with. Capabilities may need more.
+	// sandbox keeps what it was created with. Capabilities may need more,
+	// including those the repositories needed last time.
 	caps, err := r.m.enabledCapabilities(ctx, s, eff)
 	if err != nil {
 		return "", err
@@ -329,6 +330,10 @@ func (r *runner) ensure(ctx context.Context) (string, error) {
 	if state, _, err := r.m.loggedCapabilities(ctx, s.ID); err == nil {
 		caps = capability.Union(caps, state.Enabled)
 	}
+	if known, err := r.m.db.RepoCapabilities(ctx, store.RepoNames(s.Repos)); err == nil {
+		caps = capability.Union(caps, known)
+	}
+	fresh := s.SandboxID == "" // never started: nothing has run in it
 	cpus, mem := capability.Resources(caps, eff.CPUs, eff.MemoryMB)
 	id, started, err := r.m.box.Start(ctx, sandbox.Spec{Name: "beethoven-" + s.ID, Image: eff.Image,
 		CPUs: cpus, MemoryMB: mem, Env: map[string]string{"BEETHOVEN_SESSION": s.ID}})
@@ -343,7 +348,7 @@ func (r *runner) ensure(ctx context.Context) (string, error) {
 		r.setSandbox("starting", "", "the sandbox had stopped")
 	}
 	r.update(func(s *store.Session) { s.SandboxID = id })
-	if err := r.boot(ctx, id, s, eff); err != nil {
+	if err := r.boot(ctx, id, s, eff, fresh); err != nil {
 		r.setSandbox("failed", "", err.Error())
 		return "", err
 	}
@@ -351,7 +356,10 @@ func (r *runner) ensure(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-func (r *runner) boot(ctx context.Context, id string, s store.Session, eff Effective) error {
+// boot prepares the workspace. A fresh sandbox gets kept capability
+// installs unpacked first, and boots in two stages so that the installs it
+// makes itself are packed and kept before any repository code runs.
+func (r *runner) boot(ctx context.Context, id string, s store.Session, eff Effective, fresh bool) error {
 	env, err := r.m.baseEnv(ctx, s, eff)
 	if err != nil {
 		return err
@@ -377,15 +385,42 @@ func (r *runner) boot(ctx context.Context, id string, s store.Session, eff Effec
 		return err
 	}
 	env["CAPABILITIES"] = strings.Join(caps, " ")
-	out := &bootOutput{r: r, phase: "start"}
-	code, err := r.m.box.Exec(ctx, id, sandbox.Cmd{Args: []string{"sh", "-c", capabilityScript + "\n" + bootScript}, Env: env,
-		Stdin: bytes.NewReader(capability.Archive()), Stdout: out, Stderr: out})
-	out.Flush()
-	if err != nil {
+	out := &bootOutput{r: r, phase: "boot"}
+	run := func(stage string) error {
+		e := maps.Clone(env)
+		if stage != "" {
+			e["BOOT_STAGE"] = stage
+		}
+		code, err := r.m.box.Exec(ctx, id, sandbox.Cmd{Args: []string{"sh", "-c", capabilityScript + "\n" + bootScript}, Env: e,
+			Stdin: bytes.NewReader(capability.Archive()), Stdout: out, Stderr: out})
+		out.Flush()
+		if err != nil {
+			return err
+		}
+		if code != 0 {
+			return fmt.Errorf("boot failed during %s (exit %d): %s", out.phase, code, clip(out.tail.String(), 2000))
+		}
+		return nil
+	}
+	if fresh && r.m.cfg.CacheDir != "" {
+		known, _ := r.m.db.RepoCapabilities(ctx, store.RepoNames(s.Repos))
+		env["CAP_EXPORT"], env["CAP_CACHED"] = "1", strings.Join(r.unpackCached(ctx, id, capability.Union(caps, known), eff.Image), " ")
+		if err := run("install"); err != nil {
+			return err
+		}
+		r.keepExports(ctx, id, out.caps.exports, eff.Image)
+		delete(env, "CAP_EXPORT")
+		out.phase = "prepare" // from here on, nothing it prints about capabilities counts
+		if err := run("rest"); err != nil {
+			return err
+		}
+	} else if err := run(""); err != nil {
 		return err
 	}
-	if code != 0 {
-		return fmt.Errorf("boot failed during %s (exit %d): %s", out.phase, code, clip(out.tail.String(), 2000))
+	for _, ref := range s.Repos {
+		if err := r.m.db.SetRepoCapabilities(ctx, ref.Repo, out.caps.repos[ref.Dir()]); err != nil {
+			r.m.log.Warn("recording a repository's capabilities failed", "repo", ref.Repo, "err", err)
+		}
 	}
 	rep := out.caps.report()
 	if prev, _, err := r.m.loggedCapabilities(ctx, s.ID); err != nil || !prev.same(rep) {
@@ -752,7 +787,7 @@ type bootOutput struct {
 // scripts, the only part whose capability lines count: a repository's
 // scripts could print anything.
 func (o *bootOutput) capabilityPhase() bool {
-	for _, p := range []string{"start", "clone", "fetch", "capability"} {
+	for _, p := range []string{"boot", "clone", "fetch", "capability"} {
 		if o.phase == p || strings.HasPrefix(o.phase, p+" ") {
 			return true
 		}
