@@ -1,7 +1,7 @@
 import { render } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import {
-  api, get, onAuthRequired, onGlobal, setMe, withFiles, type Account, type AuthState, type Environment, type Info, type Session,
+  api, get, onAuthRequired, setMe, withFiles, type Account, type AuthState, type Environment, type Info, type Session,
   type Visibility,
 } from './api';
 import { AttachButton, PendingFiles, useFiles } from './attach';
@@ -9,15 +9,15 @@ import { AutomationEdit, Automations } from './automations';
 import { GitHubReturn, GitHubSetup, githubStep } from './github';
 import { Insights } from './insights';
 import { InviteAccept } from './people';
-import { TeamMark, TeamSwitcher, scopeTeam, useMe, useScope, useTeams } from './teams';
+import { TeamMark, scopeTeam, useMe, useScope, useTeams } from './teams';
 import { NewProject } from './project';
 import { SlackReturn, slackStep } from './slack';
 import { TARGET_PREF, TargetPicker, fromTarget, targetProblem, toTarget, type Pick } from './pickers';
 import { SessionView } from './session';
 import { Settings } from './settings';
+import { Sidebar } from './sidebar';
 import {
-  Dot, EffortSelect, ModelField, Seg, Toasts, ago, fail, go, modEnter, readPref, setEfforts, useRoute, useTick,
-  writePref,
+  EffortSelect, ModelField, Toasts, fail, go, modEnter, readPref, setEfforts, useRoute, writePref,
 } from './util';
 
 // Root asks who is signed in before showing anything; a 401 later (signed
@@ -121,95 +121,6 @@ function App({ account }: { account: Account | null }) {
       <main class="main">{view}</main>
       <Toasts />
     </div>
-  );
-}
-
-/** The sidebar's sessions, grouped by what they work on: a project, a
- * repository, or a scratch workspace; the busiest group first. */
-function groups(list: Session[], envs?: Environment[]) {
-  const out = new Map<string, { label: string; sessions: Session[] }>();
-  for (const s of list) {
-    const key = s.environment_id ? 'env:' + s.environment_id : s.repos[0]?.repo || 'scratch';
-    const label = s.environment_id ? envs?.find(e => e.id === s.environment_id)?.name || "Another team's project"
-      : s.repos[0]?.repo || 'Scratch';
-    if (!out.has(key)) out.set(key, { label, sessions: [] });
-    out.get(key)!.sessions.push(s);
-  }
-  return [...out.entries()];
-}
-
-function Sidebar({ current, account }: { current: string; account: Account | null }) {
-  const [archived, setArchived] = useState(false);
-  const [list, setList] = useState<Session[]>();
-  const [envs, setEnvs] = useState<Environment[]>();
-  const [scope] = useScope();
-  const teams = useTeams();
-  useTick();
-  useEffect(() => { get<Environment[]>('/api/environments').then(setEnvs, () => {}); }, [current]);
-  const filter = scope === 'all' ? '' : '&team=' + scope;
-  useEffect(() => {
-    const team = scopeTeam(scope);
-    const fits = (s: Session) => scope === 'all' || (scope === 'workspace' ? !s.team_id : s.team_id === team);
-    const load = () => get<Session[]>(`/api/sessions?limit=200${archived ? '&archived=1' : ''}${filter}`).then(setList, fail);
-    load();
-    return onGlobal(e => {
-      if (e.type === 'session_hidden') setList(l => (l || []).filter(x => x.id !== e.data.id));
-      if (e.type === 'session') {
-        const s: Session = e.data;
-        setList(l => {
-          const rest = (l || []).filter(x => x.id !== s.id);
-          return s.archived === archived && fits(s) ? [s, ...rest] : rest;
-        });
-      }
-    }, load); // a reconnect may have missed changes
-  }, [archived, filter]);
-  const teamOf = (id?: string) => teams?.find(t => t.id === id);
-
-  return (
-    <nav class="sidebar">
-      <div class="side-top">
-        <a class="brand" href="#/">Beethoven</a>
-        {!!teams?.length && <TeamSwitcher />}
-        <a class="btn primary block" href="#/">New session</a>
-        <Seg value={archived ? 'archived' : 'active'} set={v => setArchived(v === 'archived')}
-          options={[['active', 'Active'], ['archived', 'Archived']]} />
-      </div>
-      <div class="side-list">
-        {list?.length === 0 && <p class="empty small">{archived ? 'No archived sessions.' : 'No sessions yet.'}</p>}
-        {list && groups(list, envs).map(([key, g]) => (
-          <div key={key} class="side-group">
-            <div class="side-group-label ellipsis" title={g.label}>{g.label}</div>
-            {g.sessions.map(s => (
-              <a key={s.id} href={`#/s/${s.id}`} class={'item' + (s.id === current ? ' active' : '')}>
-                <Dot status={s.status} />
-                <span class="item-main">
-                  <span class="item-title">{s.parent_id && <span class="dim">↳ </span>}{s.title || 'Untitled'}</span>
-                  <span class="item-meta">
-                    {scope === 'all' && s.team_id && <TeamMark team={teamOf(s.team_id)} size={11} />}
-                    {s.visibility === 'private' && <span title="Only you">🔒</span>}
-                    {s.author.name && <span class="ellipsis">{s.author.name}</span>}
-                    <span>{ago(s.updated_at)}</span>
-                  </span>
-                </span>
-              </a>
-            ))}
-          </div>
-        ))}
-      </div>
-      {account && (
-        <div class="side-account">
-          <span class="ellipsis" title={account.email}>{account.name || account.email}</span>
-          <button class="btn sm" onClick={() => api('POST', '/api/auth/logout').then(() => location.reload(), fail)}>
-            Sign out
-          </button>
-        </div>
-      )}
-      <div class="side-foot">
-        <a href="#/automations" class={current === 'automations' ? 'active' : ''}>Automations</a>
-        <a href="#/insights" class={current === 'insights' ? 'active' : ''}>Insights</a>
-        <a href="#/settings" class={current === 'settings' ? 'active' : ''}>Settings</a>
-      </div>
-    </nav>
   );
 }
 
