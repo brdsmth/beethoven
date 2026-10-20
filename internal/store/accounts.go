@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -193,17 +194,25 @@ func (s *Store) DeleteLogin(ctx context.Context, id string) error {
 
 // ----------------------------------------------------------------- invites
 
-// Invite is a link that creates an account. Its token is shown once, when
-// it is made; only the token's hash is stored.
+// Invite is a link that creates an account, or adds someone who already
+// has one to its team. Its token is shown once, when it is made; only the
+// token's hash is stored.
 type Invite struct {
-	ID        string    `json:"id"`
-	Role      string    `json:"role"`
-	Email     string    `json:"email,omitempty"`
-	TeamID    string    `json:"team_id,omitempty"`
-	CreatedBy string    `json:"created_by"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ID            string     `json:"id"`
+	Role          string     `json:"role"`
+	Email         string     `json:"email,omitempty"`
+	TeamID        string     `json:"team_id,omitempty"`
+	Note          string     `json:"note,omitempty"`           // from whoever sent it, shown on the invitation
+	FirstPrompt   string     `json:"first_prompt,omitempty"`   // a first session to suggest
+	EnvironmentID string     `json:"environment_id,omitempty"` // the project it runs in
+	CreatedBy     string     `json:"created_by"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ExpiresAt     time.Time  `json:"expires_at"`
+	UsedAt        *time.Time `json:"used_at,omitempty"`
 }
+
+// Open reports whether the invitation can still be used.
+func (in Invite) Open() bool { return in.UsedAt == nil && time.Now().Before(in.ExpiresAt) }
 
 const InviteFor = 7 * 24 * time.Hour
 
@@ -229,21 +238,24 @@ func (s *Store) CreateInvite(ctx context.Context, in *Invite) (string, error) {
 	token, hash := secretToken("")
 	in.ID, in.CreatedAt = hash[:16], time.Now()
 	in.ExpiresAt = in.CreatedAt.Add(InviteFor)
-	_, err := s.w.ExecContext(ctx, `INSERT INTO invites (id, role, email, team_id, created_by, created_at, expires_at)
-		VALUES (?,?,?,?,?,?,?)`, hash, in.Role, in.Email, in.TeamID, in.CreatedBy, ms(in.CreatedAt), ms(in.ExpiresAt))
+	_, err := s.w.ExecContext(ctx, `INSERT INTO invites (id, role, email, team_id, note, first_prompt, environment_id,
+		created_by, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)`, hash, in.Role, in.Email, in.TeamID, in.Note,
+		in.FirstPrompt, in.EnvironmentID, in.CreatedBy, ms(in.CreatedAt), ms(in.ExpiresAt))
 	return token, err
 }
 
-const inviteCols = `id, role, email, team_id, created_by, created_at, expires_at`
+const inviteCols = `id, role, email, team_id, note, first_prompt, environment_id, created_by, created_at, expires_at, used_at`
 
 func scanInvite(row scanner) (Invite, error) {
 	var in Invite
 	var created, expires int64
-	err := row.Scan(&in.ID, &in.Role, &in.Email, &in.TeamID, &in.CreatedBy, &created, &expires)
+	var used sql.NullInt64
+	err := row.Scan(&in.ID, &in.Role, &in.Email, &in.TeamID, &in.Note, &in.FirstPrompt, &in.EnvironmentID, &in.CreatedBy,
+		&created, &expires, &used)
 	if errors.Is(err, sql.ErrNoRows) {
 		return in, ErrNotFound
 	}
-	in.CreatedAt, in.ExpiresAt = fromMS(created), fromMS(expires)
+	in.CreatedAt, in.ExpiresAt, in.UsedAt = fromMS(created), fromMS(expires), optMS(used)
 	in.ID = in.ID[:min(16, len(in.ID))] // a prefix of the hash names it; the full hash never leaves the store
 	return in, err
 }
@@ -252,6 +264,12 @@ func scanInvite(row scanner) (Invite, error) {
 func (s *Store) Invite(ctx context.Context, token string) (Invite, error) {
 	return scanInvite(s.r.QueryRowContext(ctx, `SELECT `+inviteCols+` FROM invites
 		WHERE id=? AND used_at IS NULL AND expires_at > ?`, TokenHash(token), ms(time.Now())))
+}
+
+// AnyInvite returns the invitation a token belongs to, open or not, so its
+// page can say what became of it.
+func (s *Store) AnyInvite(ctx context.Context, token string) (Invite, error) {
+	return scanInvite(s.r.QueryRowContext(ctx, `SELECT `+inviteCols+` FROM invites WHERE id=?`, TokenHash(token)))
 }
 
 // Invites lists open invitations, newest first.
@@ -266,6 +284,53 @@ func (s *Store) DeleteInvite(ctx context.Context, id string) error {
 	return err
 }
 
+// openInvite is the open invitation a token belongs to, within tx, checked
+// against the email of whoever uses it.
+func openInvite(ctx context.Context, tx *sql.Tx, token, email string) (Invite, error) {
+	in, err := scanInvite(tx.QueryRowContext(ctx, `SELECT `+inviteCols+` FROM invites
+		WHERE id=? AND used_at IS NULL AND expires_at > ?`, TokenHash(token), ms(time.Now())))
+	if err != nil {
+		return in, err
+	}
+	if in.Email != "" && in.Email != email {
+		return in, fmt.Errorf("%w: this invitation is for %s", ErrInvalid, in.Email)
+	}
+	return in, nil
+}
+
+// useInvite marks an invitation used by an account, adds the account to
+// its team, if it names one that still exists, and starts the account's
+// getting started with what the invitation suggests. It reports whether the
+// account joined the team.
+func useInvite(ctx context.Context, tx *sql.Tx, in Invite, token, accountID string, tour bool) (bool, error) {
+	now := ms(time.Now())
+	if _, err := tx.ExecContext(ctx, `UPDATE invites SET used_by=?, used_at=? WHERE id=?`, accountID, now, TokenHash(token)); err != nil {
+		return false, err
+	}
+	joined := false
+	if in.TeamID != "" {
+		res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO team_members (team_id, account_id, role, created_at)
+			SELECT id, ?, 'member', ? FROM teams WHERE id=? AND archived_at IS NULL`, accountID, now, in.TeamID)
+		if err != nil {
+			return false, err
+		}
+		n, _ := res.RowsAffected()
+		joined = n > 0
+	}
+	o := Onboarding{InvitedBy: in.CreatedBy, Prompt: in.FirstPrompt, EnvironmentID: in.EnvironmentID, Tour: tour}
+	if joined {
+		o.TeamID = in.TeamID
+		// Their work goes to the team they were invited to, unless they already chose.
+		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET default_team_id=? WHERE id=? AND default_team_id=''`,
+			in.TeamID, accountID); err != nil {
+			return false, err
+		}
+	}
+	b, _ := json.Marshal(o)
+	_, err := tx.ExecContext(ctx, `UPDATE accounts SET onboarding=? WHERE id=?`, string(b), accountID)
+	return joined, err
+}
+
 // AcceptInvite creates an account from an open invitation, once: the
 // account gets the invitation's role and joins its team, if it names one
 // that still exists.
@@ -275,30 +340,91 @@ func (s *Store) AcceptInvite(ctx context.Context, token string, a Account, passw
 		return a, err
 	}
 	defer tx.Rollback()
-	in, err := scanInvite(tx.QueryRowContext(ctx, `SELECT `+inviteCols+` FROM invites
-		WHERE id=? AND used_at IS NULL AND expires_at > ?`, TokenHash(token), ms(time.Now())))
+	in, err := openInvite(ctx, tx, token, a.Email)
 	if err != nil {
 		return a, err
-	}
-	if in.Email != "" && in.Email != a.Email {
-		return a, fmt.Errorf("%w: this invitation is for %s", ErrInvalid, in.Email)
 	}
 	a.ID, a.Role, a.Owner, a.CreatedAt = NewID(), in.Role, in.Role == RoleOwner, time.Now()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO accounts (id, email, name, password_hash, owner, role, created_at)
 		VALUES (?,?,?,?,?,?,?)`, a.ID, a.Email, a.Name, passwordHash, a.Owner, a.Role, ms(a.CreatedAt)); err != nil {
 		return a, conflict(err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE invites SET used_by=?, used_at=? WHERE id=?`,
-		a.ID, ms(a.CreatedAt), TokenHash(token)); err != nil {
+	if _, err := useInvite(ctx, tx, in, token, a.ID, true); err != nil {
 		return a, err
 	}
-	if in.TeamID != "" {
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO team_members (team_id, account_id, role, created_at)
-			SELECT id, ?, 'member', ? FROM teams WHERE id=? AND archived_at IS NULL`, a.ID, ms(a.CreatedAt), in.TeamID); err != nil {
-			return a, err
-		}
-	}
 	return a, tx.Commit()
+}
+
+// JoinInvite uses an open invitation for someone who already has an
+// account: it adds them to the invitation's team, and leaves their role as
+// it is. It returns the team; an invitation without one, or whose team is
+// archived or already has them, fails with ErrInvalid.
+func (s *Store) JoinInvite(ctx context.Context, token string, a Account) (string, error) {
+	tx, err := s.w.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	in, err := openInvite(ctx, tx, token, a.Email)
+	if err != nil {
+		return "", err
+	}
+	if in.TeamID == "" {
+		return "", fmt.Errorf("%w: you already have an account, and this invitation doesn't add you to a team", ErrInvalid)
+	}
+	joined, err := useInvite(ctx, tx, in, token, a.ID, false)
+	if err != nil {
+		return "", err
+	}
+	if !joined {
+		return "", fmt.Errorf("%w: you're already in that team, or it was archived", ErrInvalid)
+	}
+	return in.TeamID, tx.Commit()
+}
+
+// ---------------------------------------------------------- getting started
+
+// Onboarding is where someone stands in getting started: who invited them,
+// to which team, and what they suggested for a first session.
+type Onboarding struct {
+	TeamID        string `json:"team_id,omitempty"`
+	InvitedBy     string `json:"invited_by,omitempty"` // an account
+	Prompt        string `json:"prompt,omitempty"`     // a first session the invitation suggests
+	EnvironmentID string `json:"environment_id,omitempty"`
+	Tour          bool   `json:"tour,omitempty"`    // the welcome tour is still to show
+	Started       bool   `json:"started,omitempty"` // they started a session
+}
+
+// Onboarding returns where an account stands in getting started, or nil
+// once it's done.
+func (s *Store) Onboarding(ctx context.Context, accountID string) (*Onboarding, error) {
+	var v string
+	if err := s.r.QueryRowContext(ctx, `SELECT onboarding FROM accounts WHERE id=?`, accountID).Scan(&v); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if v == "" {
+		return nil, nil
+	}
+	var o Onboarding
+	if err := json.Unmarshal([]byte(v), &o); err != nil {
+		return nil, nil // unreadable: treat it as done
+	}
+	return &o, nil
+}
+
+// SetOnboarding records where an account stands in getting started; nil
+// means it's done.
+func (s *Store) SetOnboarding(ctx context.Context, accountID string, o *Onboarding) error {
+	v := ""
+	if o != nil {
+		b, _ := json.Marshal(o)
+		v = string(b)
+	}
+	_, err := s.w.ExecContext(ctx, `UPDATE accounts SET onboarding=? WHERE id=?`, v, accountID)
+	return err
 }
 
 // -------------------------------------------------------------- API tokens

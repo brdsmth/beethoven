@@ -133,15 +133,19 @@ func (s *Server) listInvites(w http.ResponseWriter, r *http.Request) {
 // (its token) is in the reply only.
 func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Role   string `json:"role"`
-		Email  string `json:"email"`
-		TeamID string `json:"team_id"`
+		Role          string `json:"role"`
+		Email         string `json:"email"`
+		TeamID        string `json:"team_id"`
+		Note          string `json:"note"`
+		FirstPrompt   string `json:"first_prompt"`
+		EnvironmentID string `json:"environment_id"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
 	who := actor(r)
 	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
+	in.Note, in.FirstPrompt = strings.TrimSpace(in.Note), strings.TrimSpace(in.FirstPrompt)
 	switch {
 	case !who.Admin():
 		forbid(w, "invite people")
@@ -152,6 +156,12 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
 	case in.Email != "" && (!strings.Contains(in.Email, "@") || len(in.Email) > 254):
 		fail(w, http.StatusBadRequest, "enter an email address, or none")
 		return
+	case len(in.Note) > maxInviteNote:
+		fail(w, http.StatusBadRequest, fmt.Sprintf("use a note of at most %d characters", maxInviteNote))
+		return
+	case len(in.FirstPrompt) > maxFirstPrompt:
+		fail(w, http.StatusBadRequest, fmt.Sprintf("use a first session of at most %d characters", maxFirstPrompt))
+		return
 	}
 	if in.TeamID != "" {
 		if _, err := s.M.Store().Team(r.Context(), in.TeamID); err != nil {
@@ -159,7 +169,13 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if in.Email != "" {
+	if in.EnvironmentID != "" {
+		if e, err := s.M.Store().Environment(r.Context(), in.EnvironmentID); err != nil || e.TeamID != in.TeamID {
+			fail(w, http.StatusBadRequest, "choose one of the team's projects")
+			return
+		}
+	}
+	if in.Email != "" && in.TeamID == "" { // someone who's here already can still be invited to a team
 		if _, _, err := s.M.Store().AccountByEmail(r.Context(), in.Email); err == nil {
 			fail(w, http.StatusConflict, in.Email+" already has an account")
 			return
@@ -170,7 +186,8 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "create an account first: invitations come from someone")
 		return
 	}
-	inv := store.Invite{Role: in.Role, Email: in.Email, TeamID: in.TeamID, CreatedBy: creator}
+	inv := store.Invite{Role: in.Role, Email: in.Email, TeamID: in.TeamID, Note: in.Note, FirstPrompt: in.FirstPrompt,
+		EnvironmentID: in.EnvironmentID, CreatedBy: creator}
 	token, err := s.M.Store().CreateInvite(r.Context(), &inv)
 	if err != nil {
 		replyErr(w, err)
@@ -193,21 +210,85 @@ func (s *Server) deleteInvite(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// inviteInfo describes an open invitation to whoever holds its link.
+const (
+	maxInviteNote  = 280
+	maxFirstPrompt = 4000
+)
+
+// inviteTeam is what an invitation's page shows of the team it adds to.
+type inviteTeam struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Color       string   `json:"color"`
+	Members     int      `json:"members"`
+	Projects    []string `json:"projects"` // the names of its projects
+}
+
+// inviteInfo describes an invitation to whoever holds its link: in full
+// while it's open, otherwise what became of it ("used" or "expired") and
+// who sent it, so they know whom to ask for another.
 func (s *Server) inviteInfo(w http.ResponseWriter, r *http.Request) {
-	in, err := s.M.Store().Invite(r.Context(), r.URL.Query().Get("token"))
+	ctx := r.Context()
+	in, err := s.M.Store().AnyInvite(ctx, r.URL.Query().Get("token"))
 	if err != nil {
 		fail(w, http.StatusNotFound, "this invitation has expired, was used, or was withdrawn")
 		return
 	}
-	out := map[string]any{"role": in.Role, "email": in.Email, "expires_at": in.ExpiresAt}
-	if by, err := s.M.Store().Account(r.Context(), in.CreatedBy); err == nil {
+	out := map[string]any{"state": "open", "created_at": in.CreatedAt, "expires_at": in.ExpiresAt}
+	if by, err := s.M.Store().Account(ctx, in.CreatedBy); err == nil {
 		out["from"] = firstOf(by.Name, by.Email)
 	}
-	if t, err := s.M.Store().Team(r.Context(), in.TeamID); err == nil {
-		out["team"] = t.Name
+	if !in.Open() {
+		out["state"] = map[bool]string{true: "used", false: "expired"}[in.UsedAt != nil]
+		reply(w, http.StatusOK, out)
+		return
+	}
+	out["role"], out["email"], out["note"] = in.Role, in.Email, in.Note
+	if t, err := s.M.Store().Team(ctx, in.TeamID); err == nil && t.ArchivedAt == nil {
+		it := inviteTeam{Name: t.Name, Description: t.Description, Color: t.Color, Members: t.Members, Projects: []string{}}
+		envs, _ := s.M.Store().Environments(ctx)
+		for _, e := range envs {
+			if e.TeamID == t.ID {
+				it.Projects = append(it.Projects, e.Name)
+			}
+		}
+		out["team"] = it
+	}
+	app, _ := s.GitHub.App(ctx)
+	out["github"] = app != nil
+	if a, err := s.account(r); err == nil { // signed in already: the invitation can add them to its team
+		out["signed_in"] = map[string]string{"name": a.Name, "email": a.Email}
 	}
 	reply(w, http.StatusOK, out)
+}
+
+// joinInvite uses an invitation for whoever is signed in: it adds them to
+// its team.
+func (s *Server) joinInvite(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Token string `json:"token"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	a, err := s.account(r)
+	if err != nil {
+		fail(w, http.StatusUnauthorized, "sign in first")
+		return
+	}
+	team, err := s.M.Store().JoinInvite(r.Context(), in.Token, a)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		fail(w, http.StatusNotFound, "this invitation has expired, was used, or was withdrawn")
+		return
+	case err != nil:
+		replyErr(w, err)
+		return
+	}
+	s.Log.Info("joined a team through an invitation", "email", a.Email, "team", team)
+	e := store.AuditEvent{ActorID: a.ID, Actor: firstOf(a.Name, a.Email), TeamID: team, Action: "team.member_joined", Target: a.ID}
+	s.M.Store().Audit(r.Context(), e, map[string]string{"via": "invitation"})
+	s.authState(w, r)
 }
 
 // acceptInvite creates an account from an invitation, and signs in.
@@ -294,6 +375,45 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.M.Store().SetDefaultTeam(r.Context(), who.AccountID, *in.DefaultTeamID); err != nil {
+			replyErr(w, err)
+			return
+		}
+	}
+	s.authState(w, r)
+}
+
+// updateOnboarding records progress in getting started: the tour was seen,
+// a session was started, or they're done with it.
+func (s *Server) updateOnboarding(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		TourSeen bool `json:"tour_seen"`
+		Started  bool `json:"started"`
+		Done     bool `json:"done"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	who := actor(r)
+	if !who.IsPerson() {
+		fail(w, http.StatusBadRequest, "sign in first")
+		return
+	}
+	o, err := s.M.Store().Onboarding(r.Context(), who.AccountID)
+	if err != nil {
+		replyErr(w, err)
+		return
+	}
+	if o != nil {
+		if in.TourSeen {
+			o.Tour = false
+		}
+		if in.Started {
+			o.Started = true
+		}
+		if in.Done {
+			o = nil
+		}
+		if err := s.M.Store().SetOnboarding(r.Context(), who.AccountID, o); err != nil {
 			replyErr(w, err)
 			return
 		}

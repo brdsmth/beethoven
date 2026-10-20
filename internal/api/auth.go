@@ -41,6 +41,14 @@ type AuthState struct {
 	Team     string            `json:"default_team_id"` // where their work goes when nothing else says
 	Admin    bool              `json:"admin"`           // the viewer manages the workspace
 	People   bool              `json:"people"`          // the server has accounts: people and teams apply
+	// Where they stand in getting started, while they are.
+	Onboarding *onboardingView `json:"onboarding,omitempty"`
+}
+
+// onboardingView is someone's getting started, with who invited them.
+type onboardingView struct {
+	store.Onboarding
+	InvitedByName string `json:"invited_by_name,omitempty"`
 }
 
 func (s *Server) signInRequired() bool { return s.SignIn || s.Token != "" }
@@ -131,6 +139,12 @@ func (s *Server) state(r *http.Request) (AuthState, error) {
 		if who.IsPerson() {
 			st.Teams = who.Teams
 			st.Team, _ = s.M.Store().DefaultTeam(ctx, who.AccountID)
+			if o, _ := s.M.Store().Onboarding(ctx, who.AccountID); o != nil {
+				st.Onboarding = &onboardingView{Onboarding: *o}
+				if by, err := s.M.Store().Account(ctx, o.InvitedBy); err == nil {
+					st.Onboarding.InvitedByName = firstOf(by.Name, by.Email)
+				}
+			}
 		}
 	}
 	return st, nil
