@@ -138,7 +138,11 @@ and email) and committed by `Beethoven`.
 
 **People and teams.** A server that asks people to sign in has an owner, who invites the others with
 single-use links (valid for 7 days, sent however you like) and gives each a role: **owner**, **admin**
-or **member**. Owners and admins manage people, teams, settings and integrations; only owners make or
+or **member**. An invitation can add its person to a team, carry a note and suggest a first session;
+its page explains what Beethoven is, and someone who already has an account can use it to join the
+team. Whoever joins gets a short tour and a **Get started** checklist: connect GitHub, give the team a
+project if it has none yet (from existing repositories or a new one), and start a first session. A
+team's first project becomes its default. Owners and admins manage people, teams, settings and integrations; only owners make or
 unmake owners, and the last one can't leave. Admins create **teams**: a team has leads and members,
 and owns its sessions, projects, automations, secrets and Slack channels. Leads manage the team's
 people, secrets, channels and settings; members use and manage its projects and automations; anyone
@@ -433,8 +437,10 @@ HTML and SVG included, downloads, so a file can't run script as the person viewi
 | `PUT/DELETE /api/teams/{id}/members/{account}` | `{role: lead \| member}`; remove, or leave |
 | `GET /api/people` · `PUT /api/people/{id}` | everyone; `{role, disabled}` |
 | `GET/POST /api/invites` · `DELETE /api/invites/{id}` | invitation links |
-| `GET/POST /api/auth/invite` | an invitation's details; accept it `{token, name, email, password}` |
+| `GET/POST /api/auth/invite` | an invitation's details, or whether it was used or expired; accept it `{token, name, email, password}` |
+| `POST /api/auth/invite/join` | use an invitation while signed in: join its team `{token}` |
 | `PUT /api/me` · `GET/POST /api/tokens` · `DELETE /api/tokens/{id}` | `{name, default_team_id}`; personal API tokens |
+| `PUT /api/me/onboarding` | getting started: `{tour_seen, started, done}` |
 | `PUT /api/sessions/{id}/visibility` | `{visibility: workspace \| team \| private}` |
 | `PUT /api/slack/channels/{team}/{channel}/team` | `{owner_team_id}`: the team a channel belongs to |
 | `GET /api/audit?team=&before=` | changes to who may do what |
