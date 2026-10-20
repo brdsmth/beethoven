@@ -6,10 +6,20 @@ import { Icon, useDismiss } from './components';
 import { Dot, ago, fail, go, readPref, useTick, writePref } from './util';
 
 // The sidebar: who it's for and how to search, the pages, then the
-// sessions grouped by what they work on.
+// sessions grouped by what they work on. Its right edge resizes it; dragged
+// far enough in, it closes to a rail of icons.
 
 type Tab = 'active' | 'running' | 'archived';
 const COLLAPSED_PREF = 'beethoven.sidebar.collapsed';
+const WIDTH_PREF = 'beethoven.sidebar.width';
+const CLOSED_PREF = 'beethoven.sidebar.closed';
+/** Widths in pixels: the open sidebar stays within MIN and MAX; let go
+ * left of SNAP and it closes to the rail. */
+const MIN = 240, MAX = 420, DEFAULT = 264, SNAP = 160, STEP = 16;
+const clamp = (w: number) => Math.min(MAX, Math.max(MIN, Math.round(w)));
+const NARROW = '(max-width: 760px)';
+const MOD = /Mac|iP/.test(navigator.platform) ? '⌘' : 'Ctrl ';
+const PAGE_LINKS: [string, string][] = [['automations', 'bolt'], ['insights', 'chart'], ['settings', 'gear']];
 
 /** True when a key press is aimed at a text field, not the page. */
 const typing = (e: KeyboardEvent) => {
@@ -83,6 +93,28 @@ const prNumber = (s: Session) => {
   return url ? url.match(/\/pull\/(\d+)/)?.[1] || '' : undefined;
 };
 
+/** True on screens narrow enough for the sidebar to be a drawer. */
+function useNarrow() {
+  const [narrow, setNarrow] = useState(() => matchMedia(NARROW).matches);
+  useEffect(() => {
+    const q = matchMedia(NARROW), change = () => setNarrow(q.matches);
+    q.addEventListener('change', change);
+    return () => q.removeEventListener('change', change);
+  }, []);
+  return narrow;
+}
+
+/** The sidebar's width and whether it's closed to the rail, remembered. */
+function useSize() {
+  const [width, setWidth] = useState(() => clamp(readPref<number>(WIDTH_PREF) || DEFAULT));
+  const [closed, setClosed] = useState(() => readPref<boolean>(CLOSED_PREF) === true);
+  const save = (w: number, c: boolean) => {
+    setWidth(w); setClosed(c);
+    writePref(WIDTH_PREF, w); writePref(CLOSED_PREF, c);
+  };
+  return { width, closed, show: setClosed, save };
+}
+
 const initials = (a: Account) =>
   (a.name || a.email).split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('');
 
@@ -95,6 +127,9 @@ export function Sidebar({ current, account }: { current: string; account: Accoun
   const teams = useTeams();
   const active = useSessions(false);
   const archived = useSessions(true, tab === 'archived');
+  const size = useSize();
+  const narrow = useNarrow();
+  const rail = size.closed && !narrow; // a drawer always opens in full
   useTick();
   useEffect(() => { get<Environment[]>('/api/environments').then(setEnvs, () => {}); }, [current]);
   useEffect(() => {
@@ -105,6 +140,19 @@ export function Sidebar({ current, account }: { current: string; account: Accoun
       } else if (e.key === 'c' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.repeat && !typing(e) && !document.querySelector('.palette')) {
         e.preventDefault();
         go('/');
+      }
+    };
+    addEventListener('keydown', keys);
+    return () => removeEventListener('keydown', keys);
+  }, []);
+  const now = useRef({ size, narrow });
+  now.current = { size, narrow }; // the key handler reads this, so a quick second press sees the first
+  useEffect(() => {
+    const keys = (e: KeyboardEvent) => {
+      const { size, narrow } = now.current;
+      if (e.key === '\\' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && !narrow) {
+        e.preventDefault();
+        size.save(size.width, !size.closed);
       }
     };
     addEventListener('keydown', keys);
@@ -123,23 +171,42 @@ export function Sidebar({ current, account }: { current: string; account: Accoun
     <a href={href} class={'side-nav-item' + (current === name ? ' active' : '')}><Icon name={icon} />{name[0].toUpperCase() + name.slice(1)}</a>
   );
   const empty = tab === 'archived' ? 'No archived sessions.' : tab === 'running' ? 'Nothing is running.' : 'No sessions yet.';
+  const style = { '--side-w': size.width + 'px' };
+  const resizer = <Resizer {...size} />;
+
+  if (rail) return (
+    <nav class="sidebar rail" style={style}>
+      {resizer}
+      <a class="rail-btn primary" href="#/" title="New session (C)" aria-label="New session"><Icon name="plus" /></a>
+      <button type="button" class="rail-btn" title="Search" aria-label="Search" onClick={() => setPalette(true)}><Icon name="search" /></button>
+      <span class="rail-sep" />
+      {PAGE_LINKS.map(([name, icon]) => {
+        const label = name[0].toUpperCase() + name.slice(1);
+        return <a key={name} href={'#/' + name} class={'rail-btn' + (current === name ? ' active' : '')} title={label} aria-label={label}><Icon name={icon} /></a>;
+      })}
+      <span class="rail-sep" />
+      <button type="button" class="rail-btn" title={`Show sidebar (${MOD}\\)`} aria-label="Show sidebar" onClick={() => size.save(size.width, false)}>
+        <Icon name="sidebar" />{!!running?.length && <span class="rail-badge" title={`${running.length} running`} />}
+      </button>
+      {palette && <Palette envs={envs} close={() => setPalette(false)} />}
+    </nav>
+  );
 
   return (
-    <nav class="sidebar">
+    <nav class="sidebar" style={style}>
+      {resizer}
       <div class="side-head">
         {teams?.length ? <TeamSwitcher /> : <a class="brand" href="#/">Beethoven</a>}
+        <button type="button" class="btn icon side-hide" title={`Hide sidebar (${MOD}\\)`} aria-label="Hide sidebar"
+          onClick={() => size.save(size.width, true)}><Icon name="sidebar" /></button>
       </div>
       <div class="side-tools">
         <a class="btn primary block" href="#/"><Icon name="plus" />New session<kbd title="Press C">C</kbd></a>
         <button type="button" class="side-search" onClick={() => setPalette(true)}>
-          <Icon name="search" /><span>Search</span><kbd>{/Mac|iP/.test(navigator.platform) ? '⌘K' : 'Ctrl K'}</kbd>
+          <Icon name="search" /><span>Search</span><kbd>{MOD}K</kbd>
         </button>
       </div>
-      <div class="side-nav">
-        {page('#/automations', 'automations', 'bolt')}
-        {page('#/insights', 'insights', 'chart')}
-        {page('#/settings', 'settings', 'gear')}
-      </div>
+      <div class="side-nav">{PAGE_LINKS.map(([name, icon]) => page('#/' + name, name, icon))}</div>
       <div class="side-tabs">
         {([['active', 'Active', active?.length], ['running', 'Running', running?.length], ['archived', 'Archived', undefined]] as const)
           .map(([v, label, n]) => (
@@ -189,6 +256,64 @@ export function Sidebar({ current, account }: { current: string; account: Accoun
       {account && <AccountMenu account={account} current={current} />}
       {palette && <Palette envs={envs} close={() => setPalette(false)} />}
     </nav>
+  );
+}
+
+type Drag = { from: boolean; width: number; snap: boolean };
+
+/** The sidebar's right edge. Dragging it resizes the sidebar between MIN and
+ * MAX; letting go left of SNAP closes it to the rail, and dragging the rail's
+ * edge out opens it again. The drag moves the sidebar directly, so the
+ * session list isn't rendered on every move. */
+function Resizer({ width, closed, show, save }: ReturnType<typeof useSize>) {
+  const drag = useRef<Drag>();
+  const [tip, setTip] = useState<{ y: number; text: string }>();
+  const nav = (e: Event) => (e.currentTarget as HTMLElement).parentElement!;
+  const end = (e: PointerEvent, keep: boolean) => {
+    const d = drag.current;
+    if (!d) return;
+    drag.current = undefined;
+    document.documentElement.classList.remove('resizing');
+    nav(e).classList.remove('snapping');
+    setTip(undefined);
+    const w = keep && !d.snap ? d.width : width;
+    nav(e).style.setProperty('--side-w', w + 'px');
+    if (keep) save(w, d.snap); else show(d.from);
+  };
+  const move = (e: PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    const box = nav(e).getBoundingClientRect(), x = e.clientX - box.left;
+    d.snap = x < SNAP;
+    d.width = clamp(x);
+    if (d.from) show(d.snap); // from the rail, open in full once past SNAP
+    nav(e).style.setProperty('--side-w', d.width + 'px');
+    nav(e).classList.toggle('snapping', d.snap && !d.from);
+    const text = d.snap ? (d.from ? '' : 'Release to collapse')
+      : x > MAX ? `${MAX}px · max` : x < MIN ? `Release to keep ${MIN}px` : `${d.width}px`;
+    setTip(text ? { y: e.clientY - box.top, text } : undefined);
+  };
+  const keys = (e: KeyboardEvent) => {
+    if (e.key === 'ArrowRight') save(closed ? width : clamp(width + STEP), false);
+    else if (e.key === 'ArrowLeft' && !closed) save(width > MIN ? clamp(width - STEP) : width, width <= MIN);
+    else if (e.key === 'Enter') save(width, !closed);
+    else return;
+    e.preventDefault();
+  };
+  return (
+    <div class={'side-resizer' + (tip?.text.endsWith('max') ? ' max' : '')} role="separator" aria-orientation="vertical"
+      aria-label="Resize sidebar" aria-valuemin={MIN} aria-valuemax={MAX} aria-valuenow={closed ? undefined : width}
+      tabIndex={0} title="Drag to resize · double-click to reset" onKeyDown={keys} onDblClick={() => save(DEFAULT, false)}
+      onPointerDown={e => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        drag.current = { from: closed, width, snap: closed };
+        document.documentElement.classList.add('resizing');
+      }}
+      onPointerMove={move} onPointerUp={e => end(e, true)} onPointerCancel={e => end(e, false)}>
+      {tip && <span class="side-resizer-tip" style={{ top: tip.y }}>{tip.text}</span>}
+    </div>
   );
 }
 
