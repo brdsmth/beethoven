@@ -146,6 +146,8 @@ export type Onboarding = {
   tour?: boolean;
   /** They started a session. */
   started?: boolean;
+  /** When it began: they joined, or joined the team. */
+  since?: string;
 };
 /** What an invitation's link shows: in full while it's open, else what became of it. */
 export type InviteInfo = {
