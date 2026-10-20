@@ -56,6 +56,15 @@ func TestInvitationOnboarding(t *testing.T) {
 	if code, _ := owner.call("POST", "/api/invites", `{"role":"member","team_id":"`+mobile+`","environment_id":"nope"}`); code != 400 {
 		t.Errorf("an invitation to someone else's project: %d", code)
 	}
+	// Deleting it leaves no default, so the next one becomes it.
+	if code, _ := sam.call("DELETE", "/api/environments/"+project, ""); code != 204 {
+		t.Fatalf("delete the project: %d", code)
+	}
+	_, out = sam.call("POST", "/api/environments", `{"team_id":"`+mobile+`","name":"mobile","repos":[]}`)
+	project = field(out, "id").(string)
+	if _, team := sam.call("GET", "/api/teams/"+mobile, ""); field(team, "team", "default_environment_id") != project {
+		t.Errorf("Mobile's default after the first was deleted: %v", team)
+	}
 
 	// Progress: the tour, a first session, done.
 	if _, st := sam.call("PUT", "/api/me/onboarding", `{"tour_seen":true}`); field(st, "onboarding", "tour") != nil ||
@@ -72,8 +81,12 @@ func TestInvitationOnboarding(t *testing.T) {
 		t.Errorf("done: %v", st)
 	}
 
-	// Max is here already: an invitation adds him to the team, his role as it was.
-	code, out = owner.call("POST", "/api/invites", `{"role":"admin","email":"max@x.dev","team_id":"`+mobile+`"}`)
+	// Max is here already, done with getting started: an invitation adds him to the team, his role as it was.
+	max.call("PUT", "/api/me/onboarding", `{"done":true}`)
+	if code, _ := owner.call("POST", "/api/invites", `{"role":"admin","email":"max@x.dev","team_id":"`+mobile+`"}`); code != 409 {
+		t.Errorf("an invitation that would change max's role: %d", code)
+	}
+	code, out = owner.call("POST", "/api/invites", `{"role":"member","email":"max@x.dev","team_id":"`+mobile+`"}`)
 	if code != 201 {
 		t.Fatalf("invite max to Mobile: %d %v", code, out)
 	}
@@ -88,7 +101,8 @@ func TestInvitationOnboarding(t *testing.T) {
 		t.Errorf("sam uses max's invitation: %d", code)
 	}
 	code, st = max.call("POST", "/api/auth/invite/join", join)
-	if code != 200 || field(st, "teams", mobile) != "member" || field(st, "account", "role") != "member" {
+	if code != 200 || field(st, "teams", mobile) != "member" || field(st, "account", "role") != "member" ||
+		field(st, "onboarding", "team_id") != mobile || field(st, "onboarding", "started") != true || field(st, "onboarding", "tour") != nil {
 		t.Errorf("max joins: %d %v", code, st)
 	}
 	if code, _ := max.call("POST", "/api/auth/invite/join", join); code != 404 {

@@ -177,6 +177,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out["session"], out["prompt"] = sess, p
+		s.startedSession(r)
 	}
 	reply(w, http.StatusCreated, out)
 }
