@@ -75,6 +75,7 @@ func (s *Server) Handler() http.Handler {
 	open("POST /api/auth/logout", s.logout)
 	open("GET /api/auth/invite", s.inviteInfo)
 	open("POST /api/auth/invite", s.acceptInvite)
+	open("POST /api/auth/invite/join", s.joinInvite)
 	api("GET /api/info", s.info)
 	api("GET /api/sessions", s.listSessions)
 	api("POST /api/sessions", s.createSession)
@@ -94,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/capabilities", s.listCapabilities)
 
 	api("PUT /api/me", s.updateMe)
+	api("PUT /api/me/onboarding", s.updateOnboarding)
 	api("GET /api/tokens", s.listTokens)
 	api("POST /api/tokens", s.createToken)
 	api("DELETE /api/tokens/{id}", s.deleteToken)
@@ -359,6 +361,12 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		replyErr(w, err)
 		return
+	}
+	if who := actor(r); who.IsPerson() { // getting started counts their first session
+		if o, _ := s.M.Store().Onboarding(r.Context(), who.AccountID); o != nil && !o.Started {
+			o.Started = true
+			s.M.Store().SetOnboarding(r.Context(), who.AccountID, o)
+		}
 	}
 	reply(w, http.StatusCreated, map[string]any{"session": sess, "prompt": p})
 }

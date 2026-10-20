@@ -130,13 +130,21 @@ func scanEnvironment(row scanner) (Environment, error) {
 	return e, err
 }
 
+// CreateEnvironment stores a new project; a team's first becomes its default.
 func (s *Store) CreateEnvironment(ctx context.Context, e *Environment) error {
 	e.CreatedAt, e.UpdatedAt = time.Now(), time.Now()
 	ov, _ := json.Marshal(e.Overrides)
 	_, err := s.w.ExecContext(ctx, `INSERT INTO environments (`+envCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		e.ID, e.TeamID, e.Name, e.Description, encodeRepos(e.Repos), e.SetupScript, e.StartScript, e.InheritSecrets,
 		string(ov), ms(e.CreatedAt), ms(e.UpdatedAt))
-	return conflict(err)
+	if err != nil {
+		return conflict(err)
+	}
+	if e.TeamID != "" { // a team's first project is where its sessions start
+		_, err = s.w.ExecContext(ctx, `UPDATE teams SET default_environment_id=? WHERE id=? AND default_environment_id=''`,
+			e.ID, e.TeamID)
+	}
+	return err
 }
 
 func (s *Store) SaveEnvironment(ctx context.Context, e *Environment) error {
