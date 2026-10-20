@@ -300,10 +300,12 @@ func openInvite(ctx context.Context, tx *sql.Tx, token, email string) (Invite, e
 
 // useInvite marks an invitation used by an account, adds the account to
 // its team, if it names one that still exists, and starts the account's
-// getting started with what the invitation suggests. It reports whether the
-// account joined the team.
-func useInvite(ctx context.Context, tx *sql.Tx, in Invite, token, accountID string, tour bool) (bool, error) {
-	now := ms(time.Now())
+// getting started with what the invitation suggests: a new account from
+// the start, one that's been here keeping its progress. It reports whether
+// the account joined the team.
+func useInvite(ctx context.Context, tx *sql.Tx, in Invite, token, accountID string, isNew bool) (bool, error) {
+	at := time.Now()
+	now := ms(at)
 	if _, err := tx.ExecContext(ctx, `UPDATE invites SET used_by=?, used_at=? WHERE id=?`, accountID, now, TokenHash(token)); err != nil {
 		return false, err
 	}
@@ -317,7 +319,17 @@ func useInvite(ctx context.Context, tx *sql.Tx, in Invite, token, accountID stri
 		n, _ := res.RowsAffected()
 		joined = n > 0
 	}
-	o := Onboarding{InvitedBy: in.CreatedBy, Prompt: in.FirstPrompt, EnvironmentID: in.EnvironmentID, Tour: tour}
+	o := Onboarding{InvitedBy: in.CreatedBy, Prompt: in.FirstPrompt, EnvironmentID: in.EnvironmentID, Tour: isNew, Since: at}
+	if !isNew {
+		var was string
+		if err := tx.QueryRowContext(ctx, `SELECT onboarding FROM accounts WHERE id=?`, accountID).Scan(&was); err != nil {
+			return false, err
+		}
+		var before Onboarding
+		// Done with getting started, or started a session in it: they've had a first session.
+		o.Started = was == "" || json.Unmarshal([]byte(was), &before) == nil && before.Started
+		o.Tour = before.Tour
+	}
 	if joined {
 		o.TeamID = in.TeamID
 		// Their work goes to the team they were invited to, unless they already chose.
@@ -387,12 +399,13 @@ func (s *Store) JoinInvite(ctx context.Context, token string, a Account) (string
 // Onboarding is where someone stands in getting started: who invited them,
 // to which team, and what they suggested for a first session.
 type Onboarding struct {
-	TeamID        string `json:"team_id,omitempty"`
-	InvitedBy     string `json:"invited_by,omitempty"` // an account
-	Prompt        string `json:"prompt,omitempty"`     // a first session the invitation suggests
-	EnvironmentID string `json:"environment_id,omitempty"`
-	Tour          bool   `json:"tour,omitempty"`    // the welcome tour is still to show
-	Started       bool   `json:"started,omitempty"` // they started a session
+	TeamID        string    `json:"team_id,omitempty"`
+	InvitedBy     string    `json:"invited_by,omitempty"` // an account
+	Prompt        string    `json:"prompt,omitempty"`     // a first session the invitation suggests
+	EnvironmentID string    `json:"environment_id,omitempty"`
+	Tour          bool      `json:"tour,omitempty"`    // the welcome tour is still to show
+	Started       bool      `json:"started,omitempty"` // they started a session
+	Since         time.Time `json:"since"`             // when it began: they joined, or joined the team
 }
 
 // Onboarding returns where an account stands in getting started, or nil
@@ -415,15 +428,19 @@ func (s *Store) Onboarding(ctx context.Context, accountID string) (*Onboarding, 
 	return &o, nil
 }
 
-// SetOnboarding records where an account stands in getting started; nil
-// means it's done.
-func (s *Store) SetOnboarding(ctx context.Context, accountID string, o *Onboarding) error {
-	v := ""
-	if o != nil {
-		b, _ := json.Marshal(o)
-		v = string(b)
+// OnboardingStep records progress in an account's getting started, if it's
+// getting started: "tour" (the tour was seen), "started" (a session was
+// started) or "done". Each is one statement, so steps can't undo each other.
+func (s *Store) OnboardingStep(ctx context.Context, accountID, step string) error {
+	q := map[string]string{
+		"tour":    `json_remove(onboarding, '$.tour')`,
+		"started": `json_set(onboarding, '$.started', json('true'))`,
+		"done":    `''`,
+	}[step]
+	if q == "" {
+		return fmt.Errorf("%w: no such step %q", ErrInvalid, step)
 	}
-	_, err := s.w.ExecContext(ctx, `UPDATE accounts SET onboarding=? WHERE id=?`, v, accountID)
+	_, err := s.w.ExecContext(ctx, `UPDATE accounts SET onboarding=`+q+` WHERE id=? AND onboarding != ''`, accountID)
 	return err
 }
 

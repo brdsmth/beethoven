@@ -362,12 +362,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		replyErr(w, err)
 		return
 	}
-	if who := actor(r); who.IsPerson() { // getting started counts their first session
-		if o, _ := s.M.Store().Onboarding(r.Context(), who.AccountID); o != nil && !o.Started {
-			o.Started = true
-			s.M.Store().SetOnboarding(r.Context(), who.AccountID, o)
-		}
-	}
+	s.startedSession(r)
 	reply(w, http.StatusCreated, map[string]any{"session": sess, "prompt": p})
 }
 

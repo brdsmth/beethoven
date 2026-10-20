@@ -175,10 +175,18 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if in.Email != "" && in.TeamID == "" { // someone who's here already can still be invited to a team
+	if in.Email != "" {
+		// Someone who's here already can be invited to a team, keeping their role.
 		if _, _, err := s.M.Store().AccountByEmail(r.Context(), in.Email); err == nil {
-			fail(w, http.StatusConflict, in.Email+" already has an account")
-			return
+			switch {
+			case in.TeamID == "":
+				fail(w, http.StatusConflict, in.Email+" already has an account")
+				return
+			case in.Role != store.RoleMember:
+				fail(w, http.StatusConflict, in.Email+" already has an account: invite them as a member to add them to the team, "+
+					"and change their role under People")
+				return
+			}
 		}
 	}
 	creator := who.AccountID
@@ -239,20 +247,17 @@ func (s *Server) inviteInfo(w http.ResponseWriter, r *http.Request) {
 		out["from"] = firstOf(by.Name, by.Email)
 	}
 	if !in.Open() {
-		out["state"] = map[bool]string{true: "used", false: "expired"}[in.UsedAt != nil]
+		out["state"] = "expired"
+		if in.UsedAt != nil {
+			out["state"] = "used"
+		}
 		reply(w, http.StatusOK, out)
 		return
 	}
 	out["role"], out["email"], out["note"] = in.Role, in.Email, in.Note
 	if t, err := s.M.Store().Team(ctx, in.TeamID); err == nil && t.ArchivedAt == nil {
-		it := inviteTeam{Name: t.Name, Description: t.Description, Color: t.Color, Members: t.Members, Projects: []string{}}
-		envs, _ := s.M.Store().Environments(ctx)
-		for _, e := range envs {
-			if e.TeamID == t.ID {
-				it.Projects = append(it.Projects, e.Name)
-			}
-		}
-		out["team"] = it
+		names, _ := s.M.Store().TeamProjectNames(ctx, t.ID)
+		out["team"] = inviteTeam{Name: t.Name, Description: t.Description, Color: t.Color, Members: t.Members, Projects: orEmpty(names)}
 	}
 	app, _ := s.GitHub.App(ctx)
 	out["github"] = app != nil
@@ -398,27 +403,26 @@ func (s *Server) updateOnboarding(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "sign in first")
 		return
 	}
-	o, err := s.M.Store().Onboarding(r.Context(), who.AccountID)
-	if err != nil {
-		replyErr(w, err)
-		return
-	}
-	if o != nil {
-		if in.TourSeen {
-			o.Tour = false
+	for step, on := range map[string]bool{"tour": in.TourSeen, "started": in.Started, "done": in.Done} {
+		if !on {
+			continue
 		}
-		if in.Started {
-			o.Started = true
-		}
-		if in.Done {
-			o = nil
-		}
-		if err := s.M.Store().SetOnboarding(r.Context(), who.AccountID, o); err != nil {
+		if err := s.M.Store().OnboardingStep(r.Context(), who.AccountID, step); err != nil {
 			replyErr(w, err)
 			return
 		}
 	}
 	s.authState(w, r)
+}
+
+// startedSession counts a session someone started towards their getting
+// started.
+func (s *Server) startedSession(r *http.Request) {
+	if who := actor(r); who.IsPerson() {
+		if err := s.M.Store().OnboardingStep(r.Context(), who.AccountID, "started"); err != nil {
+			s.Log.Warn("couldn't record a first session", "account", who.AccountID, "err", err)
+		}
+	}
 }
 
 // --------------------------------------------------------------- API tokens
