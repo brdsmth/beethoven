@@ -142,14 +142,14 @@ export function GetStarted({ info }: { info?: Info }) {
   const me = useMe();
   const [gh] = useLoad<GitHubStatus>('/api/github');
   const [envs, reloadEnvs] = useLoad<Environment[]>('/api/environments');
-  const admins = useAdmins();
+  // Whom to ask, when something only an admin can set up is missing.
+  const admins = useAdmins(!!me && !!me.people && !me.admin && !!gh && !!info && ((!gh.app && !info.github) || !info.anthropic));
   const { team, projects, project } = useTeamProjects(envs);
   const [sheet, setSheet] = useState(false);
   // The team had no project when they arrived: setting one up is a step, done or not.
   const empty = useRef<boolean>();
-  if (projects && me?.account && empty.current === undefined) {
-    empty.current = projects.every(e => Date.parse(e.created_at) >= Date.parse(me.account!.created_at));
-  }
+  const since = me?.onboarding?.since && Date.parse(me.onboarding.since) > 0 ? me.onboarding.since : me?.account?.created_at;
+  if (projects && since && empty.current === undefined) empty.current = projects.every(e => Date.parse(e.created_at) >= Date.parse(since));
   const [, setScopeNow] = useScope();
   useEffect(() => { if (me?.onboarding?.tour && team) setScopeNow(team.id); }, [team?.id]); // their first visit: show their team's work
   title('Get started');

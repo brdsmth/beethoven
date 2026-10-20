@@ -1,5 +1,5 @@
 import { render } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import {
   api, get, onAuthRequired, setMe, withFiles, type Account, type AuthState, type Environment, type Info, type Session,
   type Visibility,
@@ -138,7 +138,8 @@ function NewSession({ info }: { info?: Info }) {
   const me = useMe();
   // A first session: what the invitation suggested, waiting in the prompt.
   const first = !!me?.onboarding && !me.onboarding.started;
-  const [prompt, setPrompt] = useState(() => (first && hashParam('first') && me?.onboarding?.prompt) || '');
+  const [opened] = useState(() => first && !!hashParam('first')); // from getting started
+  const [prompt, setPrompt] = useState(() => (opened && me?.onboarding?.prompt) || '');
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
   const [busy, setBusy] = useState(false);
@@ -155,15 +156,18 @@ function NewSession({ info }: { info?: Info }) {
   const chosen = team ?? (scope === 'workspace' ? '' : usable(scopeTeam(scope)) ? scopeTeam(scope)
     : usable(me?.default_team_id) ? me!.default_team_id : '');
   const teamObj = teams?.find(t => t.id === chosen);
+  const keep = useRef(opened); // getting started chose the first session's project: keep it until the team changes
   useEffect(() => { // a team's default project
-    if (teamObj?.default_environment_id) setTarget(t => ({ ...t, kind: 'env', environment_id: teamObj.default_environment_id }));
+    if (!teamObj?.default_environment_id) return;
+    if (keep.current) { keep.current = false; return; }
+    setTarget(t => ({ ...t, kind: 'env', environment_id: teamObj.default_environment_id }));
   }, [chosen, teamObj?.default_environment_id]);
   const f = useFiles();
   const project = target.kind === 'env' ? envs?.find(e => e.id === target.environment_id) : undefined;
   const starters = startersFor(project);
   // Opened from getting started without a suggestion: the project's first starter.
   useEffect(() => {
-    if (first && hashParam('first') && !me?.onboarding?.prompt && project && unprepared(project)) setPrompt(p => p || starters[0].prompt);
+    if (opened && !me?.onboarding?.prompt && project && unprepared(project)) setPrompt(p => p || starters[0].prompt);
   }, [project?.id]);
   const empty = !prompt.trim() && !f.files.length;
   const problem = targetProblem(target);
