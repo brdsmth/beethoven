@@ -8,7 +8,8 @@ import { AttachButton, PendingFiles, useFiles } from './attach';
 import { AutomationEdit, Automations } from './automations';
 import { GitHubReturn, GitHubSetup, githubStep } from './github';
 import { Insights } from './insights';
-import { InviteAccept } from './people';
+import { InviteAccept } from './invite';
+import { adminNames, useAdmins } from './people';
 import { TeamMark, scopeTeam, useMe, useScope, useTeams } from './teams';
 import { NewProject } from './project';
 import { SlackReturn, slackStep } from './slack';
@@ -16,8 +17,9 @@ import { TARGET_PREF, TargetPicker, fromTarget, targetProblem, toTarget, type Pi
 import { SessionView } from './session';
 import { Settings } from './settings';
 import { Sidebar } from './sidebar';
+import { GetStarted, Tour, startersFor, unprepared } from './welcome';
 import {
-  EffortSelect, ModelField, Toasts, fail, go, modEnter, readPref, setEfforts, title, useRoute, writePref,
+  EffortSelect, ModelField, Toasts, fail, go, hashParam, modEnter, readPref, setEfforts, title, useRoute, writePref,
 } from './util';
 
 // Root asks who is signed in before showing anything; a 401 later (signed
@@ -98,6 +100,7 @@ function App({ account }: { account: Account | null }) {
   useEffect(() => setDrawer(false), [route.join('/')]);
 
   const [page, arg] = route;
+  const me = useMe();
   let view;
   if (githubStep()) view = <GitHubReturn />;
   else if (slackStep()) view = <SlackReturn />;
@@ -107,8 +110,9 @@ function App({ account }: { account: Account | null }) {
   else if (page === 'teams') view = <Moved to={'/settings/' + route.join('/')} />; // team pages live in the settings
   else if (page === 'projects' && arg === 'new') view = <NewProject info={info} />;
   else if (page === 'settings') view = <Settings info={info} route={route.slice(1)} />;
+  else if (page === 'welcome') view = <GetStarted info={info} />;
   else view = <NewSession info={info} />;
-  if (page !== 's') title(page === 'automations' ? 'Automations' : page === 'insights' ? 'Insights'
+  if (page !== 's' && page !== 'welcome') title(page === 'automations' ? 'Automations' : page === 'insights' ? 'Insights'
     : page === 'settings' ? 'Settings' : page === 'projects' && arg === 'new' ? 'New project' : 'New session');
 
   return (
@@ -120,6 +124,7 @@ function App({ account }: { account: Account | null }) {
       <Sidebar current={page === 's' ? arg : page || ''} account={account} />
       <div class="scrim" onClick={() => setDrawer(false)} />
       <main class="main">{view}</main>
+      {me?.onboarding?.tour && <Tour />}
       <Toasts />
     </div>
   );
@@ -130,12 +135,17 @@ function NewSession({ info }: { info?: Info }) {
     const p = readPref<Pick>(TARGET_PREF);
     return { ...fromTarget(p), kind: ['scratch', 'repos', 'env'].includes(p?.kind as string) ? p!.kind : 'scratch' };
   });
-  const [prompt, setPrompt] = useState('');
+  const me = useMe();
+  // A first session: what the invitation suggested, waiting in the prompt.
+  const first = !!me?.onboarding && !me.onboarding.started;
+  const [prompt, setPrompt] = useState(() => (first && hashParam('first') && me?.onboarding?.prompt) || '');
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
   const [busy, setBusy] = useState(false);
-  const me = useMe();
   const teams = useTeams();
+  const [envs, setEnvs] = useState<Environment[]>();
+  useEffect(() => { if (first) get<Environment[]>('/api/environments').then(setEnvs, () => {}); }, [first]);
+  const admins = useAdmins(!!info && !info.anthropic && !me?.admin);
   const [scope] = useScope();
   // The team the session belongs to: the switcher's, else the person's default.
   const [team, setTeam] = useState<string>();
@@ -149,6 +159,12 @@ function NewSession({ info }: { info?: Info }) {
     if (teamObj?.default_environment_id) setTarget(t => ({ ...t, kind: 'env', environment_id: teamObj.default_environment_id }));
   }, [chosen, teamObj?.default_environment_id]);
   const f = useFiles();
+  const project = target.kind === 'env' ? envs?.find(e => e.id === target.environment_id) : undefined;
+  const starters = startersFor(project);
+  // Opened from getting started without a suggestion: the project's first starter.
+  useEffect(() => {
+    if (first && hashParam('first') && !me?.onboarding?.prompt && project && unprepared(project)) setPrompt(p => p || starters[0].prompt);
+  }, [project?.id]);
   const empty = !prompt.trim() && !f.files.length;
   const problem = targetProblem(target);
   const submit = async () => {
@@ -161,6 +177,7 @@ function NewSession({ info }: { info?: Info }) {
         team_id: chosen, visibility,
       }, f.files));
       writePref(TARGET_PREF, target);
+      if (me?.onboarding && !me.onboarding.started) get<AuthState>('/api/auth').then(setMe, () => {}); // it counts as their first
       go('/s/' + r.session.id);
     } catch (e) {
       fail(e);
@@ -172,6 +189,12 @@ function NewSession({ info }: { info?: Info }) {
       <h1>New session</h1>
       {info && !info.github && <GitHubSetup />}
       <form class="form" onSubmit={e => { e.preventDefault(); submit(); }}>
+        {first && me?.onboarding?.prompt && prompt === me.onboarding.prompt && (
+          <div class="from-inviter">
+            <b>{me.onboarding.invited_by_name ? `${me.onboarding.invited_by_name} suggested this for your first session` : 'A first session to try'}</b>
+            <span>Change it if you like, or pick something else below.</span>
+          </div>
+        )}
         <div class={'prompt-box' + (f.over ? ' dropping' : '')}>
           <textarea class="big" rows={8} autoFocus placeholder="What should the agent do?" value={prompt}
             onInput={e => setPrompt(e.currentTarget.value)} onKeyDown={modEnter(submit)} onPaste={f.onPaste} />
@@ -180,6 +203,18 @@ function NewSession({ info }: { info?: Info }) {
             <AttachButton add={f.add} label="Attach files" />
           </div>
         </div>
+        {first && (
+          <div class="field">
+            <span class="hint">{unprepared(project) ? 'Good first sessions in a new project' : 'Or start from one of these'}</span>
+            <div class="starters">
+              {starters.map(s => (
+                <button type="button" key={s.label} class={'starter' + (prompt === s.prompt ? ' on' : '')} onClick={() => setPrompt(s.prompt)}>
+                  <span>{s.icon} {s.label}</span><span class="dim">{s.hint}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {(mine.length > 0 || me?.people) && (
           <div class="grid2">
             {mine.length > 0 && (
@@ -217,11 +252,12 @@ function NewSession({ info }: { info?: Info }) {
         </div>
         {info && !info.anthropic && (
           <p class="banner warn">
-            No Anthropic credential is configured, so agents can't run. Add one in <a href="#/settings/credentials">Settings › Credentials</a>.
+            No Anthropic credential is configured, so agents can't run. {me?.admin || !me?.people
+              ? <>Add one in <a href="#/settings/credentials">Settings › Credentials</a>.</> : `Ask ${adminNames(admins)} to add one.`}
           </p>
         )}
         <div class="form-foot">
-          <span class="hint">{problem || '⌘/Ctrl+Enter to start.'}</span>
+          <span class="hint">{problem || (first ? '⌘/Ctrl+Enter to start. Nothing merges without your review.' : '⌘/Ctrl+Enter to start.')}</span>
           <button class="btn primary" disabled={busy || empty || !!problem}>{busy ? 'Starting…' : 'Start session'}</button>
         </div>
       </form>
