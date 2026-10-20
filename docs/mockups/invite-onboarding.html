@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Beethoven | Invitation &amp; first-run mockups</title>
+<style>
+/* Design tokens copied from web/src/style.css so the mockups read as the real app. */
+:root {
+  --bg: #fcfcfd; --side: #f6f6f8; --panel: #ffffff; --hover: #eeeef2; --border: #e3e3e8; --border-strong: #d0d0d8;
+  --text: #1c1c21; --muted: #62626e; --dim: #8d8d98; --code: #f2f2f5; --accent: #3e63dd; --accent-text: #fff;
+  --blue: #2563eb; --blue-bg: #e8effe; --green: #18864b; --green-bg: #e3f5ea; --red: #cf3434; --red-bg: #fdecec;
+  --amber: #a15c07; --amber-bg: #fdf3e1; --gray-bg: #efeff2;
+  --shadow: 0 6px 24px rgb(0 0 0 / .12); --radius: 6px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --fs: 13.5px; --fs-small: 12px;
+  --canvas: #e9e9ee;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--canvas); color: var(--text); font: var(--fs)/1.5 var(--font); -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); text-decoration: none; }
+h1 { font-size: 18px; font-weight: 600; margin: 0 0 16px; }
+h2 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+input, select, textarea, button { font: inherit; color: inherit; }
+input, select, textarea { width: 100%; background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 6px 8px; }
+input[readonly] { background: var(--code); color: var(--muted); }
+code, .mono { font-family: var(--mono); font-size: 12.5px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
+.muted { color: var(--muted); } .dim { color: var(--dim); } .hint { color: var(--dim); font-size: var(--fs-small); }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--border-strong);
+  border-radius: var(--radius); background: var(--panel); cursor: pointer; white-space: nowrap; font-size: 13px; color: var(--text); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn.block { display: flex; width: 100%; height: 34px; }
+.btn.sm { height: 24px; padding: 0 8px; font-size: 12px; }
+.btn.ghost { border-color: transparent; background: none; color: var(--muted); }
+.chip { display: inline-block; font-size: 11px; line-height: 18px; padding: 0 7px; border-radius: 999px; background: var(--gray-bg); color: var(--muted); }
+.chip.blue { background: var(--blue-bg); color: var(--blue); } .chip.green { background: var(--green-bg); color: var(--green); }
+.chip.amber { background: var(--amber-bg); color: var(--amber); }
+.mark { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 18px; height: 18px; border-radius: 5px; color: #fff; font-weight: 650; font-size: 11px; }
+.mark.lg { width: 28px; height: 28px; border-radius: 7px; font-size: 14px; }
+.avatar { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 11px; font-weight: 600; }
+.avatar.sm { width: 22px; height: 22px; font-size: 10px; }
+.avatars { display: inline-flex; } .avatars .avatar { border: 2px solid var(--panel); margin-left: -6px; } .avatars .avatar:first-child { margin-left: 0; }
+.field { display: flex; flex-direction: column; gap: 4px; } .field-label { font-size: var(--fs-small); color: var(--muted); font-weight: 500; }
+.brand { font-weight: 650; letter-spacing: -.01em; }
+.banner { font-size: var(--fs-small); padding: 6px 10px; border-radius: var(--radius); }
+.banner.warn { background: var(--amber-bg); color: var(--amber); } .banner.info { background: var(--blue-bg); color: var(--blue); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
+.dot.blue { background: var(--blue); } .dot.green { background: var(--green); }
+
+/* ---------- mockup document chrome ---------- */
+.doc { max-width: 1240px; margin: 0 auto; padding: 40px 24px 80px; }
+.doc > header h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -.02em; }
+.doc > header p { max-width: 760px; color: var(--muted); font-size: 14.5px; margin: 0 0 6px; }
+.toc { display: flex; flex-wrap: wrap; gap: 6px; margin: 18px 0 8px; }
+.toc a { font-size: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; color: var(--text); }
+.flow { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 14px 0 0; font-size: 12px; color: var(--muted); }
+.flow span.step { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; color: var(--text); }
+.flow span.step.new { border-color: var(--accent); color: var(--accent); }
+.screen { margin-top: 56px; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 24px; align-items: start; scroll-margin-top: 16px; }
+.screen.full { grid-template-columns: 1fr; }
+.screen-label { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 10px; }
+.screen-label .num { font-family: var(--mono); font-size: 12px; color: var(--accent); font-weight: 600; }
+.screen-label h2 { font-size: 18px; margin: 0; letter-spacing: -.01em; }
+.screen-label .tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--gray-bg); color: var(--muted); }
+.screen-label .tag.now { background: var(--red-bg); color: var(--red); }
+.notes { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; font-size: 13px; }
+.notes h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); margin: 0 0 6px; }
+.notes h3:not(:first-child) { margin-top: 14px; }
+.notes ul { margin: 0; padding-left: 18px; } .notes li { margin: 3px 0; }
+.notes .pin { display: inline-flex; width: 16px; height: 16px; border-radius: 50%; background: var(--red); color: #fff; font-size: 10px; font-weight: 700; align-items: center; justify-content: center; margin-right: 4px; vertical-align: 1px; }
+
+/* browser frame */
+.browser { background: var(--bg); border-radius: 10px; overflow: hidden; box-shadow: 0 1px 0 var(--border-strong), 0 16px 40px rgb(0 0 0 / .14); border: 1px solid var(--border-strong); }
+.browser-bar { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 12px; background: var(--side); border-bottom: 1px solid var(--border); }
+.browser-bar i { width: 10px; height: 10px; border-radius: 50%; background: #d4d4da; display: inline-block; }
+.browser-bar .url { flex: 1; max-width: 460px; margin: 0 auto; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; font-size: 11.5px; color: var(--muted); padding: 2px 10px; font-family: var(--mono); }
+.viewport { position: relative; min-height: 560px; }
+.pinmark { position: absolute; width: 20px; height: 20px; border-radius: 50%; background: var(--red); color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 3px rgb(207 52 52 / .2); z-index: 5; }
+
+/* ---------- current auth card (as shipped) ---------- */
+.auth { min-height: 560px; display: grid; place-items: center; padding: 32px 16px; }
+.auth-card { width: min(360px, 100%); display: flex; flex-direction: column; gap: 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 24px; box-shadow: var(--shadow); }
+.auth-head h1 { margin: 0; } .auth-head p { margin: 6px 0 0; }
+
+/* ---------- proposed: split invite page ---------- */
+.invite { display: grid; grid-template-columns: 1.1fr 1fr; min-height: 620px; }
+.invite-story { background: linear-gradient(160deg, #1f2a5c 0%, #2b3f97 55%, #3e63dd 100%); color: #eef1ff; padding: 36px 40px; display: flex; flex-direction: column; gap: 22px; }
+.invite-story .brand { color: #fff; font-size: 15px; }
+.invite-story h1 { color: #fff; font-size: 24px; line-height: 1.25; margin: 0; letter-spacing: -.02em; }
+.invite-story .lede { margin: 0; color: #c9d2ff; font-size: 14px; max-width: 420px; }
+.how { display: flex; flex-direction: column; gap: 14px; margin: 4px 0 0; padding: 0; list-style: none; }
+.how li { display: grid; grid-template-columns: 30px 1fr; gap: 12px; align-items: start; }
+.how .n { width: 30px; height: 30px; border-radius: 8px; background: rgb(255 255 255 / .12); display: flex; align-items: center; justify-content: center; font-size: 15px; }
+.how b { color: #fff; font-weight: 600; display: block; font-size: 13.5px; }
+.how span { color: #c9d2ff; font-size: 12.5px; }
+.mini-term { margin-top: auto; background: rgb(8 12 32 / .55); border: 1px solid rgb(255 255 255 / .12); border-radius: 8px; padding: 12px 14px; font-family: var(--mono); font-size: 11.5px; color: #c9d2ff; line-height: 1.7; }
+.mini-term .p { color: #fff; } .mini-term .ok { color: #7ee2a8; } .mini-term .tool { color: #9fb3ff; }
+.invite-form { padding: 36px 40px; display: flex; flex-direction: column; gap: 14px; justify-content: center; background: var(--panel); }
+.invite-who { display: flex; gap: 10px; align-items: center; padding: 10px 12px; background: var(--side); border: 1px solid var(--border); border-radius: 8px; }
+.invite-who .t { display: flex; flex-direction: column; line-height: 1.35; font-size: 12.5px; }
+.invite-who .t b { font-size: 13.5px; }
+.note-quote { border-left: 3px solid var(--accent); padding: 4px 0 4px 10px; color: var(--muted); font-size: 12.5px; font-style: italic; margin: 0; }
+.role-explain { font-size: 12px; color: var(--muted); background: var(--side); border-radius: 8px; padding: 10px 12px; border: 1px solid var(--border); }
+.role-explain b { color: var(--text); }
+.role-explain ul { margin: 4px 0 0; padding-left: 16px; } .role-explain li { margin: 1px 0; }
+.or { display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: 12px; } .or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.gh-btn { display: flex; width: 100%; height: 34px; align-items: center; justify-content: center; gap: 8px; background: #1c1c21; color: #fff; border: 0; border-radius: var(--radius); font-size: 13px; cursor: pointer; }
+
+/* ---------- welcome tour ---------- */
+.dim-app { position: absolute; inset: 0; filter: blur(1.5px); opacity: .55; pointer-events: none; }
+.modal-scrim { position: absolute; inset: 0; background: rgb(20 20 30 / .35); display: grid; place-items: center; padding: 24px; }
+.modal { width: min(560px, 100%); background: var(--panel); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; border: 1px solid var(--border); }
+.modal-art { height: 210px; background: var(--side); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: center; padding: 18px; }
+.modal-body { padding: 20px 24px 18px; }
+.modal-body h2 { font-size: 17px; margin: 0 0 6px; }
+.modal-body p { margin: 0; color: var(--muted); }
+.modal-foot { display: flex; align-items: center; gap: 10px; padding: 12px 24px 18px; }
+.pager { display: flex; gap: 5px; } .pager i { width: 6px; height: 6px; border-radius: 3px; background: var(--border-strong); } .pager i.on { width: 18px; background: var(--accent); }
+.modal-foot .btn.primary { margin-left: auto; }
+.tour-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 16px; }
+.tour-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.tour-card .modal-art { height: 150px; padding: 12px; }
+.tour-card .modal-body { padding: 12px 14px 14px; } .tour-card h2 { font-size: 14px; } .tour-card p { font-size: 12.5px; }
+.art-prompt { width: 100%; max-width: 380px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: 8px; padding: 10px 12px; font-size: 12px; box-shadow: 0 2px 8px rgb(0 0 0 / .05); }
+.art-prompt .row { display: flex; gap: 6px; margin-top: 8px; }
+.art-log { width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 6px; font-size: 11.5px; }
+.art-log div { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; display: flex; gap: 6px; align-items: center; }
+.art-log .tool { font-family: var(--mono); color: var(--muted); }
+.art-pr { width: 100%; max-width: 380px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 12px; }
+.art-pr .pr-title { font-weight: 600; font-size: 13px; display: flex; gap: 6px; align-items: center; }
+.art-pr .diff { font-family: var(--mono); font-size: 11px; margin-top: 8px; color: var(--muted); }
+.art-pr .diff .a { color: var(--green); } .art-pr .diff .d { color: var(--red); }
+
+/* ---------- the app shell ---------- */
+.app { display: grid; grid-template-columns: 232px 1fr; min-height: 640px; }
+.side { background: var(--side); border-right: 1px solid var(--border); display: flex; flex-direction: column; font-size: 13px; }
+.side-head { padding: 12px 10px 6px; display: flex; flex-direction: column; gap: 8px; }
+.side-head .brand { padding: 4px 6px; }
+.side-switch { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--border); background: var(--panel); border-radius: var(--radius); font-size: 12.5px; }
+.side-switch .chev { margin-left: auto; color: var(--dim); }
+.side .btn.primary { height: 30px; font-weight: 500; }
+.side-nav { padding: 6px 10px; display: flex; flex-direction: column; gap: 1px; }
+.side-nav a { color: var(--text); padding: 4px 8px; border-radius: var(--radius); display: flex; gap: 8px; align-items: center; }
+.side-nav a.on { background: var(--hover); }
+.side-nav .ico { width: 16px; color: var(--muted); text-align: center; }
+.side-group { padding: 10px 18px 2px; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+.side-sess { padding: 2px 10px; display: flex; flex-direction: column; gap: 1px; }
+.side-sess a { color: var(--text); padding: 4px 8px; border-radius: var(--radius); display: flex; gap: 8px; align-items: center; font-size: 12.5px; }
+.side-sess a .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.side-sess .who { font-size: 10.5px; color: var(--dim); }
+.side-account { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 8px; border-top: 1px solid var(--border); }
+.side-account .t { display: flex; flex-direction: column; line-height: 1.3; } .side-account .t .dim { font-size: 11px; }
+.main { padding: 28px 36px; overflow: hidden; }
+.page { max-width: 720px; margin: 0 auto; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+.prompt-box { background: var(--panel); border: 1px solid var(--border-strong); border-radius: 8px; }
+.prompt-box textarea { border: 0; min-height: 120px; resize: none; padding: 10px 12px; }
+.prompt-box .bar { display: flex; justify-content: flex-end; padding: 6px 8px; border-top: 1px solid var(--border); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.form { display: flex; flex-direction: column; gap: 12px; }
+.form label { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-small); color: var(--muted); font-weight: 500; }
+.form-foot { display: flex; align-items: center; gap: 8px; } .form-foot .btn.primary { margin-left: auto; }
+
+/* checklist */
+.welcome-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+.welcome-head h1 { margin: 0; font-size: 20px; }
+.welcome-head p { margin: 2px 0 0; color: var(--muted); }
+.progress { height: 6px; background: var(--gray-bg); border-radius: 3px; overflow: hidden; margin: 2px 0 14px; } .progress i { display: block; height: 100%; background: var(--green); border-radius: 3px; }
+.check { display: grid; grid-template-columns: 26px 1fr auto; gap: 12px; align-items: start; padding: 14px 4px; border-top: 1px solid var(--border); }
+.check:first-of-type { border-top: 0; }
+.tick { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border-strong); display: flex; align-items: center; justify-content: center; font-size: 12px; color: transparent; margin-top: 1px; }
+.check.done .tick { background: var(--green); border-color: var(--green); color: #fff; }
+.check.done .c-title { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--dim); }
+.check.blocked .tick { border-style: dashed; }
+.c-title { font-weight: 600; }
+.c-desc { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.c-extra { margin-top: 8px; font-size: 12px; }
+.team-card { display: flex; gap: 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--side); margin-top: 8px; }
+.team-card .t { flex: 1; font-size: 12.5px; line-height: 1.4; } .team-card .t b { font-size: 13px; }
+.glossary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
+.glossary div { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 12px; color: var(--muted); }
+.glossary b { display: block; color: var(--text); font-size: 12.5px; margin-bottom: 2px; }
+
+/* starter prompts */
+.starters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.starter { text-align: left; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; font-size: 12.5px; cursor: pointer; display: flex; flex-direction: column; gap: 3px; }
+.starter:hover { border-color: var(--accent); }
+.starter .k { font-size: 11px; color: var(--dim); }
+.coach { position: absolute; z-index: 6; width: 250px; background: #1c1c21; color: #e8e8ec; border-radius: 8px; padding: 10px 12px; font-size: 12px; box-shadow: var(--shadow); }
+.coach b { color: #fff; display: block; margin-bottom: 2px; }
+.coach .foot { display: flex; justify-content: space-between; margin-top: 8px; color: #a0a0ab; font-size: 11px; }
+.coach::after { content: ""; position: absolute; width: 10px; height: 10px; background: #1c1c21; transform: rotate(45deg); }
+.coach.left::after { left: -5px; top: 18px; } .coach.up::after { top: -5px; left: 24px; }
+.ring { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 8px; }
+
+/* admin invite form */
+.group { margin-top: 8px; }
+.group > h2 { margin-bottom: 2px; } .group > .hint { display: block; margin-bottom: 12px; }
+.preview { border: 1px dashed var(--border-strong); border-radius: 10px; padding: 14px; background: var(--side); }
+.preview .lbl { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; }
+.msg { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; white-space: pre-wrap; line-height: 1.55; }
+.copy-row { display: flex; gap: 8px; }
+.segs { display: flex; gap: 6px; } .segs .btn.on { background: var(--hover); border-color: var(--border-strong); }
+
+/* edge states */
+.trio { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.trio .browser .viewport { min-height: 380px; }
+.trio .auth { min-height: 380px; padding: 20px 12px; }
+.trio .auth-card { padding: 20px; gap: 12px; }
+@media (max-width: 1000px) { .screen { grid-template-columns: 1fr; } .trio, .tour-strip { grid-template-columns: 1fr; } .invite { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="doc">
+
+<header>
+  <h1>Invitations &amp; first run</h1>
+  <p>What someone sees from the moment they open an invitation link until their first session. Today the link opens a
+    sign-up card and then drops them on an empty <b>New session</b> page, with no explanation of what Beethoven is, what their role or team
+    means, or what to do first. These mockups explain the platform on the way in and make the first session easy.</p>
+  <p class="dim" style="font-size:12.5px">Static mockups using the app's own design tokens. Names and data are made up.</p>
+  <nav class="toc">
+    <a href="#s0">0 · Today</a><a href="#s1">1 · Invitation page</a><a href="#s2">2 · Welcome tour</a><a href="#s3">3 · Get-started checklist</a>
+    <a href="#s4">4 · First session</a><a href="#s5">5 · Edge cases</a><a href="#s6">6 · Sending an invitation</a>
+  </nav>
+  <div class="flow">
+    <span class="step">Admin makes link</span>→<span class="step">Invitee opens link</span>→<span class="step">Create account</span>→<span class="step new">Welcome tour</span>→<span class="step new">Checklist: GitHub, team, first prompt</span>→<span class="step">First session</span>→<span class="step">First pull request</span>
+  </div>
+</header>
+
+<!-- ============================================================ 0 TODAY -->
+<section class="screen" id="s0">
+  <div class="screen-label"><span class="num">00</span><h2>What happens today</h2><span class="tag now">current</span></div>
+  <div>
+    <div style="display:grid;grid-template-columns:1fr 1.35fr;gap:16px">
+      <div class="browser">
+        <div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/invite/9f2c…</span></div>
+        <div class="viewport" style="min-height:520px">
+          <div class="auth" style="min-height:520px">
+            <form class="auth-card" onsubmit="return false">
+              <div class="brand">Beethoven</div>
+              <div class="auth-head">
+                <h1>Join Beethoven</h1>
+                <p class="muted">Ada Lovelace invited you as a member, in Payments. Create your account.</p>
+              </div>
+              <label class="field"><span class="field-label">Name</span><input /></label>
+              <label class="field"><span class="field-label">Email</span><input readonly value="grace@acme.dev" /></label>
+              <label class="field"><span class="field-label">Password</span><input type="password" /><span class="hint">At least 8 characters.</span></label>
+              <button class="btn primary block">Create account</button>
+            </form>
+          </div>
+          <div class="pinmark" style="left:40px;top:150px">1</div>
+          <div class="pinmark" style="left:40px;top:216px">2</div>
+        </div>
+      </div>
+      <div class="browser">
+        <div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/</span></div>
+        <div class="viewport" style="min-height:520px">
+          <div class="app" style="grid-template-columns:150px 1fr;min-height:520px">
+            <aside class="side">
+              <div class="side-head"><span class="brand">Beethoven</span><button class="btn primary">New session</button></div>
+              <div class="side-nav"><a>Automations</a><a>Insights</a><a>Settings</a></div>
+              <div class="side-sess"><p class="dim" style="font-size:12px;padding:4px 8px">No sessions yet.</p></div>
+              <div class="side-account"><span class="avatar sm">GH</span><span class="t" style="font-size:12px">Grace<span class="dim">Member</span></span></div>
+            </aside>
+            <main class="main" style="padding:20px">
+              <h1 style="font-size:16px">New session</h1>
+              <div class="card" style="margin-bottom:12px;padding:12px 14px">
+                <h2 style="font-size:13px">Connect GitHub</h2>
+                <p class="muted" style="font-size:12px;margin:0 0 6px">Agents reach GitHub through a GitHub App of your own. GitHub opens with it filled in…</p>
+                <button class="btn primary sm">Create the GitHub App</button>
+              </div>
+              <div class="prompt-box"><textarea placeholder="What should the agent do?" style="min-height:70px"></textarea></div>
+              <div class="grid2" style="margin-top:10px;font-size:12px"><div class="field"><span class="field-label">Team</span><select><option>Workspace: no team</option></select></div><div class="field"><span class="field-label">Seen by</span><select><option>Everyone</option></select></div></div>
+              <p class="banner warn" style="margin-top:10px">No Anthropic credential is configured, so agents can't run. Add one in Settings › Credentials.</p>
+            </main>
+          </div>
+          <div class="pinmark" style="left:170px;top:100px">3</div>
+          <div class="pinmark" style="left:170px;top:236px">4</div>
+          <div class="pinmark" style="left:170px;top:316px">5</div>
+          <div class="pinmark" style="left:16px;top:200px">6</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    <h3>Where people get lost</h3>
+    <ul style="list-style:none;padding:0">
+      <li><span class="pin">1</span>"Beethoven" and "member" go unexplained. Nothing says it runs coding agents, or what joining Payments means.</li>
+      <li><span class="pin">2</span>A password is the only way in, even when the server has a GitHub App they will connect a minute later anyway.</li>
+      <li><span class="pin">3</span>Before the app is set up, a member is shown the admin's <i>Create the GitHub App</i> form.</li>
+      <li><span class="pin">4</span>An empty prompt with no examples, and "Workspace" / "Seen by" choices they can't judge yet.</li>
+      <li><span class="pin">5</span>Points members to credential settings only admins can change.</li>
+      <li><span class="pin">6</span>An empty sidebar, even though their team already has sessions they could learn from.</li>
+    </ul>
+    <h3>Also</h3>
+    <ul>
+      <li>Someone who already has an account can't use a team invitation: it fails with "already has an account: sign in instead".</li>
+      <li>Expired or used links end in a dead end with no one to ask.</li>
+      <li>Admins get a bare URL to paste, with nothing that tells the recipient what it is.</li>
+    </ul>
+  </aside>
+</section>
+
+<!-- ============================================================ 1 INVITE PAGE -->
+<section class="screen" id="s1">
+  <div class="screen-label"><span class="num">01</span><h2>The invitation page explains Beethoven</h2><span class="tag">/#/invite/:token</span></div>
+  <div class="browser">
+    <div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/invite/9f2c…</span></div>
+    <div class="invite">
+      <div class="invite-story">
+        <span class="brand">Beethoven</span>
+        <div>
+          <h1>Hand a coding task to an agent, get a pull request back.</h1>
+          <p class="lede" style="margin-top:10px">Beethoven runs Claude-powered coding agents on Acme's own servers. You describe the work; an agent does it in a sandbox while you get on with yours.</p>
+        </div>
+        <ol class="how">
+          <li><span class="n">✎</span><div><b>Describe the task</b><span>From here, Slack or the CLI: "Fix the flaky checkout test and open a PR."</span></div></li>
+          <li><span class="n">▶</span><div><b>Watch it work, or don't</b><span>Each session runs in its own container. Follow it live, or send more instructions while it runs.</span></div></li>
+          <li><span class="n">⇄</span><div><b>Review the pull request</b><span>When it's done, the agent opens a PR on GitHub, authored by you.</span></div></li>
+        </ol>
+        <div class="mini-term">
+          <div class="p">› Fix the flaky test in checkout_test.go</div>
+          <div><span class="tool">Read</span> checkout/checkout_test.go</div>
+          <div><span class="tool">Edit</span> wait for the payment webhook instead of sleeping</div>
+          <div><span class="tool">Bash</span> go test ./checkout/... -count=20 <span class="ok">✓ ok</span></div>
+          <div class="ok">⇄ Opened acme/payments#482</div>
+        </div>
+      </div>
+      <form class="invite-form" onsubmit="return false">
+        <div class="invite-who">
+          <span class="avatar">AL</span>
+          <span class="t"><b>Ada Lovelace invited you</b><span class="muted">to Acme's Beethoven</span></span>
+        </div>
+        <p class="note-quote">"Welcome aboard! We use this for the small stuff: flaky tests, dependency bumps, first drafts."</p>
+        <div class="team-card" style="margin:0;background:var(--panel)">
+          <span class="mark lg" style="background:#16a34a">P</span>
+          <span class="t"><b>You'll join Payments</b><br><span class="muted">6 people · 3 projects · checkout, ledger, webhooks</span></span>
+          <span class="avatars"><span class="avatar sm" style="background:#7c3aed">AL</span><span class="avatar sm" style="background:#db2777">KJ</span><span class="avatar sm" style="background:#0891b2">MT</span></span>
+        </div>
+        <div class="role-explain"><b>As a member</b> you can:
+          <ul><li>Start sessions and use Payments' projects and automations</li><li>See and follow your team's sessions</li></ul>
+          <span class="dim">Admins handle people, credentials and integrations.</span>
+        </div>
+        <button class="gh-btn" type="button"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.23 1.88.87 2.34.67.07-.52.28-.87.5-1.07-1.78-.2-3.65-.89-3.65-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8"/></svg>Continue with GitHub</button>
+        <div class="or">or with email</div>
+        <div class="grid2"><label class="field"><span class="field-label">Name</span><input value="Grace Hopper" /></label>
+          <label class="field"><span class="field-label">Email</span><input readonly value="grace@acme.dev" /></label></div>
+        <label class="field"><span class="field-label">Password</span><input type="password" value="••••••••••" /><span class="hint">At least 8 characters.</span></label>
+        <button class="btn primary block">Join Payments</button>
+        <p class="hint" style="margin:0;text-align:center">Already have an account? <a href="#">Sign in to accept</a> · Link expires Oct 27</p>
+      </form>
+    </div>
+  </div>
+  <aside class="notes">
+    <h3>What changes</h3>
+    <ul>
+      <li><b>The left side explains the product</b> in three steps, with a short replay of a real session. It's the only time some people read anything about Beethoven.</li>
+      <li><b>A person, not a token</b>: the inviter's name and an optional note they wrote (<a href="#s6">screen 6</a>).</li>
+      <li><b>The team, shown</b>: its colour mark, a few members and its projects, so "Payments" means something.</li>
+      <li><b>The role in plain words</b>: what a member can and can't do.</li>
+      <li><b>Continue with GitHub</b> (when the app exists) creates the account and connects GitHub in one step, skipping one task on the checklist.</li>
+      <li><b>Already have an account?</b> Sign in and the invitation adds you to the team.</li>
+    </ul>
+    <h3>Needs</h3>
+    <ul><li><code>GET /api/auth/invite</code> also returns the note, the team's colour, member count, projects and whether a GitHub App exists.</li>
+      <li>Accepting while signed in (team only, keeps your role).</li></ul>
+  </aside>
+</section>
+
+<!-- ============================================================ 2 TOUR -->
+<section class="screen" id="s2">
+  <div class="screen-label"><span class="num">02</span><h2>A three-card welcome tour</h2><span class="tag">first sign-in only</span></div>
+  <div>
+    <div class="browser">
+      <div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/welcome</span></div>
+      <div class="viewport" style="min-height:520px">
+        <div class="dim-app"><div class="app" style="min-height:520px"><aside class="side"></aside><main class="main"></main></div></div>
+        <div class="modal-scrim">
+          <div class="modal">
+            <div class="modal-art">
+              <div class="art-log">
+                <div><span class="dot blue"></span><b>Fix flaky checkout test</b><span class="chip blue" style="margin-left:auto">running · 2m</span></div>
+                <div><span class="tool">Read</span> checkout/checkout_test.go</div>
+                <div><span class="tool">Bash</span> go test ./checkout/... -count=20</div>
+                <div style="border-color:var(--accent);background:var(--blue-bg)"><span class="avatar sm">GH</span><span>Also check the refund test while you're there</span><span class="chip" style="margin-left:auto">queued</span></div>
+              </div>
+            </div>
+            <div class="modal-body">
+              <h2>2 · Follow along, or step away</h2>
+              <p>Each session runs in its own sandbox with your team's repositories. Everything it does streams live and stays as a replay. Send more instructions at any time: they wait their turn in the same conversation.</p>
+            </div>
+            <div class="modal-foot">
+              <span class="pager"><i></i><i class="on"></i><i></i></span>
+              <button class="btn ghost sm">Skip</button>
+              <button class="btn">Back</button>
+              <button class="btn primary">Next</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="tour-strip">
+      <div class="tour-card">
+        <div class="modal-art"><div class="art-prompt"><span class="dim">What should the agent do?</span><div style="margin-top:4px">Bump stripe-go to v82 and fix whatever breaks</div><div class="row"><span class="chip">Payments · checkout</span><span class="chip">Seen by the team</span></div></div></div>
+        <div class="modal-body"><h2>1 · Describe the work</h2><p>Write it like a ticket for a colleague. Pick a project: a set of repositories with its setup. Your team's is already picked.</p></div>
+      </div>
+      <div class="tour-card">
+        <div class="modal-art"><div class="art-log"><div><span class="dot blue"></span><b>Fix flaky checkout test</b></div><div><span class="tool">Bash</span> go test ./checkout/…</div><div style="border-color:var(--accent);background:var(--blue-bg)">Also check the refund test</div></div></div>
+        <div class="modal-body"><h2>2 · Follow along, or step away</h2><p>It streams live, here or in Slack, and you can steer it with follow-ups.</p></div>
+      </div>
+      <div class="tour-card">
+        <div class="modal-art"><div class="art-pr"><div class="pr-title"><span class="chip green">Open</span>Wait for the webhook in checkout tests</div><div class="dim" style="font-size:11px">acme/payments#482 · by grace-hopper</div><div class="diff"><div class="d">- time.Sleep(2 * time.Second)</div><div class="a">+ waitFor(t, hook.Received)</div></div></div></div>
+        <div class="modal-body"><h2>3 · Review the pull request</h2><p>The agent opens a PR as you, so your normal review and CI apply. Nothing merges by itself.</p></div>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    <h3>Why a tour</h3>
+    <ul>
+      <li>Three cards, the same three steps as the invitation page, so the idea sticks.</li>
+      <li>Each card shows something they'll see later (the prompt box, the live log, the PR), not decoration.</li>
+      <li><b>Skip</b> is always there; the tour shows once, on the first sign-in, and can be reopened from the account menu ("How Beethoven works").</li>
+      <li>Card 1 mentions <b>projects</b>, the one term people need before their first prompt.</li>
+    </ul>
+    <h3>Needs</h3>
+    <ul><li>An <code>onboarded_at</code> (or per-step flags) on the account so the tour and checklist appear once.</li></ul>
+  </aside>
+</section>
+
+<!-- ============================================================ 3 CHECKLIST -->
+<section class="screen" id="s3">
+  <div class="screen-label"><span class="num">03</span><h2>A get-started checklist on the home page</h2><span class="tag">/#/ until finished or hidden</span></div>
+  <div class="browser">
+    <div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/</span></div>
+    <div class="viewport">
+      <div class="app">
+        <aside class="side">
+          <div class="side-head">
+            <span class="brand">Beethoven</span>
+            <div class="side-switch"><span class="mark" style="background:#16a34a">P</span>Payments<span class="chev">▾</span></div>
+            <button class="btn primary">New session <span style="opacity:.7;font-size:11px">C</span></button>
+          </div>
+          <div class="side-nav"><a class="on"><span class="ico">★</span>Get started<span class="chip" style="margin-left:auto">2/4</span></a><a><span class="ico">↻</span>Automations</a><a><span class="ico">▤</span>Insights</a><a><span class="ico">⚙</span>Settings</a></div>
+          <div class="side-group">Your team's recent work</div>
+          <div class="side-sess">
+            <a><span class="dot green"></span><span class="ellipsis">Bump stripe-go to v82</span><span class="who">KJ</span></a>
+            <a><span class="dot blue"></span><span class="ellipsis">Add idempotency keys to refunds</span><span class="who">MT</span></a>
+            <a><span class="dot green"></span><span class="ellipsis">Nightly: triage failing CI</span><span class="chip amber" style="font-size:10px;line-height:15px">auto</span></a>
+          </div>
+          <div class="side-account"><span class="avatar">GH</span><span class="t">Grace Hopper<span class="dim">Member · Payments</span></span></div>
+        </aside>
+        <main class="main">
+          <div class="page">
+            <div class="welcome-head">
+              <span class="avatar" style="width:40px;height:40px;font-size:14px">GH</span>
+              <div><h1>Welcome, Grace</h1><p>Four steps to your first pull request. Takes about five minutes.</p></div>
+              <button class="btn ghost sm" style="margin-left:auto">Hide</button>
+            </div>
+            <div class="card">
+              <div class="progress"><i style="width:50%"></i></div>
+              <div class="check done">
+                <span class="tick">✓</span>
+                <div><div class="c-title">Create your account</div></div><span></span>
+              </div>
+              <div class="check done">
+                <span class="tick">✓</span>
+                <div><div class="c-title">Join Payments</div>
+                  <div class="c-desc">Ada added you. New sessions start in Payments and use its <b>checkout</b> project.</div></div><span></span>
+              </div>
+              <div class="check">
+                <span class="tick"></span>
+                <div><div class="c-title">Connect GitHub</div>
+                  <div class="c-desc">So pull requests open as you and your commits are authored by you. One click on GitHub.</div>
+                </div>
+                <button class="btn primary">Connect GitHub</button>
+              </div>
+              <div class="check">
+                <span class="tick"></span>
+                <div><div class="c-title">Start your first session</div>
+                  <div class="c-desc">Try something small you'd normally put off. Here's what your team asks for:</div>
+                  <div class="c-extra" style="display:flex;flex-wrap:wrap;gap:6px">
+                    <span class="chip">Fix a flaky test</span><span class="chip">Bump a dependency</span><span class="chip">Explain how refunds work</span><span class="chip">Add a missing test</span>
+                  </div>
+                </div>
+                <button class="btn">Start</button>
+              </div>
+            </div>
+            <div class="glossary">
+              <div><b>Session</b>One task and its conversation with an agent, in its own sandbox. You can send follow-ups.</div>
+              <div><b>Project</b>A saved set of repositories with their setup and secrets. Your team picks the default.</div>
+              <div><b>Automation</b>A saved prompt that runs on a schedule, a GitHub event or a webhook.</div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    <h3>What changes</h3>
+    <ul>
+      <li>New people land on <b>Get started</b>, not an empty form. It stays in the sidebar with a count until they finish or hide it.</li>
+      <li>Each step checks itself off from real state (account, team, GitHub connected, first session started).</li>
+      <li>A short <b>glossary</b> of the three words used everywhere in the app.</li>
+      <li>The sidebar shows <b>the team's recent sessions</b> (that they may see), so it's never empty on day one and they can learn from real prompts.</li>
+    </ul>
+    <h3>Role-aware</h3>
+    <ul>
+      <li>If no GitHub App exists yet, a member sees "Waiting for Ada to connect GitHub" with a <i>Remind them</i> button, never the admin form.</li>
+      <li>If no Anthropic credential exists, the same, with the admins named. Admins get the setup steps instead.</li>
+    </ul>
+  </aside>
+</section>
+
+<!-- ============================================================ 4 FIRST SESSION -->
+<section class="screen" id="s4">
+  <div class="screen-label"><span class="num">04</span><h2>A first session with starting points</h2><span class="tag">New session, first time</span></div>
+  <div class="browser">
+    <div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/</span></div>
+    <div class="viewport">
+      <div class="app">
+        <aside class="side">
+          <div class="side-head"><span class="brand">Beethoven</span><div class="side-switch"><span class="mark" style="background:#16a34a">P</span>Payments<span class="chev">▾</span></div><button class="btn primary">New session</button></div>
+          <div class="side-nav"><a><span class="ico">★</span>Get started<span class="chip" style="margin-left:auto">3/4</span></a><a><span class="ico">↻</span>Automations</a><a><span class="ico">▤</span>Insights</a><a><span class="ico">⚙</span>Settings</a></div>
+          <div class="side-account"><span class="avatar">GH</span><span class="t">Grace Hopper<span class="dim">Member · Payments</span></span></div>
+        </aside>
+        <main class="main" style="position:relative">
+          <div class="page">
+            <h1>New session</h1>
+            <div class="form">
+              <div class="prompt-box ring">
+                <textarea>Fix the flaky test in checkout/checkout_test.go. It fails about 1 in 10 runs on CI. Find the cause, fix it, run it 20 times to prove it, and open a PR.</textarea>
+                <div class="bar"><button class="btn sm">Attach files</button></div>
+              </div>
+              <div>
+                <div class="hint" style="margin-bottom:6px">Or start from one of these</div>
+                <div class="starters">
+                  <button class="starter"><span>🧪 Fix a flaky test</span><span class="k">Find, fix, prove, open a PR</span></button>
+                  <button class="starter"><span>📦 Bump a dependency</span><span class="k">Upgrade and fix what breaks</span></button>
+                  <button class="starter"><span>🔍 Explain some code</span><span class="k">No changes, just an answer</span></button>
+                </div>
+              </div>
+              <div class="grid2">
+                <label>Project<span class="with-mark" style="display:flex;gap:6px;align-items:center"><span class="mark" style="background:#16a34a">P</span><select><option>checkout (acme/payments, acme/sdk)</option></select></span></label>
+                <label>Seen by<select><option>Payments (team default)</option></select></label>
+              </div>
+              <div class="form-foot"><span class="hint">⌘/Ctrl+Enter to start. Nothing merges without your review.</span><button class="btn primary">Start session</button></div>
+            </div>
+          </div>
+          <div class="coach left" style="left:calc(50% + 300px);top:96px">
+            <b>Write it like a ticket</b>Say what "done" looks like: tests pass, a PR opened, or just an answer. You can always send a follow-up.
+            <div class="foot"><span>1 of 2</span><span>Next ›</span></div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    <h3>What changes</h3>
+    <ul>
+      <li><b>Starting points</b> fill the prompt with a good example. Admins or team leads could set their own per team later.</li>
+      <li>Two <b>tips</b> point at the prompt and at "Seen by", shown only for the first session.</li>
+      <li>The team's project is picked and labelled with its repositories, so "Workspace" stops being a mystery choice.</li>
+      <li>The footer reassures: <i>nothing merges without your review</i>.</li>
+      <li>Model and effort fold away under "More options" for new people.</li>
+    </ul>
+  </aside>
+</section>
+
+<!-- ============================================================ 5 EDGE CASES -->
+<section class="screen full" id="s5">
+  <div class="screen-label"><span class="num">05</span><h2>Edge cases</h2></div>
+  <div class="trio">
+    <div>
+      <div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">…/#/invite/9f2c…</span></div>
+        <div class="viewport"><div class="auth"><div class="auth-card">
+          <div class="brand">Beethoven</div>
+          <div class="invite-who"><span class="avatar">AL</span><span class="t"><b>Ada invited you to Payments</b><span class="muted">You're signed in as grace@acme.dev</span></span></div>
+          <p class="muted" style="margin:0;font-size:12.5px">You already have an account here. Accepting adds you to <b>Payments</b> as a member; your role stays the same.</p>
+          <button class="btn primary block">Join Payments</button>
+          <button class="btn ghost block" style="height:28px">Not you? Sign in as someone else</button>
+        </div></div></div></div>
+      <p class="muted" style="font-size:12.5px"><b>Already has an account.</b> Team invitations work for people who are already here, instead of the "sign in instead" error.</p>
+    </div>
+    <div>
+      <div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">…/#/invite/9f2c…</span></div>
+        <div class="viewport"><div class="auth"><div class="auth-card">
+          <div class="brand">Beethoven</div>
+          <div class="auth-head"><h1>This invitation has expired</h1><p class="muted">Invitations work once, for 7 days. Ada Lovelace sent this one on Oct 13.</p></div>
+          <button class="btn primary block">Ask Ada for a new link</button>
+          <p class="hint" style="margin:0;text-align:center">Already joined? <a href="#">Sign in</a></p>
+        </div></div></div></div>
+      <p class="muted" style="font-size:12.5px"><b>Expired, used or withdrawn.</b> Name the inviter and offer one action. "Ask" opens a <code>mailto:</code> or tells the inviter in the app.</p>
+    </div>
+    <div>
+      <div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">…/#/</span></div>
+        <div class="viewport" style="padding:20px">
+          <div class="card">
+            <div class="check blocked" style="border:0;padding:4px 0">
+              <span class="tick"></span>
+              <div><div class="c-title">Connect GitHub</div>
+                <div class="c-desc">Ada hasn't set up GitHub for this server yet. Until then, agents can work in a scratch sandbox but can't open pull requests.</div>
+                <div class="c-extra" style="display:flex;gap:6px;margin-top:10px"><button class="btn sm">Remind Ada</button><button class="btn sm ghost">Try a scratch session</button></div>
+              </div><span></span>
+            </div>
+          </div>
+          <p class="banner info" style="margin-top:12px">Agents can't run until an admin adds a Claude credential. Ada and Ken are admins here.</p>
+        </div></div>
+      <p class="muted" style="font-size:12.5px"><b>Server not set up yet.</b> Members see who can fix it and what they can still try, never admin-only forms.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ 6 ADMIN SENDING -->
+<section class="screen" id="s6">
+  <div class="screen-label"><span class="num">06</span><h2>Sending an invitation</h2><span class="tag">Settings › People</span></div>
+  <div class="browser">
+    <div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/settings/people</span></div>
+    <div class="viewport" style="padding:28px 36px">
+      <div class="page" style="max-width:860px">
+        <div class="group">
+          <h2>Invite someone</h2>
+          <span class="hint">An invitation is a link that works once, for 7 days. Beethoven doesn't send email: copy the message below into Slack or email.</span>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+            <div class="form">
+              <label>Email<input value="grace@acme.dev" /></label>
+              <div class="grid2"><label>Role<select><option>Member</option></select></label><label>Team<select><option>Payments</option></select></label></div>
+              <label>A note for them <span class="dim" style="font-weight:400">(optional, shown on the invitation)</span>
+                <textarea rows="3">Welcome aboard! We use this for the small stuff: flaky tests, dependency bumps, first drafts.</textarea></label>
+              <div class="form-foot"><span></span><button class="btn primary">Create invitation</button></div>
+            </div>
+            <div class="preview">
+              <div class="lbl">Ready to send</div>
+              <div class="segs" style="margin-bottom:8px"><button class="btn sm on">Message</button><button class="btn sm">Link only</button></div>
+<div class="msg">Hi Grace, I've invited you to <b>Beethoven</b>, where we hand coding tasks to agents that open pull requests for us. You'll be in <b>Payments</b>.
+
+Join here (works once, until Oct 27):
+<span class="mono" style="color:var(--accent)">https://beethoven.acme.dev/#/invite/9f2c…</span>
+
+Welcome aboard! We use this for the small stuff: flaky tests, dependency bumps, first drafts.
+– Ada</div>
+              <div class="copy-row" style="margin-top:8px"><button class="btn primary sm">Copy message</button><button class="btn sm">Preview their page ↗</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    <h3>What changes</h3>
+    <ul>
+      <li><b>A note</b> that the invitee sees on their page (<a href="#s1">screen 1</a>), for the personal touch.</li>
+      <li><b>A ready-to-paste message</b> that says what Beethoven is, so the link isn't a bare token in Slack.</li>
+      <li><b>Preview their page</b> shows the admin exactly what the invitee will see.</li>
+      <li>Later: team leads invite to their own team (today only admins can).</li>
+    </ul>
+    <h3>Needs</h3>
+    <ul><li>A <code>note</code> column on <code>invites</code> (≤ 280 chars).</li></ul>
+  </aside>
+</section>
+
+<section class="screen full" style="margin-top:56px">
+  <div class="notes" style="font-size:13.5px">
+    <h3>Suggested order of work</h3>
+    <ol style="margin:0;padding-left:18px">
+      <li><b>Explain on the way in:</b> the invitation page's left side, the inviter's note and plain-words role. Front-end plus a few more fields on <code>GET /api/auth/invite</code>.</li>
+      <li><b>Fix the dead ends:</b> role-aware setup prompts for members, the expired-link page, and accepting a team invitation with an existing account.</li>
+      <li><b>Get started checklist</b> with the glossary, and the team's recent sessions in the sidebar. Needs onboarding state on the account.</li>
+      <li><b>Welcome tour</b> and first-session tips and starting points.</li>
+      <li><b>Continue with GitHub</b> on the invitation page: the biggest change, since sign-up today is email and password only.</li>
+    </ol>
+  </div>
+</section>
+
+</div>
+</body>
+</html>
