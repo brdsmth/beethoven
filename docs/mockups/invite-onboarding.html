@@ -208,6 +208,38 @@ code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
 .trio .browser .viewport { min-height: 380px; }
 .trio .auth { min-height: 380px; padding: 20px 12px; }
 .trio .auth-card { padding: 20px; gap: 12px; }
+/* paths */
+.path-head { margin-top: 72px; padding: 18px 20px; border-radius: 12px; background: var(--panel); border: 1px solid var(--border); display: flex; gap: 16px; align-items: center; }
+.path-head .letter { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 18px; color: #fff; flex: none; }
+.path-head h2 { font-size: 18px; margin: 0; } .path-head p { margin: 2px 0 0; color: var(--muted); }
+.decision { display: grid; grid-template-columns: 1fr auto 1fr; gap: 0 18px; align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px; }
+.decision .q { grid-column: 1 / -1; justify-self: center; background: var(--text); color: var(--bg); border-radius: 8px; padding: 8px 14px; font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+.decision .arrows { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; text-align: center; color: var(--dim); font-size: 12px; margin-bottom: 8px; }
+.decision .side-a, .decision .side-b { border-radius: 10px; padding: 14px 16px; font-size: 12.5px; }
+.decision .side-a { background: var(--green-bg); grid-column: 1; } .decision .side-b { background: var(--amber-bg); grid-column: 3; }
+.decision b.h { display: block; font-size: 13.5px; margin-bottom: 4px; }
+.decision ol { margin: 6px 0 0; padding-left: 18px; } .decision li { margin: 2px 0; }
+.decision .side-a b.h { color: var(--green); } .decision .side-b b.h { color: var(--amber); }
+.decision .mid { grid-column: 2; color: var(--dim); font-size: 12px; }
+.choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+.choice { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--panel); display: flex; flex-direction: column; gap: 6px; }
+.choice.on { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent); }
+.choice .ic { width: 28px; height: 28px; border-radius: 7px; background: var(--blue-bg); color: var(--blue); display: flex; align-items: center; justify-content: center; font-size: 14px; }
+.choice b { font-size: 13px; } .choice span { color: var(--muted); font-size: 12px; }
+.repo-list { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.repo-list .r { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 12.5px; }
+.repo-list .r:first-child { border-top: 0; }
+.repo-list .r.on { background: var(--blue-bg); }
+.repo-list .r .d { color: var(--dim); font-size: 11.5px; margin-left: auto; }
+.repo-list input[type=checkbox] { width: auto; }
+.sheet { position: absolute; right: 0; top: 0; bottom: 0; width: 440px; background: var(--panel); border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgb(0 0 0 / .08); padding: 22px 24px; display: flex; flex-direction: column; gap: 14px; }
+.sheet h2 { font-size: 16px; margin: 0; }
+.from-inviter { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 8px; background: var(--blue-bg); font-size: 12.5px; }
+.from-inviter b { display: block; }
+.toggle { display: flex !important; flex-direction: row !important; align-items: center; gap: 8px; color: var(--text) !important; font-weight: 400 !important; font-size: 12.5px !important; }
+.team-state { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-radius: 8px; font-size: 12px; }
+.team-state.ok { background: var(--green-bg); color: var(--green); } .team-state.empty { background: var(--amber-bg); color: var(--amber); }
+@media (max-width: 1000px) { .decision { grid-template-columns: 1fr; } .decision .side-a, .decision .side-b, .decision .mid { grid-column: 1; } .choices { grid-template-columns: 1fr; } .sheet { position: static; width: auto; } }
 @media (max-width: 1000px) { .screen { grid-template-columns: 1fr; } .trio, .tour-strip { grid-template-columns: 1fr; } .invite { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -222,10 +254,17 @@ code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
   <p class="dim" style="font-size:12.5px">Static mockups using the app's own design tokens. Names and data are made up.</p>
   <nav class="toc">
     <a href="#s0">0 · Today</a><a href="#s1">1 · Invitation page</a><a href="#s2">2 · Welcome tour</a><a href="#s3">3 · Get-started checklist</a>
-    <a href="#s4">4 · First session</a><a href="#s5">5 · Edge cases</a><a href="#s6">6 · Sending an invitation</a>
+    <a href="#s4">4 · First session</a><a href="#paths">Two paths</a><a href="#b1">B1 · No project yet</a><a href="#b2">B2 · Existing repository</a>
+    <a href="#b3">B3 · New repository</a><a href="#b4">B4 · First session in a new project</a><a href="#s5">5 · Edge cases</a><a href="#s6">6 · Inviting, team has a project</a><a href="#s6b">6·B · Inviting, team has none</a>
   </nav>
   <div class="flow">
-    <span class="step">Admin makes link</span>→<span class="step">Invitee opens link</span>→<span class="step">Create account</span>→<span class="step new">Welcome tour</span>→<span class="step new">Checklist: GitHub, team, first prompt</span>→<span class="step">First session</span>→<span class="step">First pull request</span>
+    <span class="step">Admin makes link</span>→<span class="step">Invitee opens link</span>→<span class="step">Create account</span>→<span class="step new">Welcome tour</span>→<span class="step new">Does the team have a project?</span>
+  </div>
+  <div class="flow" style="margin-top:6px;padding-left:24px">
+    <b style="color:var(--green)">Yes</b>→<span class="step new">Checklist: GitHub, first session</span>→<span class="step new">Suggested first session (3, 4)</span>→<span class="step">First pull request</span>
+  </div>
+  <div class="flow" style="margin-top:6px;padding-left:24px">
+    <b style="color:var(--amber)">No</b>&nbsp;→<span class="step new">Checklist: GitHub, give the team a project</span>→<span class="step new">Existing repository or new one (B2, B3)</span>→<span class="step new">Suggested first session (B4)</span>→<span class="step">First pull request</span>
   </div>
 </header>
 
@@ -404,7 +443,7 @@ code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
     <div class="tour-strip">
       <div class="tour-card">
         <div class="modal-art"><div class="art-prompt"><span class="dim">What should the agent do?</span><div style="margin-top:4px">Bump stripe-go to v82 and fix whatever breaks</div><div class="row"><span class="chip">Payments · checkout</span><span class="chip">Seen by the team</span></div></div></div>
-        <div class="modal-body"><h2>1 · Describe the work</h2><p>Write it like a ticket for a colleague. Pick a project: a set of repositories with its setup. Your team's is already picked.</p></div>
+        <div class="modal-body"><h2>1 · Describe the work</h2><p>Write it like a ticket for a colleague. Pick a project: a set of repositories with its setup. If your team has one, it's already picked.</p></div>
       </div>
       <div class="tour-card">
         <div class="modal-art"><div class="art-log"><div><span class="dot blue"></span><b>Fix flaky checkout test</b></div><div><span class="tool">Bash</span> go test ./checkout/…</div><div style="border-color:var(--accent);background:var(--blue-bg)">Also check the refund test</div></div></div>
@@ -428,6 +467,31 @@ code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
     <ul><li>An <code>onboarded_at</code> (or per-step flags) on the account so the tour and checklist appear once.</li></ul>
   </aside>
 </section>
+
+<!-- ============================================================ PATHS -->
+<section class="screen full" id="paths">
+  <div class="screen-label"><span class="num">→</span><h2>After the tour, it depends on the team</h2></div>
+  <div class="decision">
+    <div class="q">Does the team they joined have a project they can use?</div>
+    <div class="arrows"><span>yes ↙</span><span>↘ no</span></div>
+    <div class="side-a">
+      <b class="h">A · Yes: go straight to work</b>
+      The team already has repositories set up. Get them connected and into a first session that's ready to start.
+      <ol><li>Connect GitHub</li><li>Start the suggested first session, in the team's default project (<a href="#s3">3</a>, <a href="#s4">4</a>)</li></ol>
+    </div>
+    <div class="mid">or no team at all:<br>use the workspace's<br>projects the same way</div>
+    <div class="side-b">
+      <b class="h">B · No: set the team up first</b>
+      Nobody has connected the team's code yet, and the new person may be the first one here. Show them how to give the team a project, then the first session.
+      <ol><li>Connect GitHub</li><li>Give the team a project: <b>use an existing repository</b> (<a href="#b2">B2</a>) or <b>start a new one</b> (<a href="#b3">B3</a>)</li><li>Start a first session suggested for that project (<a href="#b4">B4</a>)</li></ol>
+    </div>
+  </div>
+  <p class="muted" style="font-size:12.5px;margin:10px 2px 0">How it's decided: the team has at least one project (<code>environments.team_id</code>) its members may use, preferring its
+    <code>default_environment_id</code>. The invitation page (<code>GET /api/auth/invite</code>) returns the team's project count so it can set expectations before sign-up.
+    Members may already create their team's projects (<code>access.ManageEnvironment</code>), so path B needs no admin, except to give the GitHub App access to a repository it can't see yet (<a href="#b2">B2</a>).</p>
+</section>
+
+<div class="path-head" id="pathA"><span class="letter" style="background:var(--green)">A</span><div><h2>Path A · The team has a project</h2><p>Payments has <b>checkout</b> (acme/payments, acme/sdk) as its default project.</p></div></div>
 
 <!-- ============================================================ 3 CHECKLIST -->
 <section class="screen" id="s3">
@@ -479,12 +543,13 @@ code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
               <div class="check">
                 <span class="tick"></span>
                 <div><div class="c-title">Start your first session</div>
-                  <div class="c-desc">Try something small you'd normally put off. Here's what your team asks for:</div>
+                  <div class="from-inviter c-extra"><span class="avatar sm">AL</span><div><b>Ada suggested a first task</b>"Fix the flaky test in checkout/checkout_test.go…" in <b>checkout</b></div></div>
+                  <div class="c-desc" style="margin-top:8px">Or something small you'd normally put off. Here's what your team asks for:</div>
                   <div class="c-extra" style="display:flex;flex-wrap:wrap;gap:6px">
                     <span class="chip">Fix a flaky test</span><span class="chip">Bump a dependency</span><span class="chip">Explain how refunds work</span><span class="chip">Add a missing test</span>
                   </div>
                 </div>
-                <button class="btn">Start</button>
+                <button class="btn">Open it</button>
               </div>
             </div>
             <div class="glossary">
@@ -529,6 +594,7 @@ code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
           <div class="page">
             <h1>New session</h1>
             <div class="form">
+              <div class="from-inviter"><span class="avatar sm">AL</span><div><b>Ada suggested this for your first session</b>You can change it, or pick something else below.</div></div>
               <div class="prompt-box ring">
                 <textarea>Fix the flaky test in checkout/checkout_test.go. It fails about 1 in 10 runs on CI. Find the cause, fix it, run it 20 times to prove it, and open a PR.</textarea>
                 <div class="bar"><button class="btn sm">Attach files</button></div>
@@ -548,7 +614,7 @@ code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
               <div class="form-foot"><span class="hint">⌘/Ctrl+Enter to start. Nothing merges without your review.</span><button class="btn primary">Start session</button></div>
             </div>
           </div>
-          <div class="coach left" style="left:calc(50% + 300px);top:96px">
+          <div class="coach left" style="right:12px;top:150px;width:210px">
             <b>Write it like a ticket</b>Say what "done" looks like: tests pass, a PR opened, or just an answer. You can always send a follow-up.
             <div class="foot"><span>1 of 2</span><span>Next ›</span></div>
           </div>
@@ -559,12 +625,220 @@ code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
   <aside class="notes">
     <h3>What changes</h3>
     <ul>
+      <li><b>The inviter's suggestion is already in the prompt</b>, with the project they picked (<a href="#s6">screen 6</a>). Without one, it's empty and the starting points are offered.</li>
       <li><b>Starting points</b> fill the prompt with a good example. Admins or team leads could set their own per team later.</li>
       <li>Two <b>tips</b> point at the prompt and at "Seen by", shown only for the first session.</li>
       <li>The team's project is picked and labelled with its repositories, so "Workspace" stops being a mystery choice.</li>
       <li>The footer reassures: <i>nothing merges without your review</i>.</li>
       <li>Model and effort fold away under "More options" for new people.</li>
     </ul>
+  </aside>
+</section>
+
+<div class="path-head" id="pathB"><span class="letter" style="background:var(--amber)">B</span><div><h2>Path B · The team has no project yet</h2><p>Sam joins <b>Mobile</b>, a new team. Nobody has connected its code yet.</p></div></div>
+
+<!-- ============================================================ B1 CHECKLIST, EMPTY TEAM -->
+<section class="screen" id="b1">
+  <div class="screen-label"><span class="num">B1</span><h2>The checklist asks them to give the team a project</h2><span class="tag">/#/</span></div>
+  <div class="browser">
+    <div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/</span></div>
+    <div class="viewport">
+      <div class="app">
+        <aside class="side">
+          <div class="side-head">
+            <span class="brand">Beethoven</span>
+            <div class="side-switch"><span class="mark" style="background:#7c3aed">M</span>Mobile<span class="chev">▾</span></div>
+            <button class="btn primary">New session <span style="opacity:.7;font-size:11px">C</span></button>
+          </div>
+          <div class="side-nav"><a class="on"><span class="ico">★</span>Get started<span class="chip" style="margin-left:auto">3/5</span></a><a><span class="ico">↻</span>Automations</a><a><span class="ico">▤</span>Insights</a><a><span class="ico">⚙</span>Settings</a></div>
+          <div class="side-group">Mobile</div>
+          <div class="side-sess"><p class="dim" style="font-size:12px;padding:2px 8px;margin:0">No sessions yet. Yours will be the first.</p></div>
+          <div class="side-account"><span class="avatar" style="background:#0891b2">SO</span><span class="t">Sam Okafor<span class="dim">Member · Mobile</span></span></div>
+        </aside>
+        <main class="main">
+          <div class="page">
+            <div class="welcome-head">
+              <span class="avatar" style="width:40px;height:40px;font-size:14px;background:#0891b2">SO</span>
+              <div><h1>Welcome, Sam</h1><p>Mobile is new here, so you'll set it up. About ten minutes to your first pull request.</p></div>
+              <button class="btn ghost sm" style="margin-left:auto">Hide</button>
+            </div>
+            <div class="card">
+              <div class="progress"><i style="width:60%"></i></div>
+              <div class="check done"><span class="tick">✓</span><div><div class="c-title">Create your account</div></div><span></span></div>
+              <div class="check done"><span class="tick">✓</span><div><div class="c-title">Join Mobile</div></div><span></span></div>
+              <div class="check done"><span class="tick">✓</span><div><div class="c-title">Connect GitHub</div><div class="c-desc">Connected as @sam-okafor when you signed up.</div></div><span></span></div>
+              <div class="check">
+                <span class="tick"></span>
+                <div style="min-width:0">
+                  <div class="c-title">Give Mobile a project</div>
+                  <div class="c-desc">A project is the code the agents work on: one or more repositories, plus how to set them up. Everyone in Mobile will use it.</div>
+                  <div class="choices">
+                    <div class="choice on"><span class="ic">⎇</span><b>Use an existing repository</b><span>Your team's code is already on GitHub. Pick the repositories and you're done.</span><span><button class="btn primary sm">Choose repositories</button></span></div>
+                    <div class="choice"><span class="ic">＋</span><b>Start a new repository</b><span>Starting from nothing? Beethoven creates the repository and an agent builds the first version.</span><span><button class="btn sm">Start a new one</button></span></div>
+                  </div>
+                  <p class="hint" style="margin:8px 0 0">Not ready? <a href="#">Try a scratch session</a>: an empty sandbox with no repository, just to see how it works.</p>
+                </div>
+                <span></span>
+              </div>
+              <div class="check" style="opacity:.55">
+                <span class="tick"></span>
+                <div><div class="c-title">Start your first session</div><div class="c-desc">Once Mobile has a project, we'll suggest a first task for it.</div></div>
+                <span></span>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    <h3>What changes from path A</h3>
+    <ul>
+      <li>An extra step, <b>Give Mobile a project</b>, explains what a project is in one sentence and offers the two ways in. It's the step the first session depends on.</li>
+      <li>The sidebar's empty state says <i>yours will be the first</i> instead of a bare "No sessions yet".</li>
+      <li>The scratch session is the escape hatch for people who just want to see it work.</li>
+      <li>Once anyone in Mobile creates a project, the step ticks itself off for everyone else in the team.</li>
+    </ul>
+    <h3>Set up on the invitation page</h3>
+    <div class="team-card" style="background:var(--panel);margin-top:6px">
+      <span class="mark lg" style="background:#7c3aed">M</span>
+      <span class="t"><b>You'll join Mobile</b><br><span class="muted">2 people · no projects yet</span></span>
+    </div>
+    <p class="hint" style="margin:6px 0 0">The invitation's team card says <i>no projects yet: you'll help set it up</i>, so the extra step isn't a surprise.</p>
+  </aside>
+</section>
+
+<!-- ============================================================ B2 EXISTING REPOSITORY -->
+<section class="screen" id="b2">
+  <div class="screen-label"><span class="num">B2</span><h2>Use an existing repository</h2><span class="tag">a sheet over Get started</span></div>
+  <div class="browser">
+    <div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/</span></div>
+    <div class="viewport" style="min-height:640px">
+      <div class="dim-app" style="filter:none;opacity:.35"><div class="app"><aside class="side"></aside><main class="main"><div class="page"><div class="welcome-head"><span class="avatar" style="width:40px;height:40px;background:#0891b2">SO</span><div><h1>Welcome, Sam</h1></div></div><div class="card" style="height:380px"></div></div></main></div></div>
+      <div class="sheet">
+        <div><h2>Give Mobile a project</h2><p class="muted" style="margin:4px 0 0;font-size:12.5px">Pick the repositories your team works on. Agents get a copy of each one in their sandbox.</p></div>
+        <input placeholder="Search repositories" value="" />
+        <div class="repo-list">
+          <label class="r on"><input type="checkbox" checked /><span class="mono">acme/ios-app</span><span class="d">Swift · updated 2h ago</span></label>
+          <label class="r on"><input type="checkbox" checked /><span class="mono">acme/android-app</span><span class="d">Kotlin · updated 1d ago</span></label>
+          <label class="r"><input type="checkbox" /><span class="mono">acme/mobile-api</span><span class="d">Go · updated 3d ago</span></label>
+          <label class="r"><input type="checkbox" /><span class="mono">acme/payments</span><span class="chip" style="margin-left:auto">Payments uses it</span></label>
+        </div>
+        <p class="hint" style="margin:-6px 0 0">Don't see it? Beethoven's GitHub App can't reach it yet. <a href="#">Ask an admin of acme to add it</a> (copies a request with a link to the app's settings on GitHub).</p>
+        <div class="grid2">
+          <label class="field"><span class="field-label">Project name</span><input value="mobile" /></label>
+          <label class="field"><span class="field-label">Base branch</span><input placeholder="main (default)" /></label>
+        </div>
+        <label class="toggle"><input type="checkbox" checked /> Make it Mobile's default: new sessions in Mobile start here</label>
+        <div class="role-explain" style="margin:0"><b>Setup scripts, secrets and the rest</b> can wait. Your first session can work out how to build and test the code for you (<a href="#b4">B4</a>).</div>
+        <div class="form-foot" style="margin-top:auto"><button class="btn ghost">Cancel</button><button class="btn primary">Create project</button></div>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    <h3>What changes</h3>
+    <ul>
+      <li>A short version of <b>Settings › Projects › New project</b>: just the repositories and a name. Scripts, secrets and overrides stay in Settings for later.</li>
+      <li>The list shows what the GitHub App can reach, says which team already uses each repository, and comes with a <b>ready-made request</b> for repositories it can't reach.</li>
+      <li>It's saved as the team's <b>default project</b>, so every later session in Mobile starts there.</li>
+    </ul>
+    <h3>Needs</h3>
+    <ul><li>Nothing new to create the project: <code>POST /api/environments</code> with the team, then set the team's <code>default_environment_id</code>. A lead can set the default; for a member, either let the first project become the default or leave the toggle to leads.</li></ul>
+  </aside>
+</section>
+
+<!-- ============================================================ B3 NEW REPOSITORY -->
+<section class="screen" id="b3">
+  <div class="screen-label"><span class="num">B3</span><h2>Start a new repository</h2><span class="tag">/#/projects/new, from Get started</span></div>
+  <div class="browser">
+    <div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/projects/new?from=welcome</span></div>
+    <div class="viewport" style="padding:28px 36px">
+      <div class="page" style="max-width:640px">
+        <h1 style="margin-bottom:4px">Start Mobile's first project</h1>
+        <p class="muted" style="margin:0 0 16px">Beethoven creates the repository on GitHub, sets it up as Mobile's project and starts the first session there. You'll get a pull request with the first version.</p>
+        <div class="form">
+          <div class="grid2">
+            <label>Owner<select><option>acme</option></select></label>
+            <label>Repository name<input class="mono" value="field-notes" /></label>
+          </div>
+          <label>Built with
+            <div class="segs" style="flex-wrap:wrap"><button class="btn sm on">Expo (React Native)</button><button class="btn sm">Node</button><button class="btn sm">Go</button><button class="btn sm">Python</button><button class="btn sm">Something else</button></div>
+          </label>
+          <label>What should the first version do? <span class="dim" style="font-weight:400">(this is your first session's prompt)</span>
+            <textarea rows="4">A small Expo app for field technicians: a list of today's jobs from a JSON file, a detail screen with a checklist, and offline storage. Include tests and a README explaining how to run it.</textarea></label>
+          <div class="starters">
+            <button class="starter"><span>📱 A mobile app</span><span class="k">Screens, navigation, tests</span></button>
+            <button class="starter"><span>🔌 An API service</span><span class="k">Endpoints, a database, tests</span></button>
+            <button class="starter"><span>🧰 A small tool</span><span class="k">A CLI or script, with a README</span></button>
+          </div>
+          <div class="team-state ok"><span class="mark" style="background:#7c3aed">M</span>It will be Mobile's project and default. Private on GitHub.</div>
+          <div class="form-foot"><span class="hint">Agents never push to main: the first version arrives as a pull request.</span><button class="btn primary">Create and start</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    <h3>What changes</h3>
+    <ul>
+      <li>It's today's <b>New project</b> page, which already creates the repository and the project and starts the first session. Opened from Get started, it has the team chosen, plain-words copy and examples of first versions.</li>
+      <li>The first prompt is <b>required here</b> (optional today), because the point is a first session.</li>
+      <li>"Built with" uses the same stacks and capabilities as today.</li>
+    </ul>
+    <h3>Needs</h3>
+    <ul><li>The page already takes <code>team_id</code>. Setting it as the team's default is the only addition.</li></ul>
+  </aside>
+</section>
+
+<!-- ============================================================ B4 FIRST SESSION IN A NEW PROJECT -->
+<section class="screen" id="b4">
+  <div class="screen-label"><span class="num">B4</span><h2>A first session suggested for a project nobody has used</h2><span class="tag">New session, after B2</span></div>
+  <div class="browser">
+    <div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/</span></div>
+    <div class="viewport">
+      <div class="app">
+        <aside class="side">
+          <div class="side-head"><span class="brand">Beethoven</span><div class="side-switch"><span class="mark" style="background:#7c3aed">M</span>Mobile<span class="chev">▾</span></div><button class="btn primary">New session</button></div>
+          <div class="side-nav"><a><span class="ico">★</span>Get started<span class="chip" style="margin-left:auto">4/5</span></a><a><span class="ico">↻</span>Automations</a><a><span class="ico">▤</span>Insights</a><a><span class="ico">⚙</span>Settings</a></div>
+          <div class="side-account"><span class="avatar" style="background:#0891b2">SO</span><span class="t">Sam Okafor<span class="dim">Member · Mobile</span></span></div>
+        </aside>
+        <main class="main">
+          <div class="page">
+            <h1>New session</h1>
+            <div class="form">
+              <div class="team-state ok">✓ Created <b>mobile</b> with acme/ios-app and acme/android-app. Here's a good first session for a new project.</div>
+              <div class="prompt-box ring">
+                <textarea style="min-height:140px">Get to know acme/ios-app and acme/android-app. For each one, work out how to install its dependencies, build it and run its tests in this sandbox. Then open a PR that adds an AGENTS.md describing the layout and those commands, and tell me what setup script this project should have. Don't change the app code.</textarea>
+                <div class="bar"><button class="btn sm">Attach files</button></div>
+              </div>
+              <div>
+                <div class="hint" style="margin-bottom:6px">Good first sessions in a new project</div>
+                <div class="starters">
+                  <button class="starter" style="border-color:var(--accent)"><span>🧭 Get the project ready</span><span class="k">Learn the build, write AGENTS.md</span></button>
+                  <button class="starter"><span>🗺️ Explain the code</span><span class="k">A tour for you, no changes</span></button>
+                  <button class="starter"><span>🐛 Take a small issue</span><span class="k">From acme/ios-app's open issues</span></button>
+                </div>
+              </div>
+              <div class="grid2">
+                <label>Project<span style="display:flex;gap:6px;align-items:center"><span class="mark" style="background:#7c3aed">M</span><select><option>mobile (acme/ios-app, acme/android-app)</option></select></span></label>
+                <label>Seen by<select><option>Mobile (team default)</option></select></label>
+              </div>
+              <div class="form-foot"><span class="hint">When it's done, you can save its setup script to the project in one click.</span><button class="btn primary">Start session</button></div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    <h3>Why this first task</h3>
+    <ul>
+      <li>A new project has no setup script, so agents would rediscover the build every time. Asking the first session to work it out <b>pays off for the whole team</b>, and it's safe: docs only, no app code.</li>
+      <li>It ends in a real <b>pull request</b> (an <code>AGENTS.md</code>), so Sam sees the full loop on day one.</li>
+      <li>The other two starters suit someone who just wants to look around, or fix something real.</li>
+    </ul>
+    <h3>Later</h3>
+    <ul><li>"Save as the project's setup script" when the session proposes one: a small action on the session page that updates the project.</li>
+      <li>For B3 there's no extra step: the session is already running when the page closes.</li></ul>
   </aside>
 </section>
 
@@ -614,7 +888,7 @@ code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
 
 <!-- ============================================================ 6 ADMIN SENDING -->
 <section class="screen" id="s6">
-  <div class="screen-label"><span class="num">06</span><h2>Sending an invitation</h2><span class="tag">Settings › People</span></div>
+  <div class="screen-label"><span class="num">06</span><h2>Sending an invitation, to a team with a project</h2><span class="tag">Settings › People · path A</span></div>
   <div class="browser">
     <div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/settings/people</span></div>
     <div class="viewport" style="padding:28px 36px">
@@ -626,8 +900,12 @@ code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
             <div class="form">
               <label>Email<input value="grace@acme.dev" /></label>
               <div class="grid2"><label>Role<select><option>Member</option></select></label><label>Team<select><option>Payments</option></select></label></div>
+              <div class="team-state ok"><span class="mark" style="background:#16a34a">P</span>Payments has 3 projects. Grace starts in <b>checkout</b>, its default.</div>
+              <label>A first session to suggest <span class="dim" style="font-weight:400">(optional, waiting in their prompt)</span>
+                <textarea rows="3">Fix the flaky test in checkout/checkout_test.go. It fails about 1 in 10 runs on CI. Find the cause, fix it, run it 20 times to prove it, and open a PR.</textarea></label>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:-4px"><span class="hint">Ideas:</span><span class="chip">A test that fails now and then</span><span class="chip">An outdated dependency</span><span class="chip">"Explain how refunds work"</span></div>
               <label>A note for them <span class="dim" style="font-weight:400">(optional, shown on the invitation)</span>
-                <textarea rows="3">Welcome aboard! We use this for the small stuff: flaky tests, dependency bumps, first drafts.</textarea></label>
+                <textarea rows="2">Welcome aboard! We use this for the small stuff: flaky tests, dependency bumps, first drafts.</textarea></label>
               <div class="form-foot"><span></span><button class="btn primary">Create invitation</button></div>
             </div>
             <div class="preview">
@@ -637,6 +915,8 @@ code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
 
 Join here (works once, until Oct 27):
 <span class="mono" style="color:var(--accent)">https://beethoven.acme.dev/#/invite/9f2c…</span>
+
+I've left you a first task to try: fixing the flaky checkout test.
 
 Welcome aboard! We use this for the small stuff: flaky tests, dependency bumps, first drafts.
 – Ada</div>
@@ -650,13 +930,69 @@ Welcome aboard! We use this for the small stuff: flaky tests, dependency bumps, 
   <aside class="notes">
     <h3>What changes</h3>
     <ul>
+      <li><b>The team's state</b> under the team picker: how many projects, and which one they'll start in.</li>
+      <li><b>A first session to suggest</b>: the person who knows the codebase picks a good first task. It's waiting in the invitee's checklist and prompt (<a href="#s3">3</a>, <a href="#s4">4</a>), in the team's default project.</li>
       <li><b>A note</b> that the invitee sees on their page (<a href="#s1">screen 1</a>), for the personal touch.</li>
-      <li><b>A ready-to-paste message</b> that says what Beethoven is, so the link isn't a bare token in Slack.</li>
+      <li><b>A ready-to-paste message</b> that says what Beethoven is and mentions the first task, so the link isn't a bare token in Slack.</li>
       <li><b>Preview their page</b> shows the admin exactly what the invitee will see.</li>
-      <li>Later: team leads invite to their own team (today only admins can).</li>
     </ul>
     <h3>Needs</h3>
-    <ul><li>A <code>note</code> column on <code>invites</code> (≤ 280 chars).</li></ul>
+    <ul><li><code>note</code>, <code>first_prompt</code> and <code>environment_id</code> columns on <code>invites</code>. Accepting copies the prompt into the new account's onboarding state.</li></ul>
+  </aside>
+</section>
+
+<section class="screen" id="s6b">
+  <div class="screen-label"><span class="num">06·B</span><h2>Sending an invitation, to a team with no project</h2><span class="tag">Settings › People · path B</span></div>
+  <div class="browser">
+    <div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/settings/people</span></div>
+    <div class="viewport" style="padding:28px 36px">
+      <div class="page" style="max-width:860px">
+        <div class="group">
+          <h2>Invite someone</h2>
+          <span class="hint">An invitation is a link that works once, for 7 days. Beethoven doesn't send email: copy the message below into Slack or email.</span>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+            <div class="form">
+              <label>Email<input value="sam@acme.dev" /></label>
+              <div class="grid2"><label>Role<select><option>Member</option></select></label><label>Team<select><option>Mobile</option></select></label></div>
+              <div class="team-state empty"><span class="mark" style="background:#7c3aed">M</span>Mobile has no projects yet.</div>
+              <div class="field"><span class="field-label">What Sam does first</span>
+                <div class="choices" style="margin-top:2px">
+                  <div class="choice on"><b>Sam sets Mobile up</b><span>Sam is asked to connect Mobile's repositories or start a new one, then gets a first session for it (<a href="#b1">B1</a>).</span></div>
+                  <div class="choice"><b>I'll pick the repositories now</b><span>Choose them here: Mobile gets a project and Sam follows path A.</span><span><button class="btn sm">Choose repositories</button></span></div>
+                </div>
+              </div>
+              <label>A first session to suggest <span class="dim" style="font-weight:400">(optional, once the project exists)</span>
+                <select><option>Get the project ready: learn the build, write AGENTS.md (recommended)</option><option>Explain the code</option><option>Write my own…</option></select></label>
+              <label>A note for them <span class="dim" style="font-weight:400">(optional, shown on the invitation)</span>
+                <textarea rows="2">You're Mobile's first here! The code is in ios-app and android-app.</textarea></label>
+              <div class="form-foot"><span></span><button class="btn primary">Create invitation</button></div>
+            </div>
+            <div class="preview">
+              <div class="lbl">Ready to send</div>
+              <div class="segs" style="margin-bottom:8px"><button class="btn sm on">Message</button><button class="btn sm">Link only</button></div>
+<div class="msg">Hi Sam, I've invited you to <b>Beethoven</b>, where we hand coding tasks to agents that open pull requests for us. You'll be in <b>Mobile</b>.
+
+Join here (works once, until Oct 27):
+<span class="mono" style="color:var(--accent)">https://beethoven.acme.dev/#/invite/4be1…</span>
+
+Mobile is new, so first you'll connect its repositories. It takes a minute, and Beethoven walks you through it.
+
+You're Mobile's first here! The code is in ios-app and android-app.
+– Ada</div>
+              <div class="copy-row" style="margin-top:8px"><button class="btn primary sm">Copy message</button><button class="btn sm">Preview their page ↗</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <aside class="notes">
+    <h3>What changes</h3>
+    <ul>
+      <li>The admin is <b>told the team is empty</b> before sending, and chooses who sets it up: the invitee (path B), or the admin, right here (turns it into path A).</li>
+      <li>The suggested first session is a <b>kind of task</b> rather than a prompt, since there's no code to point at yet. It's written out once the project exists (<a href="#b4">B4</a>).</li>
+      <li>The message warns that there's a setup step, so the invitee isn't surprised.</li>
+    </ul>
   </aside>
 </section>
 
@@ -664,10 +1000,11 @@ Welcome aboard! We use this for the small stuff: flaky tests, dependency bumps, 
   <div class="notes" style="font-size:13.5px">
     <h3>Suggested order of work</h3>
     <ol style="margin:0;padding-left:18px">
-      <li><b>Explain on the way in:</b> the invitation page's left side, the inviter's note and plain-words role. Front-end plus a few more fields on <code>GET /api/auth/invite</code>.</li>
+      <li><b>Explain on the way in:</b> the invitation page's left side, the inviter's note, plain-words role, and the team card with its project count. Front-end plus a few more fields on <code>GET /api/auth/invite</code>.</li>
       <li><b>Fix the dead ends:</b> role-aware setup prompts for members, the expired-link page, and accepting a team invitation with an existing account.</li>
-      <li><b>Get started checklist</b> with the glossary, and the team's recent sessions in the sidebar. Needs onboarding state on the account.</li>
-      <li><b>Welcome tour</b> and first-session tips and starting points.</li>
+      <li><b>Get started checklist</b> with both paths: path A's first session, and path B's "Give the team a project" step using the short repository picker (B2) and the existing New project page (B3). Needs onboarding state on the account.</li>
+      <li><b>Suggested first sessions:</b> the inviter's suggestion (6, 6·B) and the "get the project ready" session for new projects (B4).</li>
+      <li><b>Welcome tour</b> and first-session tips.</li>
       <li><b>Continue with GitHub</b> on the invitation page: the biggest change, since sign-up today is email and password only.</li>
     </ol>
   </div>
