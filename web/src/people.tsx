@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
-import { api, get, setMe, type APIToken, type AuditEvent, type AuthState, type Invite, type Person, type Role, type Team } from './api';
+import { api, get, setMe, type APIToken, type AuditEvent, type AuthState, type Environment, type Invite, type Person, type Role, type Team } from './api';
 import { TeamMark, teamHref, useMe, useTeams } from './teams';
-import { ConfirmButton, Group, Head, ago, errText, fail, toast, title, useLoad, when } from './util';
+import { ConfirmButton, Group, Head, Seg, ago, errText, fail, toast, useLoad, when } from './util';
 
 // People: owners and admins invite people and set their roles; everyone
 // manages their own profile and API tokens.
@@ -11,6 +11,19 @@ const ROLE_HINT = 'Admins manage people, teams, settings and integrations. Owner
 
 /** An invitation link for a token. */
 const inviteURL = (token: string) => `${location.origin}/#/invite/${token}`;
+
+/** The names of the server's owners and admins, to say whom to ask; loaded while on. */
+export function useAdmins(on = true) {
+  const [people] = useLoad<Person[]>(on ? '/api/people' : false);
+  return people?.filter(p => !p.disabled && (p.role === 'owner' || p.role === 'admin')).map(p => p.name || p.email || 'an admin');
+}
+
+/** "Ada", "Ada or Ken", "Ada, Ken or Lin": whom to ask. */
+export const adminNames = (names?: string[]) => {
+  const n = (names || []).filter(Boolean).slice(0, 3);
+  if (!n.length) return 'an admin';
+  return n.length === 1 ? n[0] : n.slice(0, -1).join(', ') + ' or ' + n[n.length - 1];
+};
 
 export function PeoplePage() {
   const me = useMe();
@@ -53,27 +66,56 @@ export function PeoplePage() {
   );
 }
 
+/** The message to send with an invitation: what Beethoven is, the link, and what comes first. */
+function inviteMessage(v: { link: string; expires: string; team?: Team; empty: boolean; prompt: string; note: string; from: string }) {
+  const lines = [
+    `Hi, I've invited you to Beethoven, where we hand coding tasks to agents that open pull requests for us.${v.team ? ` You'll be in ${v.team.name}.` : ''}`,
+    '', `Join here (it works once, until ${new Date(v.expires).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}):`, v.link,
+  ];
+  if (v.prompt) lines.push('', "I've left you a first task to try.");
+  else if (v.team && v.empty) lines.push('', `${v.team.name} is new, so first you'll connect its repositories. Beethoven walks you through it.`);
+  if (v.note) lines.push('', v.note);
+  if (v.from) lines.push(`– ${v.from}`);
+  return lines.join('\n');
+}
+
 function Invites({ invites, changed }: { invites?: Invite[]; changed: () => void }) {
   const me = useMe();
   const teams = useTeams();
+  const [envs] = useLoad<Environment[]>('/api/environments');
   const [role, setRole] = useState<Role>('member');
   const [email, setEmail] = useState('');
   const [team, setTeam] = useState('');
-  const [link, setLink] = useState('');
+  const [note, setNote] = useState('');
+  const [prompt, setPrompt] = useState('');
+  const [env, setEnv] = useState('');
+  const [made, setMade] = useState<{ link: string; message: string; email: string }>();
+  const [show, setShow] = useState<'message' | 'link'>('message');
   const [err, setErr] = useState('');
+  const teamObj = teams?.find(t => t.id === team);
+  const projects = envs?.filter(e => (team ? e.team_id === team : !e.team_id));
+  const project = projects?.find(e => e.id === env) || projects?.find(e => e.id === teamObj?.default_environment_id) || projects?.[0];
+  const empty = projects?.length === 0;
   const create = async (e: Event) => {
     e.preventDefault();
     setErr('');
     try {
-      const r = await api<{ token: string }>('POST', '/api/invites', { role, email: email.trim(), team_id: team });
-      setLink(inviteURL(r.token));
+      const first = empty ? '' : prompt.trim();
+      const r = await api<{ token: string; invite: Invite }>('POST', '/api/invites', {
+        role, email: email.trim(), team_id: team, note: note.trim(), first_prompt: first, environment_id: first && project ? project.id : '',
+      });
+      const link = inviteURL(r.token);
+      setMade({ link, email: email.trim(), message: inviteMessage({ link, expires: r.invite.expires_at, team: teamObj, empty: !!empty, prompt: first,
+        note: note.trim(), from: me?.account?.name || '' }) });
       setEmail('');
+      setNote('');
+      setPrompt('');
       changed();
     } catch (e) { setErr(errText(e)); }
   };
-  const copy = () => navigator.clipboard.writeText(link).then(() => toast('Link copied'), () => {});
+  const copy = () => navigator.clipboard.writeText(show === 'link' ? made!.link : made!.message).then(() => toast(show === 'link' ? 'Link copied' : 'Message copied'), () => {});
   return (
-    <Group title="Invite someone" hint="An invitation is a link that works once, for 7 days. Send it however you like: Beethoven doesn't send email.">
+    <Group title="Invite someone" hint="An invitation is a link that works once, for 7 days. Beethoven doesn't send email: copy the message it writes into Slack or an email.">
       <form class="form" onSubmit={create}>
         <div class="grid2">
           <label>Email<input type="email" placeholder="Optional: only they can use it" value={email} onInput={e => setEmail(e.currentTarget.value)} /></label>
@@ -84,23 +126,55 @@ function Invites({ invites, changed }: { invites?: Invite[]; changed: () => void
           </label>
         </div>
         {!!teams?.length && (
-          <label>Team<select value={team} onChange={e => setTeam(e.currentTarget.value)}>
+          <label>Team<select value={team} onChange={e => { setTeam(e.currentTarget.value); setEnv(''); }}>
             <option value="">None</option>
             {teams.filter(t => !t.archived_at).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select><span class="hint">They join it as a member.</span></label>
+          </select><span class="hint">They join it as a member. Someone who already has an account can use the link to join it too.</span></label>
         )}
+        {projects && (empty ? (
+          <p class="team-state empty">
+            {teamObj ? <TeamMark team={teamObj} /> : null}
+            <span>{teamObj ? teamObj.name : 'The workspace'} has no projects yet. They'll be asked to connect its repositories or start a new one,
+              then get a first session for it. <a href={'#/settings/environments/new' + (team ? '?team=' + team : '')}>Set one up now</a> to skip that.</span>
+          </p>
+        ) : (
+          <>
+            <p class="team-state ok">
+              {teamObj ? <TeamMark team={teamObj} /> : null}
+              <span>{teamObj ? teamObj.name : 'The workspace'} has {projects.length === 1 ? '1 project' : `${projects.length} projects`}.
+                {project ? ` They'll start in ${project.name}.` : ''}</span>
+            </p>
+            <label>A first session to suggest
+              <textarea rows={3} maxLength={4000} placeholder="Optional: a small task to try first, e.g. fix a flaky test. It's waiting in their prompt."
+                value={prompt} onInput={e => setPrompt(e.currentTarget.value)} />
+            </label>
+            {prompt.trim() && projects.length > 1 && (
+              <label>In the project<select value={project?.id} onChange={e => setEnv(e.currentTarget.value)}>
+                {projects.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+              </select></label>
+            )}
+          </>
+        ))}
+        <label>A note for them
+          <textarea rows={2} maxLength={280} placeholder="Optional: shown on the invitation" value={note} onInput={e => setNote(e.currentTarget.value)} />
+        </label>
         <div class="form-foot">
           {err ? <span class="err" role="alert">{err}</span> : <span />}
-          <button class="btn primary">Create invitation link</button>
+          <button class="btn primary">Create invitation</button>
         </div>
       </form>
-      {link && (
-        <div class="notice">
-          <div class="copy-row">
-            <input class="mono" readOnly value={link} onFocus={e => e.currentTarget.select()} aria-label="Invitation link" />
-            <button class="btn" onClick={copy}>Copy</button>
+      {made && (
+        <div class="notice invite-made">
+          <div class="invite-made-head">
+            <b>Ready to send</b>
+            <Seg value={show} set={setShow} options={[['message', 'Message'], ['link', 'Link only']]} />
           </div>
-          <span class="hint">Shown once. Anyone with it can create the account{email ? '' : ', so send it privately'}.</span>
+          {show === 'message' ? <textarea readOnly rows={8} value={made.message} aria-label="Invitation message" onFocus={e => e.currentTarget.select()} />
+            : <input class="mono" readOnly value={made.link} onFocus={e => e.currentTarget.select()} aria-label="Invitation link" />}
+          <div class="copy-row">
+            <span class="hint">Shown once. {made.email ? `Only ${made.email} can use it.` : 'Anyone with the link can use it, so send it privately.'}</span>
+            <button type="button" class="btn primary" onClick={copy}>{show === 'link' ? 'Copy link' : 'Copy message'}</button>
+          </div>
         </div>
       )}
       {!!invites?.length && (
@@ -109,7 +183,8 @@ function Invites({ invites, changed }: { invites?: Invite[]; changed: () => void
             <div key={i.id} class="row">
               <span class="row-main">
                 <span class="row-title">{i.email || 'Anyone with the link'}</span>
-                <span class="row-meta"><span>{ROLES.find(([r]) => r === i.role)?.[1]}</span>{i.team && <span>joins {i.team}</span>}<span>expires {when(i.expires_at)}</span></span>
+                <span class="row-meta"><span>{ROLES.find(([r]) => r === i.role)?.[1]}</span>{i.team && <span>joins {i.team}</span>}
+                  {i.first_prompt && <span>with a first session</span>}<span>expires {when(i.expires_at)}</span></span>
               </span>
               <ConfirmButton small label="Withdraw" ask="Withdraw" onConfirm={() => api('DELETE', `/api/invites/${i.id}`).then(changed)} />
             </div>
@@ -275,60 +350,4 @@ function detailText(e: AuditEvent): string {
   if (d.title) return `: ${d.title}${d.to ? ` → ${d.to}` : ''}`;
   if (d.email) return `: ${d.email}`;
   return '';
-}
-
-// ---------------------------------------------------------------- invitation
-
-/** The page an invitation link opens: create the account, then sign in. */
-export function InviteAccept({ token }: { token: string }) {
-  const [info, setInfo] = useState<{ role: Role; email?: string; from?: string; team?: string }>();
-  const [missing, setMissing] = useState('');
-  const [f, setF] = useState({ name: '', email: '', password: '' });
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-  useEffect(() => {
-    get<typeof info>(`/api/auth/invite?token=${encodeURIComponent(token)}`).then(i => {
-      setInfo(i);
-      if (i?.email) setF(p => ({ ...p, email: i.email! }));
-    }, e => setMissing(errText(e)));
-  }, [token]);
-  const field = (k: keyof typeof f) => (e: Event) => setF({ ...f, [k]: (e.currentTarget as HTMLInputElement).value });
-  const submit = async (e: Event) => {
-    e.preventDefault();
-    setBusy(true);
-    setErr('');
-    try {
-      await api('POST', '/api/auth/invite', { token, ...f });
-      location.replace('/#/');
-      location.reload();
-    } catch (e) { setErr(errText(e) + '.'); setBusy(false); }
-  };
-  title('Join');
-  return (
-    <div class="auth">
-      <form class="auth-card" onSubmit={submit}>
-        <div class="brand">Beethoven</div>
-        {missing ? (
-          <div class="auth-head"><h1>Invitation</h1><p class="auth-error" role="alert">{missing}.</p><a href="/#/">Sign in</a></div>
-        ) : !info ? <p class="muted">One moment…</p> : (
-          <>
-            <div class="auth-head">
-              <h1>Join Beethoven</h1>
-              <p class="muted">{info.from ? `${info.from} invited you` : "You're invited"} as {info.role === 'member' ? 'a member' : 'an ' + info.role}
-                {info.team ? `, in ${info.team}` : ''}. Create your account.</p>
-            </div>
-            <label class="field"><span class="field-label">Name</span>
-              <input autoFocus autoComplete="name" value={f.name} onInput={field('name')} /></label>
-            <label class="field"><span class="field-label">Email</span>
-              <input type="email" required readOnly={!!info.email} autoComplete="username" value={f.email} onInput={field('email')} /></label>
-            <label class="field"><span class="field-label">Password</span>
-              <input type="password" required minLength={8} autoComplete="new-password" value={f.password} onInput={field('password')} />
-              <span class="hint">At least 8 characters.</span></label>
-            {err && <p class="auth-error" role="alert">{err}</p>}
-            <button class="btn primary block" disabled={busy}>{busy ? 'Creating…' : 'Create account'}</button>
-          </>
-        )}
-      </form>
-    </div>
-  );
 }

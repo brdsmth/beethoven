@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { api, get, type GitHubStatus } from './api';
+import { adminNames, useAdmins } from './people';
+import { useMe } from './state';
 import { Spinner, errText, fail, useLoad } from './util';
 
 // Connecting GitHub: register the server's GitHub App (unless one is
@@ -8,6 +10,17 @@ import { Spinner, errText, fail, useLoad } from './util';
 // GitHubReturn completes the step through the API, then moves on.
 
 const SETTINGS = '/#/settings/github';
+const RETURN_KEY = 'beethoven.github.return';
+
+/** Sets where the browser lands once GitHub is connected, instead of the GitHub settings. */
+export const returnFromGitHub = (path: string) => { try { sessionStorage.setItem(RETURN_KEY, path); } catch { /* the settings, then */ } };
+const landing = () => {
+  try {
+    const to = sessionStorage.getItem(RETURN_KEY);
+    sessionStorage.removeItem(RETURN_KEY);
+    return to || SETTINGS;
+  } catch { return SETTINGS; }
+};
 
 /** Sends the browser to GitHub to authorize the app. */
 export async function authorizeGitHub() {
@@ -40,11 +53,11 @@ export function GitHubReturn() {
       }
       if (step === 'authorized') {
         const r = await api<{ next: string }>('POST', '/api/github/account', { code, state });
-        return location.replace(r.next || SETTINGS); // on to installing it, unless it already is
+        return location.replace(r.next || landing()); // on to installing it, unless it already is
       }
       if (step === 'installed') {
         const st = await get<GitHubStatus>('/api/github');
-        return st.account ? location.replace(SETTINGS) : authorizeGitHub();
+        return st.account ? location.replace(landing()) : authorizeGitHub();
       }
       location.replace('/');
     })().catch(e => setErr(errText(e)));
@@ -95,14 +108,19 @@ export function ConnectGitHub({ status }: { status: GitHubStatus }) {
   );
 }
 
-/** First-run prompt: shown until the server can reach GitHub. */
+/** First-run prompt: shown until the server can reach GitHub. Creating the
+ * server's app is for admins; others are told whom to ask. */
 export function GitHubSetup() {
   const [st] = useLoad<GitHubStatus>('/api/github');
+  const me = useMe();
+  const admins = useAdmins(!!st && !st.app && !me?.admin);
   if (!st || st.account) return null;
   return (
     <section class="card setup">
       <h2>Connect GitHub</h2>
-      <ConnectGitHub status={st} />
+      {st.app || me?.admin ? <ConnectGitHub status={st} />
+        : <p class="muted">GitHub isn't set up on this server yet, so agents can't work on repositories or open pull requests. Ask
+            {' '}{adminNames(admins)} to set it up. Until then, sessions run in a scratch sandbox.</p>}
     </section>
   );
 }

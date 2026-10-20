@@ -1,7 +1,7 @@
 import { Fragment, type ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { api, get, onGlobal, type Account, type Environment, type Session } from './api';
-import { TeamMark, TeamSwitcher, scopeTeam, useScope, useTeams } from './teams';
+import { TeamMark, TeamSwitcher, scopeTeam, useMe, useScope, useTeams } from './teams';
 import { Icon, useDismiss } from './components';
 import { Dot, ago, fail, go, readPref, useTick, writePref } from './util';
 
@@ -125,6 +125,7 @@ export function Sidebar({ current, account }: { current: string; account: Accoun
   const [collapsed, setCollapsed] = useState<string[]>(() => readPref<string[]>(COLLAPSED_PREF) || []);
   const [scope] = useScope();
   const teams = useTeams();
+  const me = useMe();
   const active = useSessions(false);
   const archived = useSessions(true, tab === 'archived');
   const size = useSize();
@@ -170,7 +171,8 @@ export function Sidebar({ current, account }: { current: string; account: Accoun
   const page = (href: string, name: string, icon: string) => (
     <a href={href} class={'side-nav-item' + (current === name ? ' active' : '')}><Icon name={icon} />{name[0].toUpperCase() + name.slice(1)}</a>
   );
-  const empty = tab === 'archived' ? 'No archived sessions.' : tab === 'running' ? 'Nothing is running.' : 'No sessions yet.';
+  const empty = tab === 'archived' ? 'No archived sessions.' : tab === 'running' ? 'Nothing is running.'
+    : me?.onboarding ? 'No sessions yet. Yours will be the first.' : 'No sessions yet.';
   const style = { '--side-w': size.width + 'px' };
   const resizer = <Resizer {...size} />;
 
@@ -180,6 +182,7 @@ export function Sidebar({ current, account }: { current: string; account: Accoun
       <a class="rail-btn primary" href="#/" title="New session (C)" aria-label="New session"><Icon name="plus" /></a>
       <button type="button" class="rail-btn" title="Search" aria-label="Search" onClick={() => setPalette(true)}><Icon name="search" /></button>
       <span class="rail-sep" />
+      {me?.onboarding && <a href="#/welcome" class={'rail-btn' + (current === 'welcome' ? ' active' : '')} title="Get started" aria-label="Get started"><Icon name="flag" /></a>}
       {PAGE_LINKS.map(([name, icon]) => {
         const label = name[0].toUpperCase() + name.slice(1);
         return <a key={name} href={'#/' + name} class={'rail-btn' + (current === name ? ' active' : '')} title={label} aria-label={label}><Icon name={icon} /></a>;
@@ -206,7 +209,10 @@ export function Sidebar({ current, account }: { current: string; account: Accoun
           <Icon name="search" /><span>Search</span><kbd>{MOD}K</kbd>
         </button>
       </div>
-      <div class="side-nav">{PAGE_LINKS.map(([name, icon]) => page('#/' + name, name, icon))}</div>
+      <div class="side-nav">
+        {me?.onboarding && <a href="#/welcome" class={'side-nav-item' + (current === 'welcome' ? ' active' : '')}><Icon name="flag" />Get started</a>}
+        {PAGE_LINKS.map(([name, icon]) => page('#/' + name, name, icon))}
+      </div>
       <div class="side-tabs">
         {([['active', 'Active', active?.length], ['running', 'Running', running?.length], ['archived', 'Archived', undefined]] as const)
           .map(([v, label, n]) => (

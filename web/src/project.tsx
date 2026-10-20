@@ -6,7 +6,7 @@ import { GitHubSetup } from './github';
 import { TARGET_PREF } from './pickers';
 import { scopeTeam, setScope, useMe, useScope, useTeams } from './state';
 import { TeamMark } from './teams';
-import { Seg, errText, go, modEnter, toast, writePref } from './util';
+import { Seg, errText, go, hashParam, modEnter, toast, writePref } from './util';
 
 // Starting a project: the server creates a GitHub repository with a first
 // commit and an environment for it, then starts the first session there.
@@ -41,6 +41,7 @@ export function NewProject({ info }: { info?: Info }) {
   const teamObj = teams?.find(t => t.id === teamID);
   const f = useFiles();
   const caps = useCapabilities();
+  const welcome = !!me?.onboarding && !!hashParam('first'); // from getting started
   const load = () => get<Options>('/api/projects/options').then(o => {
     setOpts(o);
     // Keep the choice if it still exists, else the first account that works.
@@ -83,11 +84,23 @@ export function NewProject({ info }: { info?: Info }) {
 
   return (
     <div class="page narrow">
-      <h1>New project</h1>
-      <p class="muted lead">
-        Creates a GitHub repository with a first commit, and an environment that prepares the sandbox and holds the
-        project's variables. Then the agent can start building.
-      </p>
+      {welcome ? (
+        <>
+          <h1>Start {teamObj ? `${teamObj.name}'s` : 'a'} first project</h1>
+          <p class="muted lead">
+            Beethoven creates the repository on GitHub, sets it up as {teamObj ? `${teamObj.name}'s` : 'the workspace\'s'} project and starts
+            your first session there, which builds the first version. It arrives as a pull request.
+          </p>
+        </>
+      ) : (
+        <>
+          <h1>New project</h1>
+          <p class="muted lead">
+            Creates a GitHub repository with a first commit, and an environment that prepares the sandbox and holds the
+            project's variables. Then the agent can start building.
+          </p>
+        </>
+      )}
       {opts?.error && <p class="banner warn" role="alert">Couldn't ask GitHub where repositories can go: {opts.error}</p>}
       <form class="form" onSubmit={e => { e.preventDefault(); submit(); }}>
         <div class="field">
@@ -149,9 +162,10 @@ export function NewProject({ info }: { info?: Info }) {
           <span class="hint">Optional: paste a .env file. They're stored encrypted as the environment's secrets, and every session gets them as environment variables.</span>
         </label>
         <div class="field">
-          <span class="field-label">First task</span>
+          <span class="field-label">{welcome ? 'What should the first version do?' : 'First task'}</span>
           <div class={'prompt-box' + (f.over ? ' dropping' : '')}>
-            <textarea rows={5} placeholder="What should the agent build first? Leave empty to only set the project up."
+            <textarea rows={5} required={welcome} placeholder={welcome ? 'e.g. A small app that lists today\'s jobs from a JSON file, with a detail screen, tests and a README.'
+              : 'What should the agent build first? Leave empty to only set the project up.'}
               value={prompt} onInput={e => setPrompt(e.currentTarget.value)} onKeyDown={modEnter(submit)} onPaste={f.onPaste} />
             <div class="prompt-files">
               <PendingFiles files={f.files} remove={f.remove} />

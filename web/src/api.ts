@@ -136,6 +136,24 @@ export type AuthState = {
   admin: boolean;
   /** The server has accounts, so people and teams apply. */
   people: boolean;
+  /** Where they stand in getting started, while they are. */
+  onboarding?: Onboarding;
+};
+/** Someone's getting started: who invited them, to which team, and a first session they suggested. */
+export type Onboarding = {
+  team_id?: string; invited_by?: string; invited_by_name?: string; prompt?: string; environment_id?: string;
+  /** The welcome tour is still to show. */
+  tour?: boolean;
+  /** They started a session. */
+  started?: boolean;
+};
+/** What an invitation's link shows: in full while it's open, else what became of it. */
+export type InviteInfo = {
+  state: 'open' | 'used' | 'expired'; from?: string; created_at: string; expires_at: string;
+  role?: Role; email?: string; note?: string; github?: boolean;
+  team?: { name: string; description?: string; color: string; members: number; projects: string[] };
+  /** Who is signed in already: the invitation adds them to its team. */
+  signed_in?: { name: string; email: string };
 };
 export type Team = {
   id: string; slug: string; name: string; description: string; color: string;
@@ -145,7 +163,10 @@ export type Team = {
   role?: 'lead' | 'member'; manages: boolean;
 };
 export type TeamMember = Account & { team_role: 'lead' | 'member'; joined_at: string };
-export type Invite = { id: string; role: Role; email?: string; team_id?: string; team?: string; created_by: string; created_at: string; expires_at: string };
+export type Invite = {
+  id: string; role: Role; email?: string; team_id?: string; team?: string; note?: string; first_prompt?: string; environment_id?: string;
+  created_by: string; created_at: string; expires_at: string;
+};
 export type APIToken = { id: string; name: string; hint: string; created_at: string; last_used_at?: string };
 export type AuditEvent = {
   id: number; at: string; actor_id?: string; actor: string; team_id?: string; action: string; target?: string; detail: Record<string, unknown>;
