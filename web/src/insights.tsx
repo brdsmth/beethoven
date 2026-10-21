@@ -69,10 +69,11 @@ export function Insights() {
   useTick(30000);
 
   const path = (t: string) => `#/insights${t ? '/' + t : ''}?${query(f)}`;
-  useEffect(() => { history.replaceState(null, '', path(tab)); }, [f, tab]);
+  const here = () => location.hash.startsWith('#/insights');
+  useEffect(() => { if (here()) history.replaceState(null, '', path(tab)); }, [f, tab]);
   // A link followed from here names its own filters.
   useEffect(() => {
-    const follow = () => setF(p => { const n = readFilters(); return query(n) === query(p) ? p : n; });
+    const follow = () => { if (here()) setF(p => { const n = readFilters(); return query(n) === query(p) ? p : n; }); };
     addEventListener('hashchange', follow);
     return () => removeEventListener('hashchange', follow);
   }, []);
