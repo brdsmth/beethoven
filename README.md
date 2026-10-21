@@ -323,20 +323,34 @@ tunnel such as `cloudflared tunnel --url http://localhost:7070` works, with its 
 
 ### Insights
 
-The **Insights** page measures how sessions go over the last 7, 30 or 90 days, quality first. Its
-quality numbers cover the sessions people started (not automations, nor sessions agents spawned)
-once they settle, meaning they ran and have nothing queued or running:
+The **Insights** page measures how sessions go over the last 7, 30 or 90 days, compared with the
+days before, in tabs. Filters above the tabs apply to all of them and live in the URL, so a link
+opens the same view: the window, a team, a repository, and a **scope**. The scope picks the
+sessions measured: the ones people started (the default), the ones automations started, the ones
+agents spawned, or all. Work outside the scope (spend, prompts, tokens, pull requests) counts for
+the session in scope above it, so a person's session pays for the helpers its agent spawned.
 
-- **Cycles**: one prompt and its response. A session's cycles are its prompts that ran, the first
-  request included.
-- **First-try rate**: settled sessions that succeeded in one cycle. A session succeeds when its last
-  cycle finished and none of its pull requests was closed without merging.
-- **Success rate**, failures by reason, and stopped prompts.
-- **Pull requests**: opened, merged, closed unmerged and still open, the median time from a session's
-  start to its pull request and from opening to merging, and the cost per merged pull request (with
-  the sessions agents spawned).
-- **Usage**: sessions per day by outcome, automation runs, spend, and breakdowns by source, person
-  and workspace.
+- **Overview**: quality first, then throughput, each with its change and a daily trend. Quality
+  counts sessions once they settle, meaning they ran and have nothing queued or running. A
+  **cycle** is one prompt and its response; a session's cycles are its prompts that ran. The
+  **first-try rate** is the settled sessions that succeeded in one cycle; a session succeeds when
+  its last cycle finished and none of its pull requests was closed without merging. Then outcomes
+  per day, cycles to finish, and the top repositories, models and people.
+- **Usage**: sessions per day by where they started (web, CLI, Slack, automations, agents), how
+  they ended, when in the week work starts, and breakdowns by repository, project, team, and model
+  and effort.
+- **Cost**: spend, per session and per merged pull request, by model and by team, the most
+  expensive runs, and tokens with the cache hit rate. Spend and tokens are what the agent reports;
+  tokens and the model that ran are recorded per prompt.
+- **Pull requests**, from every source whatever the scope: opened, acceptance, the time to merge
+  and its spread, where they stand, by source and repository, and those open now, oldest first.
+- **People**: active people per week, how far the people invited in the last 90 days have got
+  (joined, a first session, a first merged pull request), and everyone's sessions, quality, pull
+  requests and spend, with a sheet per person.
+- **Reliability**, for admins: prompt failures by reason, prompt duration, queue wait and sandbox
+  start time, tool calls that returned an error, and how each automation's runs went.
+
+Viewers only count the sessions they may read.
 
 Each session's header shows its cycles, the agents' working time and its pull requests' state, and
 each automation shows how its recent runs went. Pull requests are tracked by polling GitHub every
@@ -455,7 +469,8 @@ HTML and SVG included, downloads, so a file can't run script as the person viewi
 | `DELETE /api/slack/app` · `/installations/{team}` · `/channels/{team}/{channel}` | remove them |
 | `POST /slack/events` · `/slack/interactions` | Slack's events and clicks (signed by Slack) |
 | `/api/mcp-servers[/{id}]` | CRUD; header and env values write-only |
-| `GET /api/insights?days=&tz=` | quality, pull requests and usage of the last days |
+| `GET /api/insights?days=&tz=&scope=&team=&repo=` | quality, usage, cost, pull requests and people of the last days, and the days before |
+| `GET /api/insights/reliability?…` | failures, prompt and sandbox times, tool errors and automations (admins) |
 | `GET /api/repos[/{owner}/{name}/branches]` | GitHub repositories and branches, for pickers |
 | `/mcp` | agent tools (session tokens) |
 
@@ -482,7 +497,7 @@ internal/event       host-neutral repository events and the triggers that match 
 internal/store       SQLite migrations and queries, environments, settings, encrypted secrets
 internal/github      the GitHub App, its tokens and accounts, clone URLs, pull requests
 internal/slack       the Slack app, its installations, and the bot
-internal/insights    cycles, first-try rate, pull request outcomes and usage
+internal/insights    cycles, first-try rate, usage, cost, pull requests, people and reliability
 internal/api         HTTP API, event streams, guards
 web                  Preact UI, embedded in the binary
 ```
