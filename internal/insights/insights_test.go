@@ -3,6 +3,7 @@ package insights_test
 import (
 	"context"
 	"math"
+	"slices"
 	"testing"
 	"time"
 
@@ -84,32 +85,35 @@ func TestQualityMeasures(t *testing.T) {
 		}
 	}
 
-	r, err := insights.Compute(ctx, env.DB, 7, now, time.UTC, nil)
+	r, err := insights.Compute(ctx, env.DB, insights.Options{Days: 7, Now: now, Loc: time.UTC})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Sessions != 4 || r.Settled != 4 {
-		t.Fatalf("sessions %d, settled %d; want the 4 people started", r.Sessions, r.Settled)
+	if r.Totals.Sessions != 4 || r.Totals.Settled != 4 {
+		t.Fatalf("sessions %d, settled %d; want the 4 people started", r.Totals.Sessions, r.Totals.Settled)
 	}
-	if !near(r.FirstTryRate, 0.25) || !near(r.SuccessRate, 0.5) || !near(r.Cycles, 1.25) {
-		t.Errorf("first try %v, success %v, cycles %v; want 0.25, 0.5, 1.25", r.FirstTryRate, r.SuccessRate, r.Cycles)
+	if tt := r.Totals; !near(tt.FirstTryRate, 0.25) || !near(tt.SuccessRate, 0.5) || !near(tt.Cycles, 1.25) {
+		t.Errorf("first try %v, success %v, cycles %v; want 0.25, 0.5, 1.25", tt.FirstTryRate, tt.SuccessRate, tt.Cycles)
 	}
 	if c := r.CycleCounts; c[0].N != 3 || c[1].N != 1 || c[2].N != 0 || c[3].N != 0 {
 		t.Errorf("cycle counts %+v", c)
 	}
-	if r.Failed != 1 || len(r.Failures) != 1 || r.Failures[0].Label != "simulated failure" {
-		t.Errorf("failed %d: %+v", r.Failed, r.Failures)
-	}
-	if a := r.Automations; a.Runs != 1 || a.Succeeded != 1 {
-		t.Errorf("automations %+v", a)
+	if tt := r.Totals; tt.People != 2 || tt.Prompts != 6 || tt.Usage.Output != 200*5 {
+		t.Errorf("people %d, prompts %d, usage %+v; want 2, the 6 of people's sessions and their helper, 5 that finished", tt.People, tt.Prompts, tt.Usage)
 	}
 
-	pr := r.PullRequests
+	pr := r.Totals
 	if pr.Opened != 2 || pr.Merged != 1 || pr.Closed != 1 || pr.AcceptanceRate == nil || !near(*pr.AcceptanceRate, 0.5) {
 		t.Errorf("pull requests %+v", pr)
 	}
-	if !near(pr.MedianToMergeSecs, 7200) {
+	if !near(pr.MedianToMergeSecs, 7200) || !near(pr.P90ToMergeSecs, 7200) {
 		t.Errorf("median to merge %v", pr.MedianToMergeSecs)
+	}
+	if b := r.PullRequests.ToMerge; b[1].Label != "4h" || b[1].N != 1 {
+		t.Errorf("to merge %+v", b)
+	}
+	if g := r.PullRequests.ByRepo; len(g) != 2 || g[0].Name != "acme/app" || g[0].Merged != 1 {
+		t.Errorf("by repository %+v", g)
 	}
 	spent := func(id string) float64 { s, _ := env.DB.Session(ctx, id); return s.CostUSD }
 	children, _ := env.DB.Sessions(ctx, store.SessionFilter{ParentID: first.ID})
@@ -117,18 +121,28 @@ func TestQualityMeasures(t *testing.T) {
 		t.Errorf("cost per merged %v, want the run's %v, its spawned session included", pr.CostPerMerged, want)
 	}
 	all, _ := env.DB.Sessions(ctx, store.SessionFilter{Limit: 100})
-	total := 0.0
+	total, automation := 0.0, 0.0
 	for _, s := range all {
 		total += s.CostUSD
+		if s.AutomationID != "" {
+			automation += s.CostUSD
+		}
 	}
-	if !near(r.Spend, total) {
-		t.Errorf("spend %v, want %v", r.Spend, total)
+	if !near(r.Totals.Spend, total-automation) {
+		t.Errorf("spend %v, want people's %v, their helper included", r.Totals.Spend, total-automation)
+	}
+	everything, err := insights.Compute(ctx, env.DB, insights.Options{Days: 7, Now: now, Loc: time.UTC, Scope: insights.All})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tt := everything.Totals; !near(tt.Spend, total) || !near(tt.Automations, automation) || tt.Sessions != 6 {
+		t.Errorf("every scope: spend %v of %v, automations %v of %v, sessions %d", tt.Spend, total, tt.Automations, automation, tt.Sessions)
 	}
 
 	if len(r.Days) != 7 {
 		t.Fatalf("%d days", len(r.Days))
 	}
-	if d := r.Days[6]; d.Sessions != 4 || d.FirstTry != 1 || d.MoreCycles != 1 || d.Unsuccessful != 2 || d.Merged != 1 {
+	if d := r.Days[6]; d.Sessions != 4 || d.FirstTry != 1 || d.MoreCycles != 1 || d.Unsuccessful != 2 || d.Merged != 1 || d.People != 2 || d.Origins != [5]int{3, 0, 1, 0, 0} {
 		t.Errorf("today = %+v", d)
 	}
 	if len(r.BySource) != 2 || r.BySource[0].Name != "web" || r.BySource[0].Sessions != 3 || r.BySource[1].Name != "slack" {
@@ -137,18 +151,71 @@ func TestQualityMeasures(t *testing.T) {
 	if g := r.ByRepo; len(g) != 3 || g[0].Name != "acme/app" || g[0].Merged != 1 || !near(g[0].FirstTryRate, 0.5) {
 		t.Errorf("by repository %+v", g)
 	}
-	if g := r.ByPerson; len(g) != 2 || g[0].Name != "Jane Dev" || g[0].Sessions != 3 {
-		t.Errorf("by person %+v", g)
+	if g := r.ByModel; len(g) != 2 || g[0].Name != "claude-opus-5-5" || g[0].Sessions != 3 || g[1].Name != "default" {
+		t.Errorf("by model %+v; want the model the agent reported, and default for the failure that reported none", g)
+	}
+	if p := r.People; len(p) != 2 || p[0].Name != "Jane Dev" || p[0].Sessions != 3 || p[0].Merged != 1 || p[0].Daily[6] != 3 || len(p[0].Recent) != 3 {
+		t.Errorf("people %+v", p)
+	}
+	if run := r.Runs[0]; run.ID != first.ID || run.Children != 1 || run.PR != "merged" {
+		t.Errorf("most expensive run %+v; want the first session with its helper", run)
+	}
+	if e := r.Ended; e.Done != 3 || e.Failed != 1 {
+		t.Errorf("ended %+v", e)
+	}
+	if !slices.Equal(r.Repos, []string{"acme/app", "acme/web"}) {
+		t.Errorf("repos %v", r.Repos)
+	}
+	web, err := insights.Compute(ctx, env.DB, insights.Options{Days: 7, Now: now, Loc: time.UTC, Repo: "acme/web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if web.Totals.Sessions != 1 || web.Totals.Closed != 1 || len(web.Repos) != 2 {
+		t.Errorf("filtered to acme/web: %+v, repos %v", web.Totals, web.Repos)
+	}
+
+	// A week later, this window is the one before.
+	later, err := insights.Compute(ctx, env.DB, insights.Options{Days: 7, Now: now.AddDate(0, 0, 7), Loc: time.UTC})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if later.Totals.Sessions != 0 || later.Previous.Sessions != 4 || !near(later.Previous.FirstTryRate, 0.25) {
+		t.Errorf("a week later: totals %+v, previous %+v", later.Totals, later.Previous)
+	}
+	if w := later.Weeks; len(w) != 12 || w[10].People != 2 && w[11].People != 2 {
+		t.Errorf("weeks %+v", w)
+	}
+
+	rel, err := insights.ComputeReliability(ctx, env.DB, insights.Options{Days: 7, Now: now, Loc: time.UTC})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel.Prompts != 6 || rel.Failed != 1 || len(rel.Failures) != 1 || rel.Failures[0].Label != "simulated failure" || rel.Failures[0].Daily[6] != 1 {
+		t.Errorf("reliability prompts %d, failed %d: %+v", rel.Prompts, rel.Failed, rel.Failures)
+	}
+	if rel.FailureRate == nil || !near(*rel.FailureRate, 1.0/6) || rel.Duration.N != 6 || rel.QueueWait.N != 6 {
+		t.Errorf("failure rate %v, duration %+v, wait %+v", rel.FailureRate, rel.Duration, rel.QueueWait)
+	}
+	if len(rel.Tools) != 1 || rel.Tools[0].Name != "Bash" || rel.Tools[0].Calls != 6 || rel.ToolErrors != 0 {
+		t.Errorf("tools %+v", rel.Tools)
 	}
 }
 
 func TestNothingYet(t *testing.T) {
 	env := fake.NewEnv(t)
-	r, err := insights.Compute(ctx, env.DB, 30, time.Now(), time.UTC, nil)
+	r, err := insights.Compute(ctx, env.DB, insights.Options{Days: 30, Now: time.Now(), Loc: time.UTC})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Sessions != 0 || r.PullRequests.AcceptanceRate != nil || len(r.Days) != 30 || r.Failures == nil {
+	if r.Totals.Sessions != 0 || r.Totals.AcceptanceRate != nil || r.Totals.CacheHitRate != nil || len(r.Days) != 30 ||
+		r.Runs == nil || r.People == nil || r.PullRequests.Waiting == nil || len(r.Weeks) != 12 {
 		t.Errorf("empty report = %+v", r)
+	}
+	rel, err := insights.ComputeReliability(ctx, env.DB, insights.Options{Days: 30, Now: time.Now(), Loc: time.UTC})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel.Prompts != 0 || rel.FailureRate != nil || rel.Failures == nil || rel.Tools == nil || len(rel.Days) != 30 {
+		t.Errorf("empty reliability = %+v", rel)
 	}
 }

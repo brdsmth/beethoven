@@ -135,6 +135,7 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/github/account", s.connectAccount)
 	api("DELETE /api/github/account", s.disconnectAccount)
 	api("GET /api/insights", s.insights)
+	api("GET /api/insights/reliability", s.reliability)
 	api("GET /api/repos", s.listRepos)
 	api("GET /api/repos/{owner}/{name}/branches", s.listBranches)
 	api("GET /api/projects/options", s.projectOptions)
@@ -384,26 +385,60 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 	reply(w, http.StatusOK, map[string]any{"session": sess, "prompts": orEmpty(prompts), "pull_requests": orEmpty(pulls)})
 }
 
-// insights measures the last ?days calendar days (default 30) in the
-// viewer's ?tz.
-func (s *Server) insights(w http.ResponseWriter, r *http.Request) {
-	days, err := strconv.Atoi(r.URL.Query().Get("days"))
+// insightOptions reads what to measure: the last ?days calendar days
+// (default 30) in the viewer's ?tz, of the ?scope, ?team and ?repo, among
+// the sessions the viewer may see.
+func insightOptions(w http.ResponseWriter, r *http.Request) (insights.Options, bool) {
+	q := r.URL.Query()
+	days, err := strconv.Atoi(q.Get("days"))
 	if err != nil {
 		days = 30
 	}
 	if days < 1 || days > 366 {
 		fail(w, http.StatusBadRequest, "days must be between 1 and 366")
-		return
+		return insights.Options{}, false
 	}
-	loc, err := time.LoadLocation(r.URL.Query().Get("tz"))
+	scope := q.Get("scope")
+	if scope != "" && !insights.ValidScope(scope) {
+		fail(w, http.StatusBadRequest, "scope must be people, automations, agents or all")
+		return insights.Options{}, false
+	}
+	loc, err := time.LoadLocation(q.Get("tz"))
 	if err != nil {
 		loc = time.UTC
 	}
-	who, team := actor(r), r.URL.Query().Get("team") // "" = all, "workspace" = the workspace's own
+	who, team := actor(r), q.Get("team") // "" = all, "workspace" = the workspace's own
 	keep := func(sess store.Session) bool {
 		return access.ReadSession(who, sess) && (team == "" || sess.TeamID == strings.TrimPrefix(team, "workspace"))
 	}
-	report, err := insights.Compute(r.Context(), s.M.Store(), days, time.Now(), loc, keep)
+	return insights.Options{Days: days, Now: time.Now(), Loc: loc, Scope: scope, Repo: q.Get("repo"), Team: team, Keep: keep}, true
+}
+
+// insights measures how the sessions of a window went.
+func (s *Server) insights(w http.ResponseWriter, r *http.Request) {
+	o, ok := insightOptions(w, r)
+	if !ok {
+		return
+	}
+	report, err := insights.Compute(r.Context(), s.M.Store(), o)
+	if err != nil {
+		replyErr(w, err)
+		return
+	}
+	reply(w, http.StatusOK, report)
+}
+
+// reliability measures how reliably a window's work ran; for admins.
+func (s *Server) reliability(w http.ResponseWriter, r *http.Request) {
+	if !actor(r).Admin() {
+		forbid(w, "see how reliably work ran: ask an admin")
+		return
+	}
+	o, ok := insightOptions(w, r)
+	if !ok {
+		return
+	}
+	report, err := insights.ComputeReliability(r.Context(), s.M.Store(), o)
 	if err != nil {
 		replyErr(w, err)
 		return
