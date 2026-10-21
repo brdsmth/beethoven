@@ -269,11 +269,18 @@ func TestInsights(t *testing.T) {
 	}
 	fake.WaitFor(t, "prompt done", func() bool { got, _ := env.DB.Prompt(context.Background(), p.ID); return got.Status == store.Done })
 	code, out := do(t, "GET", srv.URL+"/api/insights?days=7&tz=America/New_York", "")
-	if code != 200 || out["sessions"] != 1.0 || out["first_try_rate"] != 1.0 || len(out["days"].([]any)) != 7 {
+	totals, _ := out["totals"].(map[string]any)
+	if code != 200 || totals["sessions"] != 1.0 || totals["first_try_rate"] != 1.0 || len(out["days"].([]any)) != 7 {
 		t.Errorf("insights: %d %v", code, out)
 	}
 	if code, _ := do(t, "GET", srv.URL+"/api/insights?days=1000", ""); code != http.StatusBadRequest {
 		t.Errorf("1000 days: %d", code)
+	}
+	if code, _ := do(t, "GET", srv.URL+"/api/insights?scope=robots", ""); code != http.StatusBadRequest {
+		t.Errorf("an unknown scope: %d", code)
+	}
+	if code, out := do(t, "GET", srv.URL+"/api/insights/reliability?days=7&scope=all", ""); code != 200 || out["prompts"] != 1.0 {
+		t.Errorf("reliability: %d %v", code, out)
 	}
 	if code, out = do(t, "GET", srv.URL+"/api/sessions/"+s.ID, ""); code != 200 || out["pull_requests"] == nil {
 		t.Errorf("session: %d %v", code, out)

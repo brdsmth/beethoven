@@ -87,6 +87,12 @@ func TestInvitesAndRoles(t *testing.T) {
 	if code, _ := max.call("POST", "/api/invites", `{"role":"member"}`); code != 403 {
 		t.Errorf("a member invites: %d", code)
 	}
+	if code, _ := max.call("GET", "/api/insights/reliability", ""); code != 403 {
+		t.Errorf("a member sees reliability: %d", code)
+	}
+	if code, out := max.call("GET", "/api/insights", ""); code != 200 || field(out, "funnel", "joined") != 2.0 || field(out, "funnel", "started") != 0.0 {
+		t.Errorf("a member sees insights: %d, funnel %v", code, field(out, "funnel"))
+	}
 	if code, _ := ada.call("POST", "/api/invites", `{"role":"owner"}`); code != 403 {
 		t.Errorf("an admin invites an owner: %d", code)
 	}
