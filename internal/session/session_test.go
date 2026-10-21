@@ -70,6 +70,9 @@ func TestPromptRunsToCompletion(t *testing.T) {
 	if p.Result != "finished turn 1" || p.CostUSD != 0.25 {
 		t.Errorf("prompt = %+v", p)
 	}
+	if want := (store.Usage{Input: 10, Output: 200, CacheRead: 3000, CacheWrite: 400}); p.Usage != want || p.Turns != 1 || p.AgentModel != "claude-opus-5-5" {
+		t.Errorf("usage = %+v, turns %d, model %q", p.Usage, p.Turns, p.AgentModel)
+	}
 	got, _ := env.M.Session(ctx, s.ID)
 	fake.WaitFor(t, "session done", func() bool { got, _ = env.M.Session(ctx, s.ID); return got.Status == "done" })
 	if got.Sandbox != "ready" || got.AgentSession != "convo-1" || got.CostUSD != 0.25 {

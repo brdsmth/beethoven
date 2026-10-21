@@ -22,6 +22,9 @@ func TestDecodeRealTranscript(t *testing.T) {
 	if !res.OK || res.Text != "done" || res.Session != "00000000-0000-4000-8000-000000000001" || res.Turns != 2 || res.CostUSD <= 0 {
 		t.Errorf("result = %+v", res)
 	}
+	if want := (Usage{Input: 4, Output: 90, CacheRead: 40591, CacheWrite: 18532}); res.Usage != want || res.Model != "claude-haiku-5-5" {
+		t.Errorf("usage = %+v, model %q; want %+v, claude-haiku-5-5", res.Usage, res.Model, want)
+	}
 	var types []string
 	for _, e := range events {
 		types = append(types, e.Type)

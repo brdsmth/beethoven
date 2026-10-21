@@ -79,6 +79,15 @@ type line struct {
 	Cost    float64  `json:"total_cost_usd"`
 	Turns   int      `json:"num_turns"`
 	Errors  []string `json:"errors"`
+	Usage   struct {
+		Input      int64 `json:"input_tokens"`
+		Output     int64 `json:"output_tokens"`
+		CacheRead  int64 `json:"cache_read_input_tokens"`
+		CacheWrite int64 `json:"cache_creation_input_tokens"`
+	} `json:"usage"`
+	ModelUsage map[string]struct {
+		Cost float64 `json:"costUSD"`
+	} `json:"modelUsage"`
 }
 
 type block struct {
@@ -144,6 +153,13 @@ func (Claude) Decode(r io.Reader, emit func(Event)) Result {
 			sawResult = true
 			res.OK = !l.IsError && l.Subtype == "success"
 			res.Text, res.CostUSD, res.Turns = l.Result, l.Cost, l.Turns
+			res.Usage = Usage(l.Usage)
+			best := -1.0
+			for model, u := range l.ModelUsage {
+				if u.Cost > best || u.Cost == best && model < res.Model {
+					res.Model, best = model, u.Cost
+				}
+			}
 			if !res.OK {
 				res.Error = l.Result
 				if res.Error == "" {

@@ -241,7 +241,9 @@ func (p *Provider) claude(ctx context.Context, c sandbox.Cmd) (int, error) {
 		return 1, nil
 	}
 	out(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": fmt.Sprintf("finished turn %d", turn),
-		"session_id": sid, "total_cost_usd": 0.25, "num_turns": 1})
+		"session_id": sid, "total_cost_usd": 0.25, "num_turns": 1,
+		"usage":      map[string]any{"input_tokens": 10, "output_tokens": 200, "cache_read_input_tokens": 3000, "cache_creation_input_tokens": 400},
+		"modelUsage": map[string]any{"claude-opus-5-5": map[string]any{"costUSD": 0.25}}})
 	return 0, nil
 }
 

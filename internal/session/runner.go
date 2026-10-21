@@ -49,6 +49,15 @@ type turn struct {
 type outcome struct {
 	status, err, result string
 	cost                float64
+	usage               agent.Usage
+	turns               int
+	model               string
+}
+
+// used is what a finished turn reports it used.
+func used(o outcome, res agent.Result) outcome {
+	o.cost, o.usage, o.turns, o.model = res.CostUSD, res.Usage, res.Turns, res.Model
+	return o
 }
 
 // ------------------------------------------------------------------ queue
@@ -119,6 +128,7 @@ func (r *runner) finish(p store.Prompt, o outcome, ctxErr error) {
 	t := r.turn
 	r.turn = nil
 	p.Status, p.Error, p.Result, p.CostUSD = o.status, o.err, o.result, o.cost
+	p.Usage, p.Turns, p.AgentModel = store.Usage(o.usage), o.turns, o.model
 	switch {
 	case t.stopped:
 		p.Status, p.Error = store.Cancelled, "stopped"
@@ -223,7 +233,7 @@ func (r *runner) execute(ctx context.Context, p store.Prompt) outcome {
 		}
 		switch {
 		case ctx.Err() != nil:
-			return outcome{status: store.Failed, err: ctx.Err().Error(), cost: res.CostUSD}
+			return used(outcome{status: store.Failed, err: ctx.Err().Error()}, res)
 		case err != nil:
 			return outcome{status: store.Failed, err: "exec: " + err.Error()}
 		case !res.OK && resume != "" && attempt == 0 && r.m.agent.ResumeFailed(res, stderr):
@@ -231,13 +241,13 @@ func (r *runner) execute(ctx context.Context, p store.Prompt) outcome {
 			resume = ""
 			continue
 		case res.OK:
-			return outcome{status: store.Done, result: res.Text, cost: res.CostUSD}
+			return used(outcome{status: store.Done, result: res.Text}, res)
 		}
 		msg := res.Error
 		if tail := strings.TrimSpace(stderr); tail != "" {
 			msg += fmt.Sprintf(" (exit %d): %s", code, clip(tail, 2000))
 		}
-		return outcome{status: store.Failed, err: msg, result: res.Text, cost: res.CostUSD}
+		return used(outcome{status: store.Failed, err: msg, result: res.Text}, res)
 	}
 }
 

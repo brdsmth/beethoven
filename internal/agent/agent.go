@@ -78,6 +78,16 @@ type Result struct {
 	Session string // conversation id, to resume the next turn
 	CostUSD float64
 	Turns   int
+	Usage   Usage
+	Model   string // the model that did most of the work, by cost; "" if unreported
+}
+
+// Usage counts the tokens a turn used.
+type Usage struct {
+	Input      int64 // uncached input
+	Output     int64
+	CacheRead  int64
+	CacheWrite int64
 }
 
 type Harness interface {

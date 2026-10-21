@@ -338,6 +338,9 @@ type Prompt struct {
 	Error        string     `json:"error,omitempty"`
 	Result       string     `json:"result,omitempty"`
 	CostUSD      float64    `json:"cost_usd"`
+	Usage        Usage      `json:"usage"`
+	Turns        int        `json:"turns,omitempty"`       // the agent's turns, as it reported them
+	AgentModel   string     `json:"agent_model,omitempty"` // the model that did most of the work
 	CreatedAt    time.Time  `json:"created_at"`
 	StartedAt    *time.Time `json:"started_at,omitempty"`
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
@@ -346,16 +349,29 @@ type Prompt struct {
 	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
+// Usage counts the tokens a prompt's turn used.
+type Usage struct {
+	Input      int64 `json:"input_tokens"` // uncached
+	Output     int64 `json:"output_tokens"`
+	CacheRead  int64 `json:"cache_read_tokens"`
+	CacheWrite int64 `json:"cache_write_tokens"`
+}
+
+func (u *Usage) Add(v Usage) {
+	u.Input, u.Output, u.CacheRead, u.CacheWrite = u.Input+v.Input, u.Output+v.Output, u.CacheRead+v.CacheRead, u.CacheWrite+v.CacheWrite
+}
+
 const promptCols = `id, session_id, content, model, effort, author_name, author_email, account_id, source,
-	COALESCE(automation_id,''), COALESCE(dedup_key,''), status, error, result, cost_usd, created_at, started_at,
-	finished_at`
+	COALESCE(automation_id,''), COALESCE(dedup_key,''), status, error, result, cost_usd, input_tokens, output_tokens,
+	cache_read_tokens, cache_write_tokens, turns, agent_model, created_at, started_at, finished_at`
 
 func scanPrompt(row scanner) (Prompt, error) {
 	var p Prompt
 	var created int64
 	var started, finished sql.NullInt64
 	err := row.Scan(&p.ID, &p.SessionID, &p.Content, &p.Model, &p.Effort, &p.Author.Name, &p.Author.Email, &p.AccountID, &p.Source,
-		&p.AutomationID, &p.DedupKey, &p.Status, &p.Error, &p.Result, &p.CostUSD, &created, &started, &finished)
+		&p.AutomationID, &p.DedupKey, &p.Status, &p.Error, &p.Result, &p.CostUSD, &p.Usage.Input, &p.Usage.Output,
+		&p.Usage.CacheRead, &p.Usage.CacheWrite, &p.Turns, &p.AgentModel, &created, &started, &finished)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, ErrNotFound
 	}
@@ -433,8 +449,10 @@ func (s *Store) ClaimNext(ctx context.Context, sessionID string) (Prompt, error)
 func (s *Store) FinishPrompt(ctx context.Context, p *Prompt) error {
 	now := time.Now()
 	p.FinishedAt = &now
-	_, err := s.w.ExecContext(ctx, `UPDATE prompts SET status=?, error=?, result=?, cost_usd=?, finished_at=?
-		WHERE id=?`, p.Status, p.Error, p.Result, p.CostUSD, ms(now), p.ID)
+	_, err := s.w.ExecContext(ctx, `UPDATE prompts SET status=?, error=?, result=?, cost_usd=?, input_tokens=?,
+		output_tokens=?, cache_read_tokens=?, cache_write_tokens=?, turns=?, agent_model=?, finished_at=? WHERE id=?`,
+		p.Status, p.Error, p.Result, p.CostUSD, p.Usage.Input, p.Usage.Output, p.Usage.CacheRead, p.Usage.CacheWrite,
+		p.Turns, p.AgentModel, ms(now), p.ID)
 	return err
 }
 
