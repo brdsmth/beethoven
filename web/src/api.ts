@@ -78,24 +78,65 @@ export type PullRequest = {
   opened_at: string; merged_at?: string; closed_at?: string; synced_at: string;
 };
 export type Count = { label: string; n: number };
+export type Usage = { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number };
+export type InsightScope = 'people' | 'automations' | 'agents' | 'all';
+/** A window's headline measures. */
+export type InsightTotals = {
+  sessions: number; settled: number; cycles: number; first_try_rate: number; success_rate: number; people: number;
+  prompts: number; agent_seconds: number; spend: number; per_session: number; automation_spend: number;
+  usage: Usage; cache_hit_rate: number | null;
+  opened: number; merged: number; closed: number; open: number; acceptance_rate: number | null;
+  median_to_open_secs: number; median_to_merge_secs: number; p90_to_merge_secs: number; cost_per_merged: number;
+};
 export type InsightDay = {
-  date: string; sessions: number; first_try: number; more_cycles: number; unsuccessful: number; merged: number; spend: number;
+  date: string; sessions: number; settled: number; cycles: number; first_try: number; more_cycles: number; unsuccessful: number;
+  people: number; origins: number[]; opened: number; merged: number; spend: number; spend_by: number[];
 };
 export type InsightGroup = {
-  name: string; sessions: number; settled: number; first_try_rate: number; cycles: number; merged: number; spend: number;
+  name: string; sessions: number; settled: number; first_try_rate: number; cycles: number; prompts: number; agent_seconds: number;
+  merged: number; spend: number; cost_per_merged: number; usage: Usage; prev_spend?: number;
 };
-/** GET /api/insights: how the sessions of a window went. */
+/** A session in scope with the work it accounts for. */
+export type InsightRun = {
+  id: string; title: string; person: string; created_at: string; children: number; cycles: number; agent_seconds: number;
+  status: string; pr: '' | 'merged' | 'open' | 'closed'; spend: number;
+};
+export type PRGroup = {
+  name: string; opened: number; merged: number; closed: number; acceptance_rate: number | null; median_to_merge_secs: number; cost_per_merged: number;
+};
+export type InsightPerson = InsightGroup & {
+  account_id?: string; last_active: string; daily: number[]; repos: Count[]; recent: InsightRun[];
+};
+/** GET /api/insights: how the sessions of a window went, and the window before. */
 export type Insights = {
-  from: string; to: string;
-  sessions: number; settled: number; cycles: number; cycle_counts: Count[]; first_try_rate: number; success_rate: number;
-  prompts: number; failed: number; stopped: number; failures: Count[]; agent_seconds: number;
+  from: string; to: string; scope: InsightScope; repos: string[];
+  totals: InsightTotals; previous: InsightTotals;
+  cycle_counts: Count[]; days: InsightDay[]; sources: Count[];
+  ended: { done: number; failed: number; stopped: number; active: number; archived: number };
+  hours: number[][]; children_per_root: number;
+  by_repo: InsightGroup[]; by_project: InsightGroup[]; by_team: InsightGroup[]; by_model: InsightGroup[];
+  by_model_effort: InsightGroup[]; by_source: InsightGroup[]; runs: InsightRun[];
   pull_requests: {
-    opened: number; merged: number; closed: number; open: number; acceptance_rate: number | null;
-    median_to_open_secs: number; median_to_merge_secs: number; cost_per_merged: number; sessions_with_merged: number;
+    draft: number; to_merge: Count[]; by_source: PRGroup[]; by_repo: PRGroup[]; open_now: number; oldest_open_secs: number;
+    waiting: { repo: string; number: number; url: string; draft: boolean; opened_at: string; session_id: string; title: string; person: string }[];
   };
-  automations: { runs: number; succeeded: number; failed: number; spend: number };
-  spend: number;
-  days: InsightDay[]; by_source: InsightGroup[]; by_person: InsightGroup[]; by_repo: InsightGroup[];
+  people: InsightPerson[];
+  weeks: { start: string; people: number }[];
+  funnel: { invited: number; joined: number; started: number; merged: number; median_to_start_secs: number };
+};
+export type Spread = { n: number; median: number; p90: number; prev_median: number };
+/** GET /api/insights/reliability, for admins: how reliably a window's work ran. */
+export type Reliability = {
+  from: string; to: string; scope: InsightScope;
+  prompts: number; failed: number; stopped: number; failure_rate: number | null; prev_failure_rate: number | null;
+  duration: Spread; queue_wait: Spread; sandbox_start: Spread;
+  tool_calls: number; tool_errors: number; tools: { name: string; calls: number; errors: number }[];
+  days: { date: string; failed: number; stopped: number }[];
+  failures: { label: string; n: number; daily: number[]; last_at: string; session_id: string }[];
+  automations: {
+    id: string; name: string; trigger: string; enabled: boolean; failures: number; runs: number; succeeded: number; failed: number;
+    merged: number; spend: number; last_status?: string; last_at?: string;
+  }[];
 };
 export type GitHubRepo = { repo: string; description?: string; private: boolean; default_branch: string };
 export type SlackStatus = {

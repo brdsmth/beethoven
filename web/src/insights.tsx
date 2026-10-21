@@ -1,223 +1,271 @@
-import { useEffect, useState } from 'preact/hooks';
-import { get, type InsightDay, type InsightGroup, type Insights as Report } from './api';
-import { useTeams } from './state';
-import { Seg, errText, money, plural, readPref, writePref } from './util';
+import { useEffect, useRef, useState } from 'preact/hooks';
+import { get, type InsightDay, type InsightScope, type Insights as Report, type Reliability } from './api';
+import {
+  Columns, RankBars, Tile, amountDelta, cash, one, pct, percentDelta, pointsDelta, shortDate, span, type Series,
+} from './charts';
+import { useDismiss } from './components';
+import { Cost, People, Pulls, ReliabilityTab, Usage } from './insights-tabs';
+import { useMe, useTeams } from './state';
+import { Seg, errText, plural, readPref, useRoute, useTick, writePref } from './util';
 
-// How sessions go: quality first (cycles and the first-try rate), then pull
-// requests, failures and usage. Every number covers the sessions created in
-// the chosen window; quality covers the ones people started, once settled.
+// How sessions go, in tabs: an overview led by quality (cycles and the
+// first-try rate), then usage, cost, pull requests, people and, for admins,
+// reliability. Every number covers the sessions created in the chosen
+// window, of the chosen scope, team and repository; the filters and the tab
+// live in the URL so a link opens the same view.
+
+export { span };
 
 const DAYS_PREF = 'beethoven.insights.days';
 const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return ''; } })();
 
-const pct = (x: number | null | undefined) => (x == null ? '–' : `${Math.round(x * 100)}%`);
-const one = (x: number) => (x ? x.toFixed(1) : '–');
+type Days = '7' | '30' | '90';
+export type Filters = { days: Days; team: string; scope: InsightScope; repo: string };
+export type TabProps = { r: Report; f: Filters; versus: string };
 
-/** A duration in seconds, at the precision it deserves. */
-export function span(secs: number) {
-  if (!secs || secs < 0) return '–';
-  if (secs < 60) return `${Math.round(secs)}s`;
-  if (secs < 3600) return `${Math.round(secs / 60)}m`;
-  if (secs < 48 * 3600) return `${(secs / 3600).toFixed(secs < 36000 ? 1 : 0)}h`;
-  return `${(secs / 86400).toFixed(1)} days`;
+const TABS: [string, string][] = [
+  ['', 'Overview'], ['usage', 'Usage'], ['cost', 'Cost'], ['pulls', 'Pull requests'], ['people', 'People'], ['reliability', 'Reliability'],
+];
+const SCOPES: [InsightScope, string][] = [['people', 'People'], ['automations', 'Automations'], ['agents', 'Agents'], ['all', 'All']];
+export const SCOPE_NOTE: Record<InsightScope, string> = {
+  people: 'sessions people started', automations: 'sessions automations started', agents: 'sessions agents spawned', all: 'every session',
+};
+
+function readFilters(): Filters {
+  const q = new URLSearchParams(location.hash.split('?')[1] || '');
+  const days = q.get('days');
+  const scope = q.get('scope') as InsightScope;
+  return {
+    days: days === '7' || days === '30' || days === '90' ? days : readPref<Days>(DAYS_PREF) ?? '30',
+    team: q.get('team') || '', repo: q.get('repo') || '',
+    scope: SCOPES.some(([s]) => s === scope) ? scope : 'people',
+  };
 }
 
-const shortDate = (d: string) => new Date(d + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+/** The query that names a view: only what differs from the defaults. */
+function query(f: Filters, withTZ = false) {
+  const q = new URLSearchParams();
+  q.set('days', f.days);
+  if (f.team) q.set('team', f.team);
+  if (f.scope !== 'people') q.set('scope', f.scope);
+  if (f.repo) q.set('repo', f.repo);
+  if (withTZ) q.set('tz', tz);
+  return q.toString();
+}
 
 export function Insights() {
-  const [days, setDays] = useState<'7' | '30' | '90'>(() => readPref<'7' | '30' | '90'>(DAYS_PREF) ?? '30');
-  const [team, setTeam] = useState('');
+  const route = useRoute();
+  const me = useMe();
+  const admin = !!me?.admin;
+  const tab = TABS.some(([t]) => t === route[1]) && (route[1] !== 'reliability' || admin) ? route[1] ?? '' : '';
+  const [f, setF] = useState<Filters>(readFilters);
   const teams = useTeams();
   const [r, setR] = useState<Report>();
+  const [rel, setRel] = useState<Reliability>();
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
+  const [at, setAt] = useState<number>(0);
+  const [nonce, setNonce] = useState(0);
+  useTick(30000);
+
+  const path = (t: string) => `#/insights${t ? '/' + t : ''}?${query(f)}`;
+  useEffect(() => { history.replaceState(null, '', path(tab)); }, [f, tab]);
+  // A link followed from here names its own filters.
+  useEffect(() => {
+    const follow = () => setF(p => { const n = readFilters(); return query(n) === query(p) ? p : n; });
+    addEventListener('hashchange', follow);
+    return () => removeEventListener('hashchange', follow);
+  }, []);
   useEffect(() => {
     setLoading(true);
-    get<Report>(`/api/insights?days=${days}&tz=${encodeURIComponent(tz)}&team=${team}`)
-      .then(x => { setR(x); setErr(''); }, e => setErr(errText(e)))
+    const q = query(f, true);
+    Promise.all([
+      get<Report>(`/api/insights?${q}`),
+      tab === 'reliability' ? get<Reliability>(`/api/insights/reliability?${q}`) : Promise.resolve(undefined),
+    ]).then(([x, y]) => { setR(x); if (y) setRel(y); setErr(''); setAt(Date.now()); }, e => setErr(errText(e)))
       .finally(() => setLoading(false));
-  }, [days, team]);
-  const pick = (v: '7' | '30' | '90') => { setDays(v); writePref(DAYS_PREF, v); };
+  }, [f, tab === 'reliability', nonce]);
+  // Coming back to the page after a while brings the numbers up to date.
+  useEffect(() => {
+    const f = () => { if (document.visibilityState === 'visible' && Date.now() - at > 60000) setNonce(n => n + 1); };
+    addEventListener('visibilitychange', f);
+    return () => removeEventListener('visibilitychange', f);
+  }, [at]);
+
+  const set = (patch: Partial<Filters>) => {
+    if (patch.days) writePref(DAYS_PREF, patch.days);
+    setF(p => ({ ...p, ...patch }));
+  };
+  const repos = r ? (f.repo && !r.repos.includes(f.repo) ? [f.repo, ...r.repos] : r.repos) : f.repo ? [f.repo] : [];
+  const versus = `the ${f.days} days before`;
 
   return (
     <div class="page insights">
-      <div class="page-head"><h1>Insights</h1></div>
+      <div class="page-head">
+        <h1>Insights</h1>
+        <span class="insights-meta">
+          {at > 0 && <span class="dim">Updated {Date.now() - at < 60000 ? 'just now' : `${Math.round((Date.now() - at) / 60000)}m ago`}</span>}
+          <About />
+        </span>
+      </div>
+      <nav class="tabs" aria-label="Insights">
+        {TABS.filter(([t]) => t !== 'reliability' || admin).map(([t, label]) => (
+          <a key={t} href={path(t)} class={'tab' + (t === tab ? ' on' : '')} aria-current={t === tab ? 'page' : undefined}>{label}</a>
+        ))}
+      </nav>
       <div class="filters">
-        <Seg value={days} set={pick} options={[['7', '7 days'], ['30', '30 days'], ['90', '90 days']]} />
+        <Seg value={f.days} set={days => set({ days })} options={[['7', '7 days'], ['30', '30 days'], ['90', '90 days']]} />
         {!!teams?.length && (
-          <select aria-label="Team" value={team} onChange={e => setTeam(e.currentTarget.value)}>
+          <select aria-label="Team" value={f.team} onChange={e => set({ team: e.currentTarget.value })}>
             <option value="">Every team</option>
             {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
             <option value="workspace">Workspace: no team</option>
           </select>
         )}
+        <div class={'scope' + (tab === 'pulls' ? ' off' : '')} title={tab === 'pulls' ? 'Pull requests count from every source' : undefined}>
+          <Seg value={f.scope} set={scope => set({ scope })} options={SCOPES} />
+        </div>
+        <select aria-label="Repository" value={f.repo} onChange={e => set({ repo: e.currentTarget.value })}>
+          <option value="">Every repository</option>
+          {repos.map(x => <option key={x} value={x}>{x}</option>)}
+        </select>
       </div>
       {err && <p class="err" role="alert">{err}</p>}
       {!r ? !err && <p class="empty">Loading…</p> : (
-        <div class={loading ? 'stale' : ''}>
-          <p class="muted">
-            Quality covers the sessions people started (not automations or agents), once they settle. A <b>cycle</b> is one
-            prompt and its response; a session succeeds on the <b>first try</b> when one cycle was enough and its pull request
-            wasn't closed without merging.
-          </p>
-          <div class="tiles">
-            <Tile label="First-try rate" value={pct(r.settled ? r.first_try_rate : null)} sub={`of ${plural(r.settled, 'settled session')}`} />
-            <Tile label="Cycles per session" value={one(r.cycles)} sub="prompts until done" />
-            <Tile label="Success rate" value={pct(r.settled ? r.success_rate : null)} sub={`${plural(r.sessions, 'session')} started`} />
-            <Tile label="Pull requests merged" value={String(r.pull_requests.merged)}
-              sub={r.pull_requests.acceptance_rate == null ? 'none decided yet' : `${pct(r.pull_requests.acceptance_rate)} accepted`} />
-            <Tile label="Spend" value={money(r.spend)}
-              sub={r.pull_requests.merged ? `${money(r.pull_requests.cost_per_merged)} per merged PR` : 'no merged PRs yet'} />
-          </div>
-
-          <section class="card viz-card">
-            <h2>How sessions went</h2>
-            <p class="hint">Sessions people started each day, by outcome.</p>
-            <OutcomeChart days={r.days} />
-          </section>
-
-          <div class="grid2 pair">
-            <section class="card viz-card">
-              <h2>Cycles to finish</h2>
-              <p class="hint">Settled sessions by how many cycles they took.</p>
-              <CycleBars counts={r.cycle_counts} />
-            </section>
-            <section class="card">
-              <h2>Pull requests</h2>
-              <dl class="kv">
-                <dt>Opened</dt><dd>{r.pull_requests.opened}</dd>
-                <dt>Merged</dt><dd>{r.pull_requests.merged}</dd>
-                <dt>Closed unmerged</dt><dd>{r.pull_requests.closed}</dd>
-                <dt>Still open</dt><dd>{r.pull_requests.open}</dd>
-                <dt>Session start to PR</dt><dd><Median secs={r.pull_requests.median_to_open_secs} /></dd>
-                <dt>PR to merge</dt><dd><Median secs={r.pull_requests.median_to_merge_secs} /></dd>
-              </dl>
-            </section>
-          </div>
-
-          <div class="grid2 pair">
-            <section class="card">
-              <h2>Failures</h2>
-              <p class="hint">
-                {plural(r.prompts, 'prompt')} ran: {r.failed} failed, {r.stopped} stopped. Agents worked {span(r.agent_seconds)} in all.
-              </p>
-              {r.failures.length === 0 ? <p class="empty small">No failures.</p> : (
-                <table class="data-table">
-                  <thead><tr><th>Reason</th><th class="num">Prompts</th></tr></thead>
-                  <tbody>{r.failures.map(f => <tr key={f.label}><td>{f.label}</td><td class="num">{f.n}</td></tr>)}</tbody>
-                </table>
-              )}
-            </section>
-            <section class="card">
-              <h2>Automations</h2>
-              <dl class="kv">
-                <dt>Runs</dt><dd>{r.automations.runs}</dd>
-                <dt>Succeeded</dt><dd>{r.automations.succeeded} {r.automations.runs > 0 && <span class="dim">({pct(r.automations.succeeded / r.automations.runs)})</span>}</dd>
-                <dt>Failed</dt><dd>{r.automations.failed}</dd>
-                <dt>Spend</dt><dd>{money(r.automations.spend)}</dd>
-              </dl>
-            </section>
-          </div>
-
-          <Breakdown r={r} />
+        <div class={'tab-panel' + (loading ? ' stale' : '')}>
+          {tab === '' && <Overview r={r} f={f} versus={versus} />}
+          {tab === 'usage' && <Usage r={r} f={f} versus={versus} />}
+          {tab === 'cost' && <Cost r={r} f={f} versus={versus} />}
+          {tab === 'pulls' && <Pulls r={r} f={f} versus={versus} />}
+          {tab === 'people' && <People r={r} f={f} versus={versus} />}
+          {tab === 'reliability' && (rel ? <ReliabilityTab r={rel} f={f} versus={versus} /> : <p class="empty">Loading…</p>)}
         </div>
       )}
     </div>
   );
 }
 
-const Median = ({ secs }: { secs: number }) => (secs > 0 ? <>{span(secs)} <span class="dim">median</span></> : <>–</>);
-
-function Tile({ label, value, sub }: { label: string; value: string; sub: string }) {
+/** What to know about the numbers. */
+function About() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  useDismiss(open, () => setOpen(false), ref);
   return (
-    <div class="tile">
-      <div class="tile-label">{label}</div>
-      <div class="tile-value">{value}</div>
-      <div class="tile-sub">{sub}</div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------- outcome chart
-
-const SERIES = [
-  { key: 'first', label: 'First try', cls: 's1' },
-  { key: 'more', label: 'After follow-ups', cls: 's2' },
-  { key: 'bad', label: 'Unsuccessful', cls: 's3' },
-  { key: 'busy', label: 'In progress', cls: 's0' },
-] as const;
-
-const parts = (d: InsightDay) => [d.first_try, d.more_cycles, d.unsuccessful, d.sessions - d.first_try - d.more_cycles - d.unsuccessful];
-
-/** Rounds up to 1, 2 or 5 times a power of ten. */
-function niceMax(v: number) {
-  const p = 10 ** Math.floor(Math.log10(Math.max(v, 1)));
-  return [1, 2, 5, 10].map(m => m * p).find(m => m >= v)!;
-}
-
-function OutcomeChart({ days }: { days: InsightDay[] }) {
-  const [tip, setTip] = useState<number | null>(null);
-  const max = niceMax(Math.max(1, ...days.map(d => d.sessions)));
-  const ticks = max % 2 === 0 ? [max, max / 2, 0] : [max, 0];
-  const labelled = new Set([0, Math.floor((days.length - 1) / 2), days.length - 1]);
-  const d = tip == null ? undefined : days[tip];
-  return (
-    <figure class="viz" aria-label="Sessions per day by outcome">
-      <div class="viz-legend">
-        {SERIES.map(s => <span key={s.key}><i class={'key ' + s.cls} />{s.label}</span>)}
-      </div>
-      <div class="viz-body">
-        <div class="viz-y">{ticks.map(t => <span key={t}>{t}</span>)}</div>
-        <div class="viz-plot" onPointerLeave={() => setTip(null)}>
-          {ticks.map(t => <div key={t} class="viz-grid" style={{ bottom: `${(t / max) * 100}%` }} />)}
-          <div class="viz-cols">
-            {days.map((day, i) => (
-              <div key={day.date} class={'viz-col' + (tip === i ? ' on' : '')} tabIndex={0}
-                aria-label={`${shortDate(day.date)}: ${day.sessions} sessions`}
-                onPointerEnter={() => setTip(i)} onFocus={() => setTip(i)} onBlur={() => setTip(null)}>
-                <div class="viz-stack" style={{ height: `${(day.sessions / max) * 100}%` }}>
-                  {parts(day).map((v, k) => v > 0 && <div key={k} class={'seg ' + SERIES[k].cls} style={{ flexGrow: v }} />)}
-                </div>
-              </div>
-            ))}
-          </div>
-          {d && (
-            <div class={'viz-tip' + (tip! < days.length * 0.15 ? ' at-left' : tip! > days.length * 0.85 ? ' at-right' : '')}
-              style={{ left: `${((tip! + 0.5) / days.length) * 100}%` }} role="status">
-              <div class="viz-tip-head">{shortDate(d.date)}</div>
-              {SERIES.map((s, k) => (
-                <div key={s.key} class="viz-tip-row"><i class={'line ' + s.cls} /><b>{parts(d)[k]}</b><span>{s.label}</span></div>
-              ))}
-              <div class="viz-tip-row"><i class="line none" /><b>{d.merged}</b><span>PRs merged</span></div>
-              <div class="viz-tip-row"><i class="line none" /><b>{money(d.spend)}</b><span>spent</span></div>
-            </div>
-          )}
+    <span class="about" ref={ref}>
+      <button type="button" class="btn sm ghost" aria-expanded={open} onClick={() => setOpen(!open)}>About this data</button>
+      {open && (
+        <div class="popover about-pop" role="dialog" aria-label="About this data">
+          <ul>
+            <li>Numbers cover the sessions <b>created</b> in the window, by day in your timezone, compared with the window before.</li>
+            <li>The scope picks the sessions. Work a session's agent spawned counts for the session in scope above it.</li>
+            <li>Quality counts sessions once they settle: they ran and have nothing queued or running.</li>
+            <li>Pull requests count from every source, whatever the scope, and refresh from GitHub every 10 minutes.</li>
+            <li>You only see sessions you may read; other people's private sessions are left out.</li>
+            <li>Spend and tokens are what the agent reported. Tokens count from prompts run since they were first recorded.</li>
+          </ul>
         </div>
-      </div>
-      <div class="viz-x">
-        {days.map((day, i) => <span key={day.date}>{labelled.has(i) ? shortDate(day.date) : ''}</span>)}
-      </div>
-      <details class="viz-table">
-        <summary>Show as a table</summary>
-        <table class="data-table">
-          <thead>
-            <tr><th>Day</th><th class="num">Sessions</th>{SERIES.map(s => <th key={s.key} class="num">{s.label}</th>)}
-              <th class="num">PRs merged</th><th class="num">Spend</th></tr>
-          </thead>
-          <tbody>
-            {days.map(day => (
-              <tr key={day.date}>
-                <td>{shortDate(day.date)}</td><td class="num">{day.sessions}</td>
-                {parts(day).map((v, k) => <td key={k} class="num">{v}</td>)}
-                <td class="num">{day.merged}</td><td class="num">{money(day.spend)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </details>
-    </figure>
+      )}
+    </span>
   );
 }
+
+// ------------------------------------------------------------- daily rates
+
+const ratio = (n: number, of: number) => (of ? n / of : 0);
+/** A measure per day, for a sparkline. */
+export const daily = (days: InsightDay[], f: (d: InsightDay) => number) => days.map(f);
+
+// ---------------------------------------------------------------- overview
+
+const OUTCOMES: Series[] = [
+  { label: 'First try', cls: 's1' }, { label: 'After follow-ups', cls: 's2' }, { label: 'Unsuccessful', cls: 's3' }, { label: 'In progress', cls: 's0' },
+];
+
+function Overview({ r, f, versus }: TabProps) {
+  const t = r.totals, p = r.previous, days = r.days;
+  const hasPrev = p.sessions > 0;
+  return (
+    <>
+      <div class="section-cap">Quality · {SCOPE_NOTE[f.scope]}</div>
+      <div class="tiles">
+        <Tile label="First-try rate" value={pct(t.settled ? t.first_try_rate : null)} sub={`of ${plural(t.settled, 'settled session')}`}
+          delta={pointsDelta(t.settled ? t.first_try_rate : null, p.settled ? p.first_try_rate : null)} versus={versus}
+          spark={daily(days, d => ratio(d.first_try, d.settled))} />
+        <Tile label="Cycles per session" value={one(t.cycles)} sub="prompts until done" versus={versus}
+          delta={amountDelta(t.cycles, p.cycles, one, 'down', t.settled > 0 && p.settled > 0)} spark={daily(days, d => ratio(d.cycles, d.settled))} />
+        <Tile label="Success rate" value={pct(t.settled ? t.success_rate : null)} sub="of settled sessions" versus={versus}
+          delta={pointsDelta(t.settled ? t.success_rate : null, p.settled ? p.success_rate : null)}
+          spark={daily(days, d => ratio(d.first_try + d.more_cycles, d.settled))} />
+        <Tile label="Active people" value={String(t.people)} sub={t.people ? `${one(t.sessions / t.people)} sessions each` : 'nobody yet'}
+          versus={versus} delta={amountDelta(t.people, p.people, String, 'up', hasPrev)} spark={daily(days, d => d.people)} />
+      </div>
+      <div class="section-cap">Throughput</div>
+      <div class="tiles">
+        <Tile label="Sessions" value={String(t.sessions)} sub={`${one(t.sessions / days.length)} a day`} versus={versus}
+          delta={percentDelta(t.sessions, p.sessions)} spark={daily(days, d => d.sessions)} />
+        <Tile label="PRs merged" value={String(t.merged)} sub={t.median_to_merge_secs ? `${span(t.median_to_merge_secs)} median to merge` : 'from every source'}
+          versus={versus} delta={percentDelta(t.merged, p.merged)} spark={daily(days, d => d.merged)} />
+        <Tile label="Spend" value={cash(t.spend)} sub={t.sessions ? `${cash(t.per_session)} per session` : 'nothing yet'} versus={versus}
+          delta={percentDelta(t.spend, p.spend, 'neither')} spark={daily(days, d => d.spend)} />
+        <Tile label="Cost per merged PR" value={t.merged ? cash(t.cost_per_merged) : '–'}
+          sub={t.merged ? `${plural(t.merged, 'merged pull request')}` : 'no merged PRs yet'} versus={versus}
+          delta={amountDelta(t.cost_per_merged, p.cost_per_merged, cash, 'down', t.merged > 0 && p.merged > 0)} />
+      </div>
+
+      <section class="card viz-card">
+        <h2>How sessions went</h2>
+        <p class="hint">{SCOPE_NOTE[f.scope].replace(/^./, c => c.toUpperCase())} each day, by outcome.</p>
+        <Columns label="Sessions per day by outcome" series={OUTCOMES}
+          rows={days.map(d => ({ label: shortDate(d.date), values: [d.first_try, d.more_cycles, d.unsuccessful, d.sessions - d.first_try - d.more_cycles - d.unsuccessful] }))}
+          extra={i => <>
+            <div class="viz-tip-row"><i class="line none" /><b>{days[i].merged}</b><span>PRs merged</span></div>
+            <div class="viz-tip-row"><i class="line none" /><b>{cash(days[i].spend)}</b><span>spent</span></div>
+          </>} />
+      </section>
+
+      <div class="grid2 pair">
+        <section class="card viz-card">
+          <h2>Cycles to finish</h2>
+          <p class="hint">Settled sessions by how many cycles they took.</p>
+          <CycleBars counts={r.cycle_counts} />
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Pull requests</h2><a class="push small" href={`#/insights/pulls?days=${f.days}`}>More →</a></div>
+          <dl class="kv">
+            <dt>Opened</dt><dd>{t.opened}</dd>
+            <dt>Merged</dt><dd>{t.merged} {t.acceptance_rate != null && <span class="dim">({pct(t.acceptance_rate)} accepted)</span>}</dd>
+            <dt>Closed unmerged</dt><dd>{t.closed}</dd>
+            <dt>Still open</dt><dd>{t.open}</dd>
+            <dt>Session start to PR</dt><dd><Median secs={t.median_to_open_secs} /></dd>
+            <dt>PR to merge</dt><dd><Median secs={t.median_to_merge_secs} /></dd>
+          </dl>
+        </section>
+      </div>
+
+      <div class="grid3">
+        <section class="card">
+          <div class="card-head"><h2>Repositories</h2><TabLink tab="usage" f={f} /></div>
+          <p class="hint">By sessions, with spend</p>
+          <RankBars rows={r.by_repo.slice(0, 5).map(g => ({ label: g.name, value: g.sessions, sub: cash(g.spend) }))} />
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Models</h2><TabLink tab="cost" f={f} /></div>
+          <p class="hint">By spend, with cost per session</p>
+          <RankBars fmt={cash} rows={r.by_model.slice(0, 5).map(g => ({ label: g.name, value: g.spend, sub: `${cash(g.spend / Math.max(1, g.sessions))} each` }))} />
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>People</h2><TabLink tab="people" f={f} /></div>
+          <p class="hint">By sessions, with first-try rate</p>
+          <RankBars rows={r.people.slice(0, 5).map(g => ({ label: g.name, value: g.sessions, sub: pct(g.settled ? g.first_try_rate : null) }))} />
+        </section>
+      </div>
+    </>
+  );
+}
+
+const TabLink = ({ tab, f }: { tab: string; f: Filters }) => <a class="push small" href={`#/insights/${tab}?${query(f)}`}>All →</a>;
+
+export const Median = ({ secs }: { secs: number }) => (secs > 0 ? <>{span(secs)} <span class="dim">median</span></> : <>–</>);
 
 function CycleBars({ counts }: { counts: { label: string; n: number }[] }) {
   const max = Math.max(1, ...counts.map(c => c.n));
@@ -237,39 +285,3 @@ function CycleBars({ counts }: { counts: { label: string; n: number }[] }) {
   );
 }
 
-// -------------------------------------------------------------- breakdown
-
-const SOURCES: Record<string, string> = { web: 'Web', cli: 'CLI', slack: 'Slack' };
-
-function Breakdown({ r }: { r: Report }) {
-  const [by, setBy] = useState<'source' | 'person' | 'repo'>('source');
-  const rows: InsightGroup[] = by === 'source' ? r.by_source : by === 'person' ? r.by_person : r.by_repo;
-  return (
-    <section class="card">
-      <div class="card-head">
-        <h2>Breakdown</h2>
-        <span class="push"><Seg value={by} set={setBy} options={[['source', 'Source'], ['person', 'Person'], ['repo', 'Workspace']]} /></span>
-      </div>
-      {rows.length === 0 ? <p class="empty small">No sessions in this period.</p> : (
-        <table class="data-table">
-          <thead>
-            <tr><th>{by === 'source' ? 'Source' : by === 'person' ? 'Person' : 'Workspace'}</th><th class="num">Sessions</th>
-              <th class="num">First try</th><th class="num">Cycles</th><th class="num">PRs merged</th><th class="num">Spend</th></tr>
-          </thead>
-          <tbody>
-            {rows.map(g => (
-              <tr key={g.name}>
-                <td>{by === 'source' ? SOURCES[g.name] ?? g.name : g.name}</td>
-                <td class="num">{g.sessions}</td>
-                <td class="num">{pct(g.settled ? g.first_try_rate : null)}</td>
-                <td class="num">{one(g.cycles)}</td>
-                <td class="num">{g.merged}</td>
-                <td class="num">{money(g.spend)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </section>
-  );
-}
