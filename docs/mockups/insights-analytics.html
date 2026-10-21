@@ -1,0 +1,886 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Beethoven | Insights &amp; analytics mockups</title>
+<style>
+/* Design tokens copied from web/src/style.css so the mockups read as the real app. */
+:root {
+  --bg: #fcfcfd; --side: #f6f6f8; --panel: #ffffff; --hover: #eeeef2; --border: #e3e3e8; --border-strong: #d0d0d8;
+  --text: #1c1c21; --muted: #62626e; --dim: #8d8d98; --code: #f2f2f5; --accent: #3e63dd; --accent-text: #fff;
+  --blue: #2563eb; --blue-bg: #e8effe; --green: #18864b; --green-bg: #e3f5ea; --red: #cf3434; --red-bg: #fdecec;
+  --amber: #a15c07; --amber-bg: #fdf3e1; --gray-bg: #efeff2;
+  --shadow: 0 6px 24px rgb(0 0 0 / .12); --radius: 6px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --fs: 13.5px; --fs-small: 12px;
+  --canvas: #e9e9ee;
+  /* chart colors: the app's validated --viz-1..3 plus the next categorical slots (validated adjacent, light surface) */
+  --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100; --c5: #e87ba4; --c0: var(--border-strong);
+  --viz-1: #2a78d6; --viz-2: #eda100; --viz-3: #e34948;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--canvas); color: var(--text); font: var(--fs)/1.5 var(--font); -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); text-decoration: none; }
+h1 { font-size: 18px; font-weight: 600; margin: 0 0 16px; }
+h2 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+input, select, button { font: inherit; color: inherit; }
+select, input { background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 3px 8px; height: 28px; font-size: 13px; }
+code, .mono { font-family: var(--mono); font-size: 12px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
+.muted { color: var(--muted); } .dim { color: var(--dim); } .hint { color: var(--dim); font-size: var(--fs-small); margin: 0; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--border-strong);
+  border-radius: var(--radius); background: var(--panel); cursor: pointer; white-space: nowrap; font-size: 13px; color: var(--text); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn.sm { height: 24px; padding: 0 8px; font-size: 12px; }
+.btn.ghost { border-color: transparent; background: none; color: var(--muted); }
+.chip { display: inline-block; font-size: 11px; line-height: 18px; padding: 0 7px; border-radius: 999px; background: var(--gray-bg); color: var(--muted); white-space: nowrap; }
+.chip.blue { background: var(--blue-bg); color: var(--blue); } .chip.green { background: var(--green-bg); color: var(--green); }
+.chip.amber { background: var(--amber-bg); color: var(--amber); } .chip.red { background: var(--red-bg); color: var(--red); }
+.mark { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 16px; height: 16px; border-radius: 4px; color: #fff; font-weight: 650; font-size: 10px; }
+.avatar { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 10px; font-weight: 600; }
+.brand { font-weight: 650; letter-spacing: -.01em; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
+.dot.blue { background: var(--blue); } .dot.green { background: var(--green); } .dot.red { background: var(--red); }
+.seg { display: inline-flex; background: var(--hover); border-radius: var(--radius); padding: 2px; gap: 2px; height: 28px; }
+.seg button { border: 0; background: none; border-radius: 4px; padding: 0 10px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.seg button.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 2px rgb(0 0 0 / .08); }
+
+/* ---------- mockup document chrome ---------- */
+.doc { max-width: 1320px; margin: 0 auto; padding: 40px 24px 80px; }
+.doc > header h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -.02em; }
+.doc > header p { max-width: 820px; color: var(--muted); font-size: 14.5px; margin: 0 0 6px; }
+.toc { display: flex; flex-wrap: wrap; gap: 6px; margin: 18px 0 8px; }
+.toc a { font-size: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; color: var(--text); }
+.screen { margin-top: 56px; display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 24px; align-items: start; scroll-margin-top: 16px; }
+.screen.full { grid-template-columns: 1fr; }
+.screen-label { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 10px; }
+.screen-label .num { font-family: var(--mono); font-size: 12px; color: var(--accent); font-weight: 600; }
+.screen-label h2 { font-size: 18px; margin: 0; letter-spacing: -.01em; }
+.screen-label .tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--gray-bg); color: var(--muted); }
+.screen-label .tag.now { background: var(--red-bg); color: var(--red); }
+.notes { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; font-size: 13px; position: sticky; top: 16px; }
+.notes h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); margin: 0 0 6px; }
+.notes h3:not(:first-child) { margin-top: 14px; }
+.notes ul { margin: 0; padding-left: 18px; } .notes li { margin: 3px 0; }
+.notes .pin, .pinmark { display: inline-flex; width: 16px; height: 16px; border-radius: 50%; background: var(--red); color: #fff; font-size: 10px; font-weight: 700; align-items: center; justify-content: center; margin-right: 4px; vertical-align: 1px; }
+.pinmark { width: 18px; height: 18px; font-size: 10.5px; box-shadow: 0 0 0 3px rgb(207 52 52 / .2); margin: 0 4px 0 2px; flex: none; }
+.os { font-size: 11px; color: var(--muted); background: var(--gray-bg); border-radius: 4px; padding: 0 5px; margin-left: 4px; white-space: nowrap; }
+.os.new { background: var(--blue-bg); color: var(--blue); }
+
+/* recommendation */
+.rec { margin-top: 28px; display: grid; grid-template-columns: 1.25fr 1fr 1fr; gap: 14px; }
+.rec > div { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; font-size: 13px; }
+.rec > div.pick { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
+.rec h3 { margin: 0 0 6px; font-size: 14px; display: flex; gap: 8px; align-items: center; }
+.rec p { font-size: 13px; }
+.rec ul { margin: 6px 0 0; padding-left: 18px; } .rec li { margin: 2px 0; }
+.mini-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 8px 0 2px; } .mini-tabs span { font-size: 11px; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; color: var(--muted); }
+.mini-tabs span.on { border-color: var(--accent); color: var(--accent); }
+
+/* browser frame */
+.browser { background: var(--bg); border-radius: 10px; overflow: hidden; box-shadow: 0 1px 0 var(--border-strong), 0 16px 40px rgb(0 0 0 / .14); border: 1px solid var(--border-strong); }
+.browser-bar { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 12px; background: var(--side); border-bottom: 1px solid var(--border); }
+.browser-bar i { width: 10px; height: 10px; border-radius: 50%; background: #d4d4da; display: inline-block; }
+.browser-bar .url { flex: 1; max-width: 460px; margin: 0 auto; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; font-size: 11.5px; color: var(--muted); padding: 2px 10px; font-family: var(--mono); }
+
+/* app shell */
+.app { display: grid; grid-template-columns: 216px minmax(0, 1fr); }
+.side { background: var(--side); border-right: 1px solid var(--border); display: flex; flex-direction: column; font-size: 13px; }
+.side-head { padding: 12px 10px 6px; display: flex; flex-direction: column; gap: 8px; }
+.side-switch { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--border); background: var(--panel); border-radius: var(--radius); font-size: 12.5px; }
+.side-switch .chev { margin-left: auto; color: var(--dim); }
+.side .btn.primary { height: 30px; font-weight: 500; }
+.side-nav { padding: 6px 10px; display: flex; flex-direction: column; gap: 1px; }
+.side-nav a { color: var(--text); padding: 4px 8px; border-radius: var(--radius); display: flex; gap: 8px; align-items: center; }
+.side-nav a.on { background: var(--hover); }
+.side-nav svg { width: 16px; height: 16px; stroke: var(--muted); fill: none; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.side-group { padding: 10px 18px 2px; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+.side-sess { padding: 2px 10px; display: flex; flex-direction: column; gap: 1px; }
+.side-sess a { color: var(--text); padding: 4px 8px; border-radius: var(--radius); display: flex; gap: 8px; align-items: center; font-size: 12.5px; }
+.side-sess a span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-account { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--border); font-size: 12.5px; }
+.main { padding: 24px 28px 32px; min-width: 0; position: relative; }
+.page { max-width: 980px; margin: 0 auto; }
+.page-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; } .page-head h1 { margin: 0; }
+.page-head .push { margin-left: auto; display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--dim); }
+.tabs { display: flex; gap: 18px; border-bottom: 1px solid var(--border); margin: 8px 0 12px; font-size: 13px; }
+.tabs a { color: var(--muted); padding: 7px 0; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs a.on { color: var(--text); border-color: var(--accent); font-weight: 550; }
+.filters { display: flex; gap: 8px; margin: 0 0 12px; align-items: center; flex-wrap: wrap; }
+.filters .lbl { font-size: 11.5px; color: var(--dim); margin-left: 4px; }
+.combo { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--panel); font-size: 12.5px; color: var(--muted); }
+.combo b { color: var(--text); font-weight: 500; }
+.info { width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--border-strong); display: inline-flex; align-items: center; justify-content: center; font-size: 10px; color: var(--muted); }
+.explainer { color: var(--muted); margin: 0 0 4px; font-size: 13px; }
+.stale-demo { opacity: .6; }
+
+/* cards, tiles */
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; overflow-x: auto; display: flex; flex-direction: column; gap: 8px; min-width: 0; margin: 0 0 12px; }
+.card h2 { margin: 0; } .card-head { display: flex; align-items: center; gap: 10px; } .card-head .push { margin-left: auto; }
+.card.todo { border-style: dashed; background: var(--side); }
+.card-link { font-size: 12px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+.grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; align-items: start; }
+.grid2 > .card, .grid3 > .card { margin: 0; }
+.row { margin-bottom: 12px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 10px; margin: 12px 0; }
+.tile { padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); position: relative; min-width: 0; }
+.tile.todo { border-style: dashed; background: var(--side); }
+.tile-label { font-size: var(--fs-small); color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.tile-value { font-size: 26px; font-weight: 600; margin: 2px 0; line-height: 1.25; }
+.tile.todo .tile-value { color: var(--dim); }
+.tile-sub { font-size: var(--fs-small); color: var(--dim); }
+.tile-foot { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
+.delta { font-size: 11.5px; font-weight: 550; white-space: nowrap; }
+.delta.up { color: var(--green); } .delta.down { color: var(--red); } .delta.flat { color: var(--dim); }
+.spark { width: 64px; height: 22px; flex: none; overflow: visible; }
+.tile .spark { width: 52px; height: 18px; }
+.tile-foot { margin-top: 4px; align-items: center; }
+.section-cap { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); margin: 14px 0 -4px; display: flex; gap: 8px; align-items: center; }
+
+/* charts */
+.viz { margin: 0; min-width: 0; }
+.s1 { background: var(--c1); } .s2 { background: var(--c2); } .s3 { background: var(--c3); } .s4 { background: var(--c4); } .s5 { background: var(--c5); } .s0 { background: var(--c0); }
+.o1 { background: var(--viz-1); } .o2 { background: var(--viz-2); } .o3 { background: var(--viz-3); }
+.viz-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: var(--fs-small); color: var(--muted); }
+.viz-legend .key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.viz-legend .lkey { display: inline-block; width: 14px; height: 2px; border-radius: 1px; margin-right: 6px; vertical-align: 3px; }
+.viz-body { display: flex; gap: 6px; margin-top: 8px; }
+.viz-y { position: relative; width: 28px; flex: none; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.viz-y span { position: absolute; right: 0; transform: translateY(50%); }
+.viz-plot { position: relative; flex: 1; min-width: 0; }
+.viz-grid { position: absolute; left: 0; right: 0; height: 1px; background: var(--border); }
+.viz-cols { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 2px; }
+.viz-col { flex: 1; min-width: 0; height: 100%; display: flex; align-items: flex-end; justify-content: center; border-radius: 4px; }
+.viz-col:hover { background: var(--hover); }
+.viz-stack { width: 100%; max-width: 24px; display: flex; flex-direction: column-reverse; gap: 2px; }
+.viz-stack i { display: block; flex-basis: 0; min-height: 2px; }
+.viz-stack i:last-child { border-radius: 4px 4px 0 0; }
+.viz-x { display: flex; margin: 4px 0 0 34px; font-size: 11px; color: var(--dim); }
+.viz-x span { flex: 1; min-width: 0; white-space: nowrap; text-align: center; }
+.viz-x span:first-child { text-align: left; } .viz-x span:last-child { text-align: right; direction: rtl; }
+.viz-x.all span { text-align: center !important; direction: ltr !important; }
+.viz-table { font-size: var(--fs-small); color: var(--accent); cursor: pointer; width: fit-content; margin-top: 2px; }
+svg.line { display: block; width: 100%; overflow: visible; }
+.hit:hover + .xh, .hitg:hover .xh { opacity: 1; }
+.xh { opacity: 0; }
+.bars { display: flex; flex-direction: column; gap: 9px; }
+.bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; font-size: var(--fs-small); align-items: baseline; }
+.bar-row .bl { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-row .bv { font-variant-numeric: tabular-nums; color: var(--text); text-align: right; }
+.bar-row .bv .dim { margin-left: 6px; }
+.bar-row .bt { grid-column: 1 / -1; height: 10px; background: transparent; position: relative; }
+.bar-row .bt i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; background: var(--c1); }
+.bar-row:hover .bl { color: var(--accent); }
+.hbars .bar-row { grid-template-columns: 90px minmax(0, 1fr) 70px; }
+.hbars .bar-row .bt { grid-column: auto; height: 14px; }
+.hbars .bar-row .bl { color: var(--muted); }
+.stackbar { display: flex; gap: 2px; height: 22px; }
+.stackbar i { display: block; height: 100%; }
+.stackbar i:first-child { border-radius: 4px 0 0 4px; } .stackbar i:last-child { border-radius: 0 4px 4px 0; }
+.heat { display: grid; grid-template-columns: 34px repeat(24, minmax(0, 1fr)); gap: 2px; font-size: 10.5px; color: var(--dim); }
+.heat i { display: block; aspect-ratio: 1.6; border-radius: 2px; min-height: 12px; }
+.heat span { text-align: right; padding-right: 4px; line-height: 14px; }
+.heat .hx { text-align: left; padding: 0; }
+.scale { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim); }
+.scale i { width: 14px; height: 10px; border-radius: 2px; display: inline-block; }
+.funnel { display: flex; flex-direction: column; gap: 6px; }
+.funnel .f { display: grid; grid-template-columns: 130px minmax(0, 1fr) 80px; gap: 10px; align-items: center; font-size: 12px; }
+.funnel .f .bt { height: 18px; position: relative; } .funnel .f .bt i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; }
+.funnel .f .v { font-variant-numeric: tabular-nums; text-align: right; } .funnel .f .v .dim { margin-left: 4px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 0; font-size: 13px; } .kv dt { color: var(--muted); } .kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* tables */
+.data-table { width: 100%; border-collapse: collapse; font-size: var(--fs-small); }
+.data-table th { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; font-weight: 500; color: var(--muted); white-space: nowrap; }
+.data-table th.sort { color: var(--text); } .data-table th.sort::after { content: " ↓"; color: var(--accent); }
+.data-table td { white-space: nowrap; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.data-table tr:last-child td { border-bottom: 0; }
+.data-table tbody tr:hover td { background: var(--side); }
+.data-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.data-table .who { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+.data-table td.t { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.data-table .muted-row td { color: var(--dim); }
+.readiness td { white-space: normal; } .readiness td:first-child { font-weight: 550; } .readiness td:last-child { white-space: nowrap; }
+
+/* sheet */
+.scrim { position: absolute; inset: 0; background: rgb(20 20 30 / .18); }
+.sheet { position: absolute; right: 0; top: 0; bottom: 0; width: 430px; background: var(--panel); border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgb(0 0 0 / .08); padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+.sheet h2 { font-size: 16px; margin: 0; }
+.popover { position: absolute; z-index: 6; width: 330px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); padding: 12px 14px; font-size: 12.5px; }
+.popover ul { margin: 6px 0 0; padding-left: 16px; color: var(--muted); } .popover li { margin: 3px 0; }
+
+/* tooltip (one shared, follows hover on any [data-tip]) */
+#tip { position: fixed; z-index: 50; pointer-events: none; min-width: 150px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow); font-size: var(--fs-small); display: none; }
+#tip .h { font-weight: 600; margin-bottom: 3px; }
+#tip .r { display: flex; align-items: center; gap: 6px; line-height: 1.6; } #tip .r b { min-width: 38px; text-align: right; font-variant-numeric: tabular-nums; }
+#tip .r span { color: var(--muted); white-space: nowrap; } #tip .r i { width: 12px; height: 2px; border-radius: 1px; flex: none; }
+.fade { position: relative; max-height: 760px; overflow: hidden; }
+.fade::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 120px; background: linear-gradient(transparent, var(--bg)); }
+
+@media (max-width: 1100px) { .screen { grid-template-columns: 1fr; } .notes { position: static; } .rec { grid-template-columns: 1fr; } .grid3 { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .app { grid-template-columns: 1fr; } .side { display: none; } .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div id="tip"></div>
+<div class="doc">
+
+<header>
+  <h1>Insights, expanded</h1>
+  <p>OpenInspect (<a href="https://github.com/ColeMurray/background-agents">ColeMurray/background-agents</a>) ships an <b>Analytics</b>
+    page with five tabs: Overview, Usage, Cost, Pull requests and People. Each tab has KPI tiles, daily trends, ranked lists and sortable tables.
+    Our <b>Insights</b> page is one long scroll and already covers things OpenInspect doesn't, such as first-try rate, cycles and failure reasons.
+    These mockups bring in OpenInspect's metrics, add a few of our own, and keep everything on one page.</p>
+  <p class="dim" style="font-size:12.5px">Static mockups using the app's own design tokens. Names and numbers are made up. Hover any chart mark for its tooltip.
+    Badges: <span class="os">OpenInspect</span> means OpenInspect has it; <span class="os new">new</span> means neither product has it today.</p>
+  <nav class="toc">
+    <a href="#s0">0 · Today</a><a href="#s1">1 · Overview</a><a href="#s2">2 · Usage</a><a href="#s3">3 · Cost</a>
+    <a href="#s4">4 · Pull requests</a><a href="#s5">5 · People</a><a href="#s5b">5b · A person</a><a href="#s6">6 · Reliability</a><a href="#s7">7 · Data we have, and don't</a>
+  </nav>
+
+  <div class="rec">
+    <div class="pick">
+      <h3><span class="chip blue">Recommended</span> Keep one Insights page and give it tabs</h3>
+      <div class="mini-tabs"><span class="on">Overview</span><span>Usage</span><span>Cost</span><span>Pull requests</span><span>People</span><span>Reliability</span></div>
+      <ul>
+        <li>One sidebar link, the same as today. The filters (range, team, scope, repository) sit above the tabs and apply to every tab.</li>
+        <li>Overview keeps today's quality story: first-try rate, cycles and outcomes. The other tabs are where you go to dig in.</li>
+        <li>Tab and filters go in the URL (<code>#/insights/cost?days=30&amp;team=payments</code>), so a link opens the exact view.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Alternative: a separate Analytics page</h3>
+      <p class="muted" style="margin:0">Insights would stay about quality, and a new Analytics page would cover usage, cost and people.</p>
+      <ul class="muted">
+        <li>Two pages with the same filters, and the same numbers (sessions, spend, PRs) shown in both</li>
+        <li>People have to guess which page has the number they want</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Alternative: one longer page</h3>
+      <p class="muted" style="margin:0">Keep scrolling and add more cards.</p>
+      <ul class="muted">
+        <li>Already about 6 screens tall, and this would double it</li>
+        <li>No way to link to "the cost view"</li>
+        <li>Every query runs on every visit</li>
+      </ul>
+    </div>
+  </div>
+</header>
+
+<!-- ============================================================ 0 TODAY -->
+<section class="screen" id="s0">
+  <div class="screen-label"><span class="num">00</span><h2>What Insights shows today</h2><span class="tag now">current</span></div>
+  <div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/insights</span></div>
+    <div class="app"><aside class="side" data-side="insights"></aside>
+      <main class="main fade"><div class="page">
+        <div class="page-head"><h1>Insights</h1></div>
+        <div class="filters"><div class="seg"><button>7 days</button><button class="on">30 days</button><button>90 days</button></div>
+          <select><option>Every team</option></select></div>
+        <p class="explainer">Quality covers the sessions people started (not automations or agents), once they settle. A <b>cycle</b> is one prompt and its response; a session succeeds on the <b>first try</b> when one cycle was enough and its pull request wasn't closed without merging.</p>
+        <div class="tiles">
+          <div class="tile"><div class="tile-label">First-try rate</div><div class="tile-value">58%</div><div class="tile-sub">of 301 settled sessions</div></div>
+          <div class="tile"><div class="tile-label">Cycles per session</div><div class="tile-value">1.9</div><div class="tile-sub">prompts until done</div></div>
+          <div class="tile"><div class="tile-label">Success rate</div><div class="tile-value">81%</div><div class="tile-sub">344 sessions started</div></div>
+          <div class="tile"><div class="tile-label">Pull requests merged</div><div class="tile-value">137</div><div class="tile-sub">86% accepted</div></div>
+          <div class="tile"><div class="tile-label">Spend</div><div class="tile-value">$1,284</div><div class="tile-sub">$9.37 per merged PR</div></div>
+        </div>
+        <section class="card"><h2>How sessions went</h2><p class="hint">Sessions people started each day, by outcome.</p><div data-chart="outcome"></div></section>
+        <div class="grid2 row">
+          <section class="card"><h2>Cycles to finish</h2><p class="hint">Settled sessions by how many cycles they took.</p><div data-chart="cycles"></div></section>
+          <section class="card"><h2>Pull requests</h2><dl class="kv"><dt>Opened</dt><dd>171</dd><dt>Merged</dt><dd>137</dd><dt>Closed unmerged</dt><dd>22</dd><dt>Still open</dt><dd>12</dd><dt>Session start to PR</dt><dd>38m <span class="dim">median</span></dd><dt>PR to merge</dt><dd>3.4h <span class="dim">median</span></dd></dl></section>
+        </div>
+        <div class="grid2 row">
+          <section class="card"><h2>Failures</h2><p class="hint">712 prompts ran: 41 failed, 18 stopped.</p></section>
+          <section class="card"><h2>Automations</h2></section>
+        </div>
+      </div></main>
+    </div></div>
+  <aside class="notes">
+    <h3>What's good</h3>
+    <ul>
+      <li>Quality metrics OpenInspect doesn't have: <b>first-try rate</b>, <b>cycles</b>, and outcome per day.</li>
+      <li>Validated chart colours, a table view, and a team filter.</li>
+    </ul>
+    <h3>What's missing, compared with OpenInspect</h3>
+    <ul>
+      <li>No comparison with the previous period, and no sparklines on the tiles</li>
+      <li>No active-people count, model breakdown or cost tab</li>
+      <li>No per-repository PR table, no time-to-merge spread, and no list of open PRs</li>
+      <li>No people leaderboard with trends</li>
+      <li>Automations and agent sub-sessions are always left out of quality, and there's no switch to include them</li>
+      <li>One long scroll, with no link to a particular view</li>
+    </ul>
+  </aside>
+</section>
+
+<!-- ============================================================ 1 OVERVIEW -->
+<section class="screen" id="s1">
+  <div class="screen-label"><span class="num">01</span><h2>Overview</h2><span class="tag">#/insights</span></div>
+  <div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/insights?days=30</span></div>
+    <div class="app"><aside class="side" data-side="insights"></aside>
+      <main class="main"><div class="page">
+        <div data-head="overview"></div>
+        <div class="section-cap"><span class="pinmark">1</span>Quality · sessions people started</div>
+        <div class="tiles">
+          <div data-tile='{"l":"First-try rate","v":"58%","d":"+4 pts","dir":"up","s":"of 301 settled","spark":"q"}'></div>
+          <div data-tile='{"l":"Cycles per session","v":"1.9","d":"−0.2","dir":"up","s":"prompts until done","spark":"c"}'></div>
+          <div data-tile='{"l":"Success rate","v":"81%","d":"+2 pts","dir":"up","s":"of settled sessions","spark":"q2"}'></div>
+          <div data-tile='{"l":"Active people","v":"23","d":"+3","dir":"up","s":"15 sessions each","spark":"p","os":1}'></div>
+        </div>
+        <div class="section-cap"><span class="pinmark">2</span>Throughput · every source</div>
+        <div class="tiles" style="margin-top:8px">
+          <div data-tile='{"l":"Sessions","v":"412","d":"+12%","dir":"up","s":"13.7 a day","spark":"s","os":1}'></div>
+          <div data-tile='{"l":"PRs merged","v":"137","d":"+18%","dir":"up","s":"3.4h median to merge","spark":"m","os":1}'></div>
+          <div data-tile='{"l":"Spend","v":"$1,284","d":"+6%","dir":"flat","s":"$3.12 per session","spark":"$","os":1}'></div>
+          <div data-tile='{"l":"Cost per merged PR","v":"$9.37","d":"−$1.10","dir":"up","s":"down from $10.47","spark":"cpm","os":1}'></div>
+        </div>
+        <section class="card"><div class="card-head"><h2>How sessions went</h2><span class="push"><a class="card-link" href="#s2">Usage →</a></span></div>
+          <p class="hint">Sessions people started each day, by outcome.</p><div data-chart="outcome"></div></section>
+        <div class="grid3">
+          <section class="card"><div class="card-head"><h2><span class="pinmark">3</span>Repositories</h2><span class="push"><a class="card-link" href="#s2">All →</a></span></div><p class="hint">By sessions, with spend</p><div data-rank="repos"></div></section>
+          <section class="card"><div class="card-head"><h2>Models</h2><span class="push"><a class="card-link" href="#s3">All →</a></span></div><p class="hint">By spend, with cost per session</p><div data-rank="models"></div></section>
+          <section class="card"><div class="card-head"><h2>People</h2><span class="push"><a class="card-link" href="#s5">All →</a></span></div><p class="hint">By sessions, with first-try rate</p><div data-rank="people"></div></section>
+        </div>
+      </div></main>
+    </div></div>
+  <aside class="notes">
+    <h3>Shared header</h3>
+    <ul>
+      <li><b>Tabs</b> under the title, and one filter row that applies to every tab.</li>
+      <li><b>Scope</b>: People (the default, matching today's quality rule), Automations, Agents or All. <span class="os">OpenInspect</span></li>
+      <li><b>Repository</b> filter <span class="os new">new</span>. OpenInspect has none.</li>
+      <li>"Updated 2m ago" and <span class="info">i</span> <b>About this data</b>, a popover listing the caveats (see 07). <span class="os">OpenInspect</span></li>
+    </ul>
+    <h3>Tiles</h3>
+    <ul>
+      <li><span class="pin">1</span>Quality stays first, because it's what we do differently. <b>Active people</b> is added.</li>
+      <li><span class="pin">2</span>Throughput tiles cover every source, so the spend total matches the bill.</li>
+      <li>Each tile shows the <b>change from the previous 30 days</b> <span class="os new">new</span>, coloured by whether that change is good (fewer cycles counts as good), plus a 30-day sparkline.</li>
+    </ul>
+    <h3>Top lists</h3>
+    <ul><li><span class="pin">3</span>Top five repositories, models and people, each linking to its tab. <span class="os">OpenInspect</span></li></ul>
+  </aside>
+</section>
+
+<!-- ============================================================ 2 USAGE -->
+<section class="screen" id="s2">
+  <div class="screen-label"><span class="num">02</span><h2>Usage</h2><span class="tag">#/insights/usage</span></div>
+  <div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/insights/usage?days=30&amp;scope=all</span></div>
+    <div class="app"><aside class="side" data-side="insights"></aside>
+      <main class="main"><div class="page">
+        <div data-head="usage" data-scope="All"></div>
+        <section class="card"><h2>Sessions per day</h2><p class="hint">Every session created, by where it started.</p><div data-chart="sources"></div></section>
+        <div class="grid2 row">
+          <section class="card"><h2><span class="pinmark">1</span>Where sessions start</h2><p class="hint">Click one to filter the tables below.</p><div data-rank="sources"></div></section>
+          <section class="card"><h2>How sessions ended</h2><p class="hint">Completion: <b style="color:var(--text)">84%</b> of finished sessions ended done.</p>
+            <div class="stackbar" style="margin:4px 0 2px">
+              <i class="o1" style="flex:318" data-tip="<div class=h>Done</div>318 sessions · 77%"></i><i class="o3" style="flex:39" data-tip="<div class=h>Failed</div>39 sessions · 9%"></i><i class="s4" style="flex:22" data-tip="<div class=h>Stopped</div>22 sessions · 5%"></i><i class="s0" style="flex:33" data-tip="<div class=h>Idle or running</div>33 sessions · 8%"></i>
+            </div>
+            <div class="viz-legend"><span><i class="key o1"></i>Done 318</span><span><i class="key o3"></i>Failed 39</span><span><i class="key s4"></i>Stopped 22</span><span><i class="key s0"></i>Idle or running 33</span></div>
+            <dl class="kv" style="margin-top:6px"><dt>Archived</dt><dd>201</dd><dt>Prompts per session</dt><dd>1.7</dd><dt>Sub-sessions per root</dt><dd>0.4</dd></dl>
+          </section>
+        </div>
+        <section class="card"><div class="card-head"><h2><span class="pinmark">2</span>When work starts</h2><span class="os new">new</span><span class="push scale">fewer <i style="background:#e6effb"></i><i style="background:#9ec5f4"></i><i style="background:#5598e7"></i><i style="background:#256abf"></i><i style="background:#104281"></i> more</span></div>
+          <p class="hint">Sessions created by day of week and hour, in your timezone.</p><div data-chart="heat"></div></section>
+        <section class="card"><div class="card-head"><h2>Repositories</h2><span class="os">OpenInspect</span><span class="push"><div class="seg"><button class="on">Repository</button><button>Project</button><button>Team</button></div></span></div>
+          <table class="data-table"><thead><tr><th>Repository</th><th class="num sort">Sessions</th><th class="num">First try</th><th class="num">Cycles</th><th class="num">PRs merged</th><th class="num">Prompts</th><th class="num">Agent time</th><th class="num">Spend</th></tr></thead>
+          <tbody data-rows="repos"></tbody></table></section>
+        <section class="card"><div class="card-head"><h2>Model and effort</h2><span class="os new">new</span></div><p class="hint">What people choose, and how it turns out.</p>
+          <table class="data-table"><thead><tr><th>Model</th><th>Effort</th><th class="num sort">Sessions</th><th class="num">Share</th><th class="num">First try</th><th class="num">Cycles</th><th class="num">$ / session</th></tr></thead>
+          <tbody data-rows="modeleffort"></tbody></table></section>
+      </div></main>
+    </div></div>
+  <aside class="notes">
+    <h3>Volume</h3>
+    <ul>
+      <li>Stacked daily columns by <b>source</b>: Web, CLI, Slack, Automations, Agents. Every source is a <code>sessions.source</code> value we already store.</li>
+      <li><span class="pin">1</span>Where sessions start, and how they ended (done, failed, stopped, still going). <span class="os">OpenInspect</span></li>
+    </ul>
+    <h3>New for us</h3>
+    <ul>
+      <li><span class="pin">2</span>A <b>day-and-hour heatmap</b>: when the team works, when Slack is busy, and the best time to schedule automations. Single-hue blue scale.</li>
+      <li>The <b>Repositories</b> table switches to Project or Team.</li>
+      <li><b>Model and effort</b>: does high effort actually raise the first-try rate, and at what cost?</li>
+    </ul>
+    <h3>Colour</h3>
+    <ul><li>Five sources use categorical slots 1–5, which pass the colour-blind checks for neighbours. Three slots are below 3:1 contrast, so the chart always keeps its legend and table view.</li></ul>
+  </aside>
+</section>
+
+<!-- ============================================================ 3 COST -->
+<section class="screen" id="s3">
+  <div class="screen-label"><span class="num">03</span><h2>Cost</h2><span class="tag">#/insights/cost</span></div>
+  <div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/insights/cost?days=30&amp;scope=all</span></div>
+    <div class="app"><aside class="side" data-side="insights"></aside>
+      <main class="main"><div class="page">
+        <div data-head="cost" data-scope="All"></div>
+        <div class="tiles">
+          <div data-tile='{"l":"Spend","v":"$1,284","d":"+6%","dir":"flat","s":"30 days","spark":"$","os":1}'></div>
+          <div data-tile='{"l":"Per session","v":"$3.12","d":"−4%","dir":"up","s":"412 sessions","spark":"ps"}'></div>
+          <div data-tile='{"l":"Per merged PR","v":"$9.37","d":"−$1.10","dir":"up","s":"137 merged","spark":"cpm","os":1}'></div>
+          <div data-tile='{"l":"Automations","v":"$212","s":"17% of spend · 6 automations","spark":"a"}'></div>
+          <div data-tile='{"l":"Tokens","todo":1,"v":"—","s":"needs token data","os":1}'></div>
+        </div>
+        <section class="card"><h2>Spend per day</h2><p class="hint">By origin. Agents means sub-sessions spawned by another session.</p><div data-chart="spend"></div></section>
+        <div class="grid2 row">
+          <section class="card"><div class="card-head"><h2><span class="pinmark">1</span>By model</h2><span class="os">OpenInspect</span></div>
+            <table class="data-table"><thead><tr><th>Model</th><th class="num">Sessions</th><th class="num sort">Spend</th><th class="num">$ / merged PR</th></tr></thead><tbody data-rows="models"></tbody></table></section>
+          <section class="card"><div class="card-head"><h2>By team</h2><span class="os new">new</span></div>
+            <table class="data-table"><thead><tr><th>Team</th><th class="num sort">Spend</th><th class="num">Share</th><th class="num">$ / merged PR</th><th class="num">Change</th></tr></thead><tbody data-rows="teams"></tbody></table></section>
+        </div>
+        <section class="card"><div class="card-head"><h2><span class="pinmark">2</span>Most expensive runs</h2><span class="os">OpenInspect</span><span class="push hint">A run is a session plus every sub-session it spawned</span></div>
+          <table class="data-table"><thead><tr><th>Session</th><th>Person</th><th class="num">Sub-sessions</th><th class="num">Agent time</th><th>Outcome</th><th class="num sort">Spend</th></tr></thead><tbody data-rows="runs"></tbody></table></section>
+        <section class="card todo"><div class="card-head"><h2><span class="pinmark">3</span>Tokens and cache</h2><span class="chip amber">needs token data</span><span class="os">OpenInspect</span></div>
+          <p class="hint">Input, output, cache read and cache write per model, plus a <b>cache hit ratio</b> (cache reads ÷ (cache reads + input)). Available once the runner saves the token usage that Claude Code already reports.</p>
+          <div class="grid3" style="opacity:.55">
+            <div class="tile todo"><div class="tile-label">Input</div><div class="tile-value">48.2M</div></div>
+            <div class="tile todo"><div class="tile-label">Output</div><div class="tile-value">3.1M</div></div>
+            <div class="tile todo"><div class="tile-label">Cache hit ratio</div><div class="tile-value">91%</div></div>
+          </div></section>
+      </div></main>
+    </div></div>
+  <aside class="notes">
+    <h3>From OpenInspect</h3>
+    <ul>
+      <li>Spend, per session, per merged PR, and the most expensive runs (a root session plus its sub-sessions; we already roll this up as <code>runSpend</code>).</li>
+      <li><span class="pin">1</span>Spend by model, with a "$ per merged PR" column, the number that answers which model is worth it.</li>
+    </ul>
+    <h3>New for us</h3>
+    <ul>
+      <li><b>By team</b>, with the change from the previous 30 days: our version of a chargeback.</li>
+      <li>Spend per day split into People, Automations and Agents, showing whether automations are taking over the bill.</li>
+      <li><span class="pin">2</span>Each run links to its session and shows outcome chips, so an expensive failure stands out.</li>
+    </ul>
+    <h3>Needs new data</h3>
+    <ul><li><span class="pin">3</span>Token and cache metrics. Today we only store <code>cost_usd</code>; Claude's <code>usage</code> block and <code>num_turns</code> are parsed and then thrown away. See 07.</li></ul>
+    <h3>Visibility</h3>
+    <ul><li>Private sessions only count for people who can read them, the same <code>access.ReadSession</code> rule as today. Workspace admins could get one tile with private spend. <span class="os">OpenInspect</span></li></ul>
+  </aside>
+</section>
+
+<!-- ============================================================ 4 PULL REQUESTS -->
+<section class="screen" id="s4">
+  <div class="screen-label"><span class="num">04</span><h2>Pull requests</h2><span class="tag">#/insights/pulls</span></div>
+  <div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/insights/pulls?days=30</span></div>
+    <div class="app"><aside class="side" data-side="insights"></aside>
+      <main class="main"><div class="page">
+        <div data-head="pulls" data-scope="All" data-scopeoff="1"></div>
+        <div class="tiles">
+          <div data-tile='{"l":"Opened","v":"171","d":"+15%","dir":"up","s":"5.7 a day","spark":"o","os":1}'></div>
+          <div data-tile='{"l":"Acceptance","v":"86%","d":"+3 pts","dir":"up","s":"137 merged · 22 closed","spark":"acc","os":1}'></div>
+          <div data-tile='{"l":"Time to merge","v":"3.4h","d":"−40m","dir":"up","s":"median · p90 2.1 days","spark":"ttm","os":1}'></div>
+          <div data-tile='{"l":"Open now","v":"12","d":"","dir":"none","s":"oldest 9 days","spark":"","os":1}'></div>
+          <div data-tile='{"l":"Start to PR","v":"38m","d":"−6m","dir":"up","s":"median","spark":"stp"}'></div>
+        </div>
+        <section class="card"><h2>Opened and merged per day</h2><div data-chart="prline"></div></section>
+        <div class="grid2 row">
+          <section class="card"><h2>Where they stand</h2><p class="hint">PRs opened in the window, by current state.</p>
+            <div class="stackbar"><i class="o1" style="flex:137" data-tip="<div class=h>Merged</div>137 · 80%"></i><i class="s3" style="flex:9" data-tip="<div class=h>Open</div>9 · 5%"></i><i class="s0" style="flex:3" data-tip="<div class=h>Draft</div>3 · 2%"></i><i class="o3" style="flex:22" data-tip="<div class=h>Closed unmerged</div>22 · 13%"></i></div>
+            <div class="viz-legend"><span><i class="key o1"></i>Merged 137</span><span><i class="key s3"></i>Open 9</span><span><i class="key s0"></i>Draft 3</span><span><i class="key o3"></i>Closed 22</span></div>
+            <table class="data-table" style="margin-top:6px"><thead><tr><th>Source</th><th class="num">Opened</th><th class="num">Merged</th><th class="num">Acceptance</th></tr></thead>
+              <tbody><tr><td>Web</td><td class="num">94</td><td class="num">80</td><td class="num">89%</td></tr><tr><td>Slack</td><td class="num">38</td><td class="num">31</td><td class="num">86%</td></tr><tr><td>Automations</td><td class="num">27</td><td class="num">16</td><td class="num">67%</td></tr><tr><td>CLI</td><td class="num">12</td><td class="num">10</td><td class="num">91%</td></tr></tbody></table>
+          </section>
+          <section class="card"><div class="card-head"><h2><span class="pinmark">1</span>How long merging takes</h2><span class="os new">new</span></div><p class="hint">Merged PRs by time from opened to merged.</p><div data-chart="ttm"></div></section>
+        </div>
+        <section class="card"><div class="card-head"><h2>By repository</h2><span class="os">OpenInspect</span></div>
+          <table class="data-table"><thead><tr><th>Repository</th><th class="num sort">Opened</th><th class="num">Merged</th><th class="num">Closed</th><th class="num">Acceptance</th><th class="num">Median to merge</th><th class="num">$ / merged</th></tr></thead><tbody data-rows="prrepos"></tbody></table></section>
+        <section class="card"><div class="card-head"><h2><span class="pinmark">2</span>Waiting for review</h2><span class="os new">new</span><span class="push hint">Open PRs, oldest first. Not limited by the window.</span></div>
+          <table class="data-table"><thead><tr><th>Pull request</th><th>Session by</th><th>Checks</th><th class="num sort">Open for</th></tr></thead><tbody data-rows="openprs"></tbody></table></section>
+      </div></main>
+    </div></div>
+  <aside class="notes">
+    <h3>From OpenInspect</h3>
+    <ul>
+      <li>Opened, acceptance (merged ÷ decided), time to merge, open now, and a by-repository table. We already compute most of this; it just moves here.</li>
+      <li>Scope is turned off on this tab, because PRs are counted across every source; the By-source table shows the split instead.</li>
+    </ul>
+    <h3>New for us</h3>
+    <ul>
+      <li><span class="pin">1</span>The <b>spread of time to merge</b>, not just the median. A long tail of PRs nobody reviews is the usual problem.</li>
+      <li><span class="pin">2</span><b>Waiting for review</b>: an action list, not just a number. Comes from <code>pull_requests</code> where the state is open.</li>
+      <li>p90 next to the median, and start-to-PR as its own tile.</li>
+    </ul>
+  </aside>
+</section>
+
+<!-- ============================================================ 5 PEOPLE -->
+<section class="screen" id="s5">
+  <div class="screen-label"><span class="num">05</span><h2>People</h2><span class="tag">#/insights/people</span></div>
+  <div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/insights/people?days=30</span></div>
+    <div class="app"><aside class="side" data-side="insights"></aside>
+      <main class="main"><div class="page">
+        <div data-head="people"></div>
+        <div class="grid2 row">
+          <section class="card"><div class="card-head"><h2>Active people per week</h2><span class="os new">new</span></div><p class="hint">People who started at least one session.</p><div data-chart="wau"></div></section>
+          <section class="card"><div class="card-head"><h2>Getting started</h2><span class="os new">new</span></div><p class="hint">Everyone invited in the last 90 days, by how far they've got.</p>
+            <div class="funnel" data-chart="funnel"></div>
+            <p class="hint" style="margin-top:4px">Median 1.2 days from joining to a first session. <a href="#">3 people have no session yet →</a></p></section>
+        </div>
+        <section class="card"><div class="card-head"><h2><span class="pinmark">1</span>Everyone</h2><span class="os">OpenInspect</span><span class="push"><input placeholder="Filter people" style="width:180px"></span></div>
+          <table class="data-table"><thead><tr><th>Person</th><th>Daily sessions</th><th class="num sort">Sessions</th><th class="num">First try</th><th class="num">PRs merged</th><th class="num">Spend</th><th class="num">Last active</th></tr></thead><tbody data-rows="people"></tbody></table></section>
+      </div></main>
+    </div></div>
+  <aside class="notes">
+    <h3>From OpenInspect</h3>
+    <ul>
+      <li><span class="pin">1</span>A sortable leaderboard with a sparkline per row: sessions, first try, PRs, spend and last active. Cycles and agent time can be extra columns.</li>
+      <li>Sessions without an account are grouped as "Unknown". Slack users who aren't members end up there.</li>
+    </ul>
+    <h3>New for us</h3>
+    <ul>
+      <li><b>Active people per week</b>: is adoption growing?</li>
+      <li><b>Getting started</b>: invited, joined, first session, first merged PR. Uses <code>invites</code> and the <code>accounts.onboarding</code> tracking we just shipped.</li>
+      <li>Clicking a row opens a person sheet (5b), not a separate page.</li>
+    </ul>
+    <h3>Tone</h3>
+    <ul><li>Default sort is sessions, not spend. Members could get a "you vs. team median" view instead of the full table, if a leaderboard feels like surveillance.</li></ul>
+  </aside>
+</section>
+
+<!-- ============================================================ 5b PERSON -->
+<section class="screen" id="s5b">
+  <div class="screen-label"><span class="num">05b</span><h2>A person, in a sheet</h2><span class="tag">click a row in People</span></div>
+  <div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/insights/people?person=priya</span></div>
+    <div class="app"><aside class="side" data-side="insights"></aside>
+      <main class="main" style="min-height:640px"><div class="page stale-demo">
+        <div data-head="people"></div>
+        <section class="card"><h2>Everyone</h2><table class="data-table"><tbody data-rows="people" data-limit="6"></tbody></table></section>
+      </div>
+      <div class="scrim"></div>
+      <div class="sheet">
+        <div style="display:flex;gap:10px;align-items:center"><span class="avatar" style="width:32px;height:32px;font-size:12px;background:#6250d6">PR</span>
+          <div><h2>Priya Raman</h2><div class="hint">Payments · member since Mar 2026</div></div><button class="btn ghost" style="margin-left:auto">✕</button></div>
+        <div class="tiles" style="grid-template-columns:repeat(3,1fr);margin:0">
+          <div class="tile"><div class="tile-label">Sessions</div><div class="tile-value" style="font-size:20px">64</div><div class="tile-sub">team median 18</div></div>
+          <div class="tile"><div class="tile-label">First try</div><div class="tile-value" style="font-size:20px">66%</div><div class="tile-sub">team 58%</div></div>
+          <div class="tile"><div class="tile-label">PRs merged</div><div class="tile-value" style="font-size:20px">29</div><div class="tile-sub">$7.10 each</div></div>
+        </div>
+        <div><h2 style="font-size:13px">Sessions per day</h2><div data-chart="personcols"></div></div>
+        <div><h2 style="font-size:13px">Where they work</h2>
+          <div class="bars hbars" style="margin-top:6px">
+            <div class="bar-row"><span class="bl">acme/payments</span><span class="bt"><i style="width:100%"></i></span><span class="bv">38</span></div>
+            <div class="bar-row"><span class="bl">acme/sdk</span><span class="bt"><i style="width:39%"></i></span><span class="bv">15</span></div>
+            <div class="bar-row"><span class="bl">acme/web</span><span class="bt"><i style="width:29%"></i></span><span class="bv">11</span></div>
+          </div></div>
+        <div><h2 style="font-size:13px">Recent sessions</h2>
+          <table class="data-table"><tbody>
+            <tr><td class="t">Retry webhook deliveries with backoff</td><td><span class="chip green">merged</span></td><td class="num">$4.20</td></tr>
+            <tr><td class="t">Add idempotency keys to refunds</td><td><span class="chip blue">PR open</span></td><td class="num">$6.85</td></tr>
+            <tr><td class="t">Flaky test in ledger_spec</td><td><span class="chip red">failed</span></td><td class="num">$1.12</td></tr>
+          </tbody></table></div>
+      </div></main>
+    </div></div>
+  <aside class="notes">
+    <h3>Why a sheet</h3>
+    <ul>
+      <li>Keeps the filters and the table behind it; Esc goes back. The URL holds <code>?person=</code>, so it can be shared.</li>
+      <li>Compares with the <b>team median</b>, not other names, which reads as coaching rather than ranking.</li>
+      <li>The same sheet pattern works for a repository or an automation.</li>
+    </ul>
+  </aside>
+</section>
+
+<!-- ============================================================ 6 RELIABILITY -->
+<section class="screen" id="s6">
+  <div class="screen-label"><span class="num">06</span><h2>Reliability</h2><span class="tag">#/insights/reliability</span></div>
+  <div class="browser"><div class="browser-bar"><i></i><i></i><i></i><span class="url">beethoven.acme.dev/#/insights/reliability?days=30&amp;scope=all</span></div>
+    <div class="app"><aside class="side" data-side="insights"></aside>
+      <main class="main"><div class="page">
+        <div data-head="reliability" data-scope="All"></div>
+        <div class="tiles">
+          <div data-tile='{"l":"Prompt failure rate","v":"5.8%","d":"−1.1 pts","dir":"up","s":"41 of 712 prompts","spark":"fr"}'></div>
+          <div data-tile='{"l":"Prompt duration","v":"6m","d":"+40s","dir":"down","s":"median · p90 24m","spark":"pd"}'></div>
+          <div data-tile='{"l":"Queue wait","v":"4s","d":"","dir":"none","s":"median · p90 41s","spark":"qw"}'></div>
+          <div data-tile='{"l":"Sandbox start","v":"38s","d":"−9s","dir":"up","s":"median · p90 1.6m","spark":"sb"}'></div>
+          <div data-tile='{"l":"Tool error rate","todo":1,"v":"—","s":"needs an events index"}'></div>
+        </div>
+        <section class="card"><h2>Failed and stopped prompts per day</h2><div data-chart="fails"></div></section>
+        <div class="grid2 row">
+          <section class="card"><h2><span class="pinmark">1</span>Why prompts fail</h2>
+            <table class="data-table"><thead><tr><th>Reason</th><th>Trend</th><th class="num sort">Prompts</th></tr></thead><tbody data-rows="reasons"></tbody></table></section>
+          <section class="card todo"><div class="card-head"><h2>Tools</h2><span class="chip amber">needs an events index</span></div><p class="hint">Calls and errors by tool, from <code>tool</code> and <code>tool.result</code> events.</p>
+            <table class="data-table" style="opacity:.6"><thead><tr><th>Tool</th><th class="num">Calls</th><th class="num">Errors</th><th class="num">Rate</th></tr></thead>
+              <tbody><tr><td class="mono">Bash</td><td class="num">18,420</td><td class="num">1,105</td><td class="num">6.0%</td></tr><tr><td class="mono">Edit</td><td class="num">9,811</td><td class="num">212</td><td class="num">2.2%</td></tr><tr><td class="mono">github__create_pr</td><td class="num">171</td><td class="num">9</td><td class="num">5.3%</td></tr><tr><td class="mono">linear__get_issue</td><td class="num">96</td><td class="num">14</td><td class="num">14.6%</td></tr></tbody></table></section>
+        </div>
+        <section class="card"><div class="card-head"><h2><span class="pinmark">2</span>Automations</h2><span class="os">OpenInspect</span><span class="push"><a class="card-link" href="#">Manage automations →</a></span></div>
+          <table class="data-table"><thead><tr><th>Automation</th><th>Trigger</th><th class="num sort">Runs</th><th class="num">Succeeded</th><th class="num">PRs merged</th><th class="num">Spend</th><th>Last run</th></tr></thead><tbody data-rows="autos"></tbody></table></section>
+      </div></main>
+    </div></div>
+  <aside class="notes">
+    <h3>Why a tab of its own</h3>
+    <ul>
+      <li>Today's <b>Failures</b> and <b>Automations</b> cards are about whether the platform works, not whether people use it, so they move here and grow.</li>
+      <li>Operators and admins look here; the other tabs are for team leads.</li>
+    </ul>
+    <h3>From data we already store</h3>
+    <ul>
+      <li>Prompt duration and queue wait come from the <code>prompts</code> timestamps (created, started, finished).</li>
+      <li>Sandbox start time comes from <code>sandbox</code> events (starting → ready).</li>
+      <li><span class="pin">1</span>Failure reasons, each with a 30-day trend and a link to the latest example session.</li>
+      <li><span class="pin">2</span>Per-automation health, with paused automations (three failures in a row) flagged.</li>
+    </ul>
+    <h3>Needs work</h3>
+    <ul><li>Tool error rates need an index on <code>events(type)</code>, or a small rollup table written while sessions run.</li></ul>
+  </aside>
+</section>
+
+<!-- ============================================================ 7 DATA -->
+<section class="screen full" id="s7">
+  <div class="screen-label"><span class="num">07</span><h2>Data we have, and data we'd need</h2></div>
+  <div class="grid2" style="grid-template-columns:1.5fr 1fr;gap:24px">
+    <section class="card" style="margin:0">
+      <table class="data-table readiness">
+        <thead><tr><th>Metric</th><th>Comes from</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>Change from previous period, sparklines</td><td>Same queries over a window twice as long</td><td><span class="chip green">ready</span></td></tr>
+          <tr><td>Scope (people, automations, agents, all)</td><td><code>sessions.source</code>, <code>parent_id</code>, <code>automation_id</code></td><td><span class="chip green">ready</span></td></tr>
+          <tr><td>Repository filter, Repositories table</td><td><code>sessions.repos</code> (JSON), filtered in Go</td><td><span class="chip green">ready</span></td></tr>
+          <tr><td>Active people, People table, sparklines</td><td><code>sessions.account_id</code>, falling back to author</td><td><span class="chip green">ready</span></td></tr>
+          <tr><td>By model, model and effort</td><td><code>sessions.model</code>, <code>effort</code>, <code>cost_usd</code></td><td><span class="chip green">ready</span></td></tr>
+          <tr><td>By team</td><td><code>sessions.owner_team_id</code></td><td><span class="chip green">ready</span></td></tr>
+          <tr><td>Most expensive runs</td><td>Session tree, already rolled up as <code>runSpend</code></td><td><span class="chip green">ready</span></td></tr>
+          <tr><td>Day-and-hour heatmap</td><td><code>sessions.created_at</code> in the viewer's timezone</td><td><span class="chip green">ready</span></td></tr>
+          <tr><td>Time-to-merge spread, open PRs, drafts</td><td><code>pull_requests</code> (opened, merged and closed times, draft)</td><td><span class="chip green">ready</span></td></tr>
+          <tr><td>Prompt duration, queue wait</td><td><code>prompts</code> timestamps (created, started, finished)</td><td><span class="chip green">ready</span></td></tr>
+          <tr><td>Getting-started progress</td><td><code>invites</code>, <code>accounts.onboarding</code></td><td><span class="chip green">ready</span></td></tr>
+          <tr><td>Sandbox start time</td><td><code>events</code> of type <code>sandbox</code></td><td><span class="chip amber">needs an index</span></td></tr>
+          <tr><td>Tool calls and error rates</td><td><code>events</code> of type <code>tool</code> and <code>tool.result</code></td><td><span class="chip amber">needs an index or rollup</span></td></tr>
+          <tr><td>Tokens, cache hit ratio, turns</td><td>Claude stream <code>usage</code> and <code>num_turns</code>, currently discarded</td><td><span class="chip red">needs schema</span></td></tr>
+          <tr><td>Billed to a subscription</td><td>Not tracked; credentials don't record how they're billed</td><td><span class="chip red">needs schema</span></td></tr>
+        </tbody>
+      </table>
+    </section>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="notes" style="position:static">
+        <h3>A possible order</h3>
+        <ul>
+          <li><b>1. Tabs and filters.</b> Split today's page into Overview, Usage, Pull requests and Reliability. Add scope, a repository filter, the comparison with the previous period, and URL state. Only data we already have.</li>
+          <li><b>2. Cost and People.</b> Model and team tables, expensive runs, the leaderboard, the person sheet and getting started.</li>
+          <li><b>3. Events.</b> An index or rollup for <code>events</code>, then sandbox start time and tool errors.</li>
+          <li><b>4. Tokens.</b> Save token usage per prompt and session, then the token and cache cards.</li>
+        </ul>
+      </div>
+      <div class="notes" style="position:static">
+        <h3>"About this data" popover</h3>
+        <ul>
+          <li>Counts sessions <b>created</b> in the window, in your timezone.</li>
+          <li>Quality only counts sessions that have settled (nothing queued or running).</li>
+          <li>You only see sessions you can read; private sessions are left out for everyone else.</li>
+          <li>Spend is what the agent reported; runs billed to a subscription may show $0.</li>
+          <li>PR states refresh from GitHub every 10 minutes.</li>
+        </ul>
+      </div>
+      <div class="notes" style="position:static">
+        <h3>OpenInspect features left out</h3>
+        <ul>
+          <li><b>Breakdowns by provider and harness</b>: we run one harness (Claude Code), so they would always show one row.</li>
+          <li><b>30-second auto-refresh</b>: refreshing when you return to the tab is enough for daily numbers.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<script>
+// ---- deterministic fake data ----
+let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const N = 30;
+const end = new Date('2026-10-21T12:00:00');
+const dates = Array.from({ length: N }, (_, i) => new Date(end.getTime() - (N - 1 - i) * 864e5));
+const fmt = d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+const weekend = d => d.getDay() === 0 || d.getDay() === 6;
+const series = (base, amp, trend = 0) => dates.map((d, i) => Math.max(0, Math.round((base + trend * i + (rnd() - .4) * amp) * (weekend(d) ? .3 : 1))));
+const money = v => v >= 1000 ? '$' + Math.round(v).toLocaleString('en-US') : '$' + v.toFixed(2);
+const esc = s => s.replace(/"/g, '&quot;');
+function niceMax(v) { const p = 10 ** Math.floor(Math.log10(Math.max(v, 1))); return [1, 2, 5, 10].map(m => m * p).find(m => m >= v); }
+
+// ---- sidebar ----
+const ICON = { bolt: 'M9 1.5 3.5 9h4L7 14.5 12.5 7h-4z', chart: 'M2.5 13.5h11M4.5 11V8M8 11V4.5M11.5 11V6.5', gear: 'M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4' };
+const svg = p => `<svg viewBox="0 0 16 16"><path d="${p}"/></svg>`;
+document.querySelectorAll('[data-side]').forEach(el => {
+  el.innerHTML = `<div class="side-head"><div class="side-switch"><span class="mark" style="background:#3e63dd">P</span>Payments<span class="chev">⌄</span></div>
+    <button class="btn primary">New session</button></div>
+    <nav class="side-nav"><a>${svg(ICON.bolt)}Automations</a><a class="on">${svg(ICON.chart)}Insights</a><a>${svg(ICON.gear)}Settings</a></nav>
+    <div class="side-group">acme/payments</div>
+    <div class="side-sess"><a><i class="dot blue"></i><span>Retry webhook deliveries</span></a><a><i class="dot green"></i><span>Idempotency keys for refunds</span></a><a><i class="dot"></i><span>Ledger spec cleanup</span></a></div>
+    <div class="side-group">acme/web</div>
+    <div class="side-sess"><a><i class="dot green"></i><span>Checkout copy tweaks</span></a><a><i class="dot"></i><span>Upgrade to Vite 7</span></a></div>
+    <div class="side-account"><span class="avatar">JL</span>Jordan Lee</div>`;
+});
+
+// ---- page head: title, tabs, filters ----
+const TABS = [['overview', 'Overview', '#s1'], ['usage', 'Usage', '#s2'], ['cost', 'Cost', '#s3'], ['pulls', 'Pull requests', '#s4'], ['people', 'People', '#s5'], ['reliability', 'Reliability', '#s6']];
+document.querySelectorAll('[data-head]').forEach(el => {
+  const on = el.dataset.head, scope = el.dataset.scope || 'People', off = el.dataset.scopeoff;
+  el.innerHTML = `<div class="page-head"><h1>Insights</h1><span class="push">Updated 2m ago <span class="info" title="About this data">i</span></span></div>
+    <nav class="tabs">${TABS.map(([k, l, h]) => `<a href="${h}" class="${k === on ? 'on' : ''}">${l}</a>`).join('')}</nav>
+    <div class="filters">
+      <div class="seg"><button>7 days</button><button class="on">30 days</button><button>90 days</button></div>
+      <select><option>Every team</option></select>
+      <div class="seg" ${off ? 'style="opacity:.45" title="Pull requests count every source"' : ''}>${['People', 'Automations', 'Agents', 'All'].map(s => `<button class="${s === scope ? 'on' : ''}">${s}</button>`).join('')}</div>
+      <span class="combo">Repository: <b>All</b> ⌄</span>
+    </div>`;
+});
+
+// ---- sparkline ----
+function spark(raw) {
+  const vals = raw.map((_, i) => { const w = raw.slice(Math.max(0, i - 6), i + 1); return w.reduce((a, b) => a + b, 0) / w.length; });
+  const w = 64, h = 22, mx = Math.max(...vals), mn = Math.min(...vals), r = mx - mn || 1;
+  const pts = vals.map((v, i) => [(i / (vals.length - 1)) * w, h - 2 - ((v - mn) / r) * (h - 4)]);
+  const last = pts[pts.length - 1];
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}"><polyline points="${pts.map(p => p.join(',')).join(' ')}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${last[0]}" cy="${last[1]}" r="2.5" fill="var(--c1)" stroke="var(--panel)" stroke-width="1.5"/></svg>`;
+}
+document.querySelectorAll('[data-tile]').forEach(el => {
+  const t = JSON.parse(el.dataset.tile);
+  const vals = series(10, 6, t.dir === 'down' ? -.05 : .12);
+  const arrow = t.dir === 'up' ? '▲' : t.dir === 'down' ? '▼' : '';
+  // arrow shows direction of change in the value; colour shows good/bad
+  const raw = t.d || ''; const neg = raw.startsWith('−');
+  const glyph = raw && t.dir !== 'none' ? (neg ? '▼ ' : '▲ ') : '';
+  el.outerHTML = `<div class="tile${t.todo ? ' todo' : ''}"><div class="tile-label">${t.l}${t.todo ? ' <span class="chip amber" style="font-size:10px;line-height:15px">later</span>' : ''}</div>
+    <div class="tile-value">${t.v}</div>
+    <div class="tile-sub">${t.s}</div>
+    ${raw || t.spark ? `<div class="tile-foot">${raw ? `<span class="delta ${t.dir === 'none' ? 'flat' : t.dir}" data-tip="<div class=h>${t.l}</div>${raw} compared with the previous 30 days">${glyph}${raw}</span>` : '<span></span>'}${t.spark ? spark(vals) : ''}</div>` : ''}</div>`;
+});
+
+// ---- generic stacked column chart ----
+function cols(el, rows, keys, cls, labels, opts = {}) {
+  const h = opts.h || 160, totals = rows.map(r => keys.reduce((a, k) => a + r[k], 0));
+  const max = niceMax(Math.max(1, ...totals)), ticks = max % 2 === 0 ? [max, max / 2, 0] : [max, 0];
+  const fmtv = opts.money ? (v => '$' + Math.round(v)) : (v => v);
+  const lbl = new Set([0, Math.floor((rows.length - 1) / 2), rows.length - 1]);
+  const legend = keys.length > 1 ? `<div class="viz-legend">${keys.map((k, i) => `<span><i class="key ${cls[i]}"></i>${labels[i]}</span>`).join('')}</div>` : '';
+  el.innerHTML = `<figure class="viz">${legend}
+    <div class="viz-body"><div class="viz-y" style="height:${h}px">${ticks.map(t => `<span style="bottom:${(t / max) * 100}%">${fmtv(t)}</span>`).join('')}</div>
+    <div class="viz-plot" style="height:${h}px">${ticks.map(t => `<div class="viz-grid" style="bottom:${(t / max) * 100}%"></div>`).join('')}
+    <div class="viz-cols">${rows.map((r, i) => {
+      const tip = `<div class=h>${r.label}</div>` + keys.map((k, j) => `<div class=r><i class=${cls[j]}></i><b>${fmtv(r[k])}</b><span>${labels[j]}</span></div>`).join('') + (opts.extra ? opts.extra(r) : '');
+      return `<div class="viz-col" tabindex="0" data-tip="${esc(tip)}"><div class="viz-stack" style="height:${(totals[i] / max) * 100}%">${keys.map((k, j) => r[k] > 0 ? `<i class="${cls[j]}" style="flex-grow:${r[k]}"></i>` : '').join('')}</div></div>`;
+    }).join('')}</div></div></div>
+    <div class="viz-x${opts.allx ? ' all' : ''}">${rows.map((r, i) => `<span>${opts.allx || lbl.has(i) ? r.label : ''}</span>`).join('')}</div>
+    ${opts.notable ? '' : '<div class="viz-table">Show as a table</div>'}</figure>`;
+}
+const daily = (fn) => dates.map((d, i) => ({ label: fmt(d), ...fn(d, i) }));
+
+const outcomeRows = daily(d => { const w = weekend(d) ? .25 : 1, f = Math.round((5 + rnd() * 4) * w), m = Math.round((2 + rnd() * 3) * w), b = Math.round((rnd() * 2.2) * w); return { f, m, b, p: rnd() > .85 ? 1 : 0 }; });
+outcomeRows[N - 1].p = 3; outcomeRows[N - 2].p = 1;
+document.querySelectorAll('[data-chart=outcome]').forEach(el => cols(el, outcomeRows, ['f', 'm', 'b', 'p'], ['o1', 'o2', 'o3', 's0'], ['First try', 'After follow-ups', 'Unsuccessful', 'In progress']));
+const srcRows = daily(d => { const w = weekend(d) ? .3 : 1; return { web: Math.round((6 + rnd() * 3) * w), cli: Math.round((1 + rnd() * 1.5) * w), slack: Math.round((2 + rnd() * 2) * w), auto: 2 + Math.round(rnd()), agent: Math.round((1 + rnd() * 2) * w) }; });
+document.querySelectorAll('[data-chart=sources]').forEach(el => cols(el, srcRows, ['web', 'cli', 'slack', 'auto', 'agent'], ['s1', 's2', 's3', 's4', 's5'], ['Web', 'CLI', 'Slack', 'Automations', 'Agents']));
+const spendRows = daily(d => { const w = weekend(d) ? .3 : 1; return { ppl: Math.round((30 + rnd() * 18) * w), auto: Math.round(6 + rnd() * 3), agent: Math.round((3 + rnd() * 6) * w) }; });
+document.querySelectorAll('[data-chart=spend]').forEach(el => cols(el, spendRows, ['ppl', 'auto', 'agent'], ['s1', 's2', 's3'], ['People', 'Automations', 'Agents'], { money: true }));
+const failRows = daily(d => ({ f: Math.round(rnd() * 3.2 * (weekend(d) ? .3 : 1)), s: Math.round(rnd() * 1.4 * (weekend(d) ? .3 : 1)) }));
+document.querySelectorAll('[data-chart=fails]').forEach(el => cols(el, failRows, ['f', 's'], ['s1', 's2'], ['Failed', 'Stopped'], { h: 110 }));
+document.querySelectorAll('[data-chart=personcols]').forEach(el => cols(el, daily(d => ({ n: Math.round(rnd() * 4.5 * (weekend(d) ? .2 : 1)) })), ['n'], ['s1'], ['Sessions'], { h: 70, notable: 1 }));
+const ttm = [['<1h', 31], ['1–4h', 46], ['4–24h', 33], ['1–3d', 17], ['3–7d', 7], ['>7d', 3]].map(([label, n]) => ({ label, n }));
+document.querySelectorAll('[data-chart=ttm]').forEach(el => cols(el, ttm, ['n'], ['s1'], ['Merged PRs'], { h: 150, allx: 1 }));
+
+// cycles bars (today)
+document.querySelectorAll('[data-chart=cycles]').forEach(el => {
+  const c = [['1 cycle', 174], ['2 cycles', 71], ['3 cycles', 33], ['4 or more', 23]];
+  el.innerHTML = `<div class="bars hbars">${c.map(([l, n]) => `<div class="bar-row"><span class="bl">${l}</span><span class="bt"><i style="width:${n / 174 * 100}%"></i></span><span class="bv">${n}</span></div>`).join('')}</div>`;
+});
+
+// ---- line chart (two series, crosshair) ----
+function lines(el, rows, keys, colors, labels, h = 170) {
+  const W = 700, max = niceMax(Math.max(...rows.flatMap(r => keys.map(k => r[k])))), step = W / (rows.length - 1);
+  const y = v => h - (v / max) * h, ticks = max % 2 === 0 ? [max, max / 2, 0] : [max, 0];
+  const paths = keys.map((k, j) => `<path d="${rows.map((r, i) => `${i ? 'L' : 'M'}${i * step},${y(r[k])}`).join('')}" fill="none" stroke="${colors[j]}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`).join('');
+  const area = `<path d="M0,${h}${rows.map((r, i) => `L${i * step},${y(r[keys[0]])}`).join('')}L${W},${h}Z" fill="${colors[0]}" opacity=".1"/>`;
+  const hits = rows.map((r, i) => {
+    const tip = `<div class=h>${r.label}</div>` + keys.map((k, j) => `<div class=r><i style='background:${colors[j]}'></i><b>${r[k]}</b><span>${labels[j]}</span></div>`).join('');
+    return `<g class="hitg"><rect x="${i * step - step / 2}" y="0" width="${step}" height="${h}" fill="transparent" data-tip="${esc(tip)}"/><g class="xh" pointer-events="none"><line x1="${i * step}" x2="${i * step}" y1="0" y2="${h}" stroke="var(--border-strong)" vector-effect="non-scaling-stroke"/>${keys.map((k, j) => `<circle cx="${i * step}" cy="${y(r[k])}" r="4" fill="${colors[j]}" stroke="var(--panel)" stroke-width="2" vector-effect="non-scaling-stroke"/>`).join('')}</g></g>`;
+  }).join('');
+  const last = rows[rows.length - 1];
+  el.innerHTML = `<figure class="viz"><div class="viz-legend">${keys.map((k, j) => `<span><i class="lkey" style="background:${colors[j]}"></i>${labels[j]}</span>`).join('')}</div>
+    <div class="viz-body"><div class="viz-y" style="height:${h}px">${ticks.map(t => `<span style="bottom:${(t / max) * 100}%">${t}</span>`).join('')}</div>
+    <div class="viz-plot" style="height:${h}px">${ticks.map(t => `<div class="viz-grid" style="bottom:${(t / max) * 100}%"></div>`).join('')}
+    <svg class="line" viewBox="0 0 ${W} ${h}" preserveAspectRatio="none" style="height:${h}px;position:absolute;inset:0">${area}${paths}${hits}</svg></div></div>
+    <div class="viz-x">${rows.map((r, i) => `<span>${[0, Math.floor((rows.length - 1) / 2), rows.length - 1].includes(i) ? r.label : ''}</span>`).join('')}</div>
+    <div class="viz-table">Show as a table</div></figure>`;
+}
+document.querySelectorAll('[data-chart=prline]').forEach(el => lines(el, daily(d => { const w = weekend(d) ? .2 : 1, o = Math.round((5 + rnd() * 5) * w); return { o, m: Math.max(0, Math.round(o * (.6 + rnd() * .4))) }; }), ['o', 'm'], ['var(--c1)', 'var(--c2)'], ['Opened', 'Merged']));
+const weeks = ['Jul 28', 'Aug 4', 'Aug 11', 'Aug 18', 'Aug 25', 'Sep 1', 'Sep 8', 'Sep 15', 'Sep 22', 'Sep 29', 'Oct 6', 'Oct 13'];
+const wauVals = [9, 11, 11, 13, 12, 15, 16, 18, 17, 20, 21, 23];
+document.querySelectorAll('[data-chart=wau]').forEach(el => lines(el, weeks.map((label, i) => ({ label, n: wauVals[i] })), ['n'], ['var(--c1)'], ['Active people'], 130));
+document.querySelectorAll('[data-chart=wau] .viz-legend').forEach(l => l.remove()); // one series: the title names it
+
+// ---- heatmap ----
+document.querySelectorAll('[data-chart=heat]').forEach(el => {
+  const ramp = ['#f2f6fc', '#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#256abf', '#184f95', '#0d366b'];
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  let html = '';
+  days.forEach((d, di) => {
+    html += `<span>${d}</span>`;
+    for (let h = 0; h < 24; h++) {
+      const work = h >= 9 && h <= 18 ? 1 : h >= 7 && h <= 21 ? .35 : .04, wk = di >= 5 ? .12 : 1, dip = h === 12 ? .6 : 1;
+      let v = Math.round(work * wk * dip * (6 + rnd() * 6)); if (h === 3) v = Math.max(v, 2); // the nightly automation
+      const step = Math.min(ramp.length - 1, Math.round(v / 1.6));
+      html += `<i style="background:${ramp[step]}" data-tip="<div class=h>${d} ${String(h).padStart(2, '0')}:00</div>${v} sessions${h === 3 ? '<br><span style=color:var(--muted)>includes Nightly dependency bump</span>' : ''}"></i>`;
+    }
+  });
+  html += `<span></span>${Array.from({ length: 24 }, (_, h) => `<span class="hx">${h % 6 === 0 ? String(h).padStart(2, '0') : ''}</span>`).join('')}`;
+  el.innerHTML = `<div class="heat">${html}</div>`;
+});
+
+// ---- funnel (ordinal ramp, starts at step 250) ----
+document.querySelectorAll('[data-chart=funnel]').forEach(el => {
+  const f = [['Invited', 14, '#86b6ef'], ['Joined', 12, '#5598e7'], ['First session', 9, '#2a78d6'], ['First merged PR', 7, '#1c5cab']];
+  el.innerHTML = f.map(([l, n, c]) => `<div class="f"><span class="muted">${l}</span><span class="bt"><i style="width:${n / 14 * 100}%;background:${c}" data-tip="<div class=h>${l}</div>${n} of 14 people"></i></span><span class="v">${n}<span class="dim">${Math.round(n / 14 * 100)}%</span></span></div>`).join('');
+});
+
+// ---- ranked lists ----
+const RANK = {
+  repos: [['acme/payments', 118, '$402'], ['acme/web', 96, '$288'], ['acme/sdk', 61, '$171'], ['acme/infra', 44, '$190'], ['acme/mobile', 27, '$64']],
+  models: [['Opus 5.5', 771, '$4.10 each'], ['Sonnet 5.5', 402, '$1.62 each'], ['Haiku 5.5', 64, '$0.38 each'], ['Fable 5.1', 47, '$5.20 each']],
+  people: [['Priya Raman', 64, '66%'], ['Marcus Chen', 51, '61%'], ['Jordan Lee', 39, '54%'], ['Ana Souza', 33, '70%'], ['Sam Okafor', 21, '48%']],
+  sources: [['Web', 198, '48%'], ['Slack', 81, '20%'], ['Automations', 64, '16%'], ['Agent sub-sessions', 41, '10%'], ['CLI', 28, '7%']],
+};
+document.querySelectorAll('[data-rank]').forEach(el => {
+  const rows = RANK[el.dataset.rank], mx = rows[0][1], isMoney = el.dataset.rank === 'models';
+  el.innerHTML = `<div class="bars">${rows.map(([l, v, s]) => `<div class="bar-row" data-tip="<div class=h>${l}</div>${isMoney ? '$' + v : v + ' sessions'} · ${s}"><span class="bl">${l}</span><span class="bv">${isMoney ? '$' + v : v}<span class="dim">${s}</span></span><span class="bt"><i style="width:${v / mx * 100}%"></i></span></div>`).join('')}</div>`;
+});
+
+// ---- tables ----
+const PEOPLE = [['Priya Raman', '#6250d6', 64, '66%', '1.6', 29, '7.4h', '$206', '2h ago'], ['Marcus Chen', '#1baf7a', 51, '61%', '1.8', 22, '6.1h', '$188', '20m ago'], ['Jordan Lee', '#3e63dd', 39, '54%', '2.1', 15, '5.0h', '$131', 'now'],
+  ['Ana Souza', '#eb6834', 33, '70%', '1.4', 17, '3.2h', '$84', 'yesterday'], ['Sam Okafor', '#e87ba4', 21, '48%', '2.4', 6, '2.9h', '$77', '3 days ago'], ['Lena Fischer', '#008300', 18, '61%', '1.7', 8, '1.9h', '$52', '5h ago'],
+  ['Diego Ruiz', '#eda100', 12, '42%', '2.6', 3, '1.4h', '$40', '6 days ago'], ['Unknown (Slack)', '#8d8d98', 9, '56%', '1.9', 2, '0.8h', '$18', 'yesterday']];
+const ROWS = {
+  people: PEOPLE.map(([n, c, s, ft, cy, m, t, sp, la]) => `<tr><td><span class="who"><span class="avatar" style="background:${c}">${n.startsWith('Unknown') ? '?' : n.split(' ').map(x => x[0]).join('').slice(0, 2)}</span>${n}</span></td><td>${spark(series(s / 30 + 1, 3))}</td><td class="num">${s}</td><td class="num">${ft}</td><td class="num">${m}</td><td class="num">${sp}</td><td class="num">${la}</td></tr>`),
+  repos: [['acme/payments', 118, '64%', '1.7', 46, 201, '31h', '$402'], ['acme/web', 96, '59%', '1.9', 38, 176, '22h', '$288'], ['acme/sdk', 61, '55%', '2.0', 21, 118, '14h', '$171'], ['acme/infra', 44, '41%', '2.6', 14, 109, '19h', '$190'], ['acme/mobile', 27, '52%', '2.1', 9, 52, '7h', '$64'], ['Scratch workspace', 66, '—', '1.4', 9, 56, '6h', '$169']]
+    .map((r, i) => `<tr${i === 5 ? ' class="muted-row"' : ''}><td class="${i < 5 ? 'mono' : ''}">${r[0]}</td>${r.slice(1).map(v => `<td class="num">${v}</td>`).join('')}</tr>`),
+  modeleffort: [['Opus 5.5', 'high', 141, '34%', '64%', '1.6', '$5.02'], ['Opus 5.5', 'medium', 47, '11%', '57%', '1.9', '$3.20'], ['Sonnet 5.5', 'medium', 162, '39%', '55%', '2.0', '$1.70'], ['Sonnet 5.5', 'low', 49, '12%', '44%', '2.4', '$0.92'], ['Haiku 5.5', 'low', 13, '3%', '38%', '2.7', '$0.38']]
+    .map(r => `<tr><td>${r[0]}</td><td><span class="chip">${r[1]}</span></td>${r.slice(2).map(v => `<td class="num">${v}</td>`).join('')}</tr>`),
+  models: [['Opus 5.5', 188, '$771', '$8.90'], ['Sonnet 5.5', 211, '$402', '$7.15'], ['Fable 5.1', 9, '$47', '$15.60'], ['Haiku 5.5', 13, '$64', '$21.30']]
+    .map(r => `<tr><td>${r[0]}</td>${r.slice(1).map(v => `<td class="num">${v}</td>`).join('')}</tr>`),
+  teams: [['Payments', '#3e63dd', '$521', '41%', '$8.10', '+12%', 'down'], ['Web', '#1baf7a', '$402', '31%', '$9.40', '−3%', 'up'], ['Platform', '#eb6834', '$248', '19%', '$13.80', '+22%', 'down'], ['No team', '#8d8d98', '$113', '9%', '$7.90', '—', 'flat']]
+    .map(([n, c, s, sh, cpm, d, dir]) => `<tr><td><span class="who"><span class="mark" style="background:${c}">${n[0]}</span>${n}</span></td><td class="num">${s}</td><td class="num">${sh}</td><td class="num">${cpm}</td><td class="num"><span class="delta ${dir}">${d}</span></td></tr>`),
+  runs: [['Migrate billing jobs to the new queue', 'Marcus Chen', 6, 4, '3.1h', '<span class="chip green">merged</span>', '$58.20'], ['Investigate p99 latency regression', 'Priya Raman', 3, 7, '2.4h', '<span class="chip red">failed</span>', '$41.75'], ['Nightly dependency bump', 'Automation', 0, 1, '1.1h', '<span class="chip blue">PR open</span>', '$22.04'],
+    ['Rewrite checkout form validation', 'Jordan Lee', 2, 3, '1.6h', '<span class="chip green">merged</span>', '$19.90'], ['Add OpenTelemetry spans to sdk', 'Ana Souza', 1, 2, '58m', '<span class="chip green">merged</span>', '$14.12']]
+    .map(r => `<tr><td class="t"><a href="#">${r[0]}</a></td><td>${r[1]}</td><td class="num">${r[2]}</td><td class="num">${r[4]}</td><td>${r[5]}</td><td class="num">${r[6]}</td></tr>`),
+  prrepos: [['acme/payments', 58, 49, 5, '89%', '2.8h', '$8.20'], ['acme/web', 47, 41, 4, '91%', '2.1h', '$7.02'], ['acme/sdk', 29, 22, 6, '79%', '6.5h', '$7.77'], ['acme/infra', 23, 15, 6, '71%', '1.4 days', '$12.70'], ['acme/mobile', 14, 10, 1, '91%', '4.0h', '$6.40']]
+    .map(r => `<tr><td class="mono">${r[0]}</td>${r.slice(1).map(v => `<td class="num">${v}</td>`).join('')}</tr>`),
+  openprs: [['acme/infra#412', 'Rotate RDS credentials via Secrets Manager', 'Sam Okafor', '<span class="chip green">passing</span>', '9 days'], ['acme/sdk#288', 'Deprecate v1 retry options', 'Ana Souza', '<span class="chip red">failing</span>', '6 days'], ['acme/payments#1031', 'Retry webhook deliveries with backoff', 'Priya Raman', '<span class="chip green">passing</span>', '2 days'], ['acme/web#2290', 'Nightly dependency bump', 'Automation', '<span class="chip amber">pending</span>', '14h']]
+    .map(r => `<tr><td class="t"><span class="mono dim">${r[0]}</span> ${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td><td class="num">${r[4]}</td></tr>`),
+  reasons: [['Sandbox setup script exited with status 1', 14, '2h ago'], ['Context window exceeded', 9, 'yesterday'], ['GitHub push rejected', 7, '3 days ago'], ['Model overloaded', 6, '5h ago'], ['MCP server linear unreachable', 5, '6 days ago']]
+    .map(([l, n, t]) => `<tr><td class="t"><a href="#">${l}</a></td><td>${spark(series(n / 10, 1.5))}</td><td class="num">${n}</td></tr>`),
+  autos: [['Nightly dependency bump', 'schedule', 30, '27 · 90%', 16, '$96', '<span class="chip green">done</span>'], ['Triage new Sentry issues', 'webhook', 22, '18 · 82%', 4, '$61', '<span class="chip green">done</span>'], ['Label incoming PRs', 'webhook', 41, '41 · 100%', 0, '$9', '<span class="chip green">done</span>'], ['Weekly flaky test sweep', 'schedule', 4, '1 · 25%', 0, '$46', '<span class="chip red" data-tip="Paused after 3 failures in a row">paused</span>']]
+    .map(r => `<tr><td>${r[0]}</td><td><span class="chip">${r[1]}</span></td>${r.slice(2, 6).map(v => `<td class="num">${v}</td>`).join('')}<td>${r[6]}</td></tr>`),
+};
+document.querySelectorAll('[data-rows]').forEach(el => { const rows = ROWS[el.dataset.rows]; el.innerHTML = rows.slice(0, +el.dataset.limit || rows.length).join(''); });
+
+// ---- shared tooltip ----
+const tip = document.getElementById('tip');
+document.addEventListener('mouseover', e => { const t = e.target.closest('[data-tip]'); if (!t) { tip.style.display = 'none'; return; } tip.innerHTML = t.dataset.tip; tip.style.display = 'block'; });
+document.addEventListener('mousemove', e => { if (tip.style.display === 'none') return; const w = tip.offsetWidth; tip.style.left = Math.min(e.clientX + 14, innerWidth - w - 8) + 'px'; tip.style.top = (e.clientY + 14) + 'px'; });
+document.addEventListener('focusin', e => { const t = e.target.closest('[data-tip]'); if (!t) return; const r = t.getBoundingClientRect(); tip.innerHTML = t.dataset.tip; tip.style.display = 'block'; tip.style.left = r.left + 'px'; tip.style.top = (r.bottom + 6) + 'px'; });
+document.addEventListener('focusout', () => { tip.style.display = 'none'; });
+</script>
+</body>
+</html>
