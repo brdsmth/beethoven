@@ -155,10 +155,14 @@ team's default) or **only** whoever started it (a person's workspace session, un
 otherwise); its owner or the team's lead can change that, and can share it with named people, who may
 read it but not prompt it. Workspace owners see private sessions and admins team ones, except in
 personal teams. Only a team's members prompt its sessions, whoever can see them. Projects and
-automations without a team, made before personal teams or asked for, are everyone's. Teams are archived, never
+automations without a team, made before personal teams or asked for, are everyone's; so are a
+workspace automation's runs, like the automation (a team's automation's runs take the team's default
+visibility). Nothing in a personal team reaches admins, even once its person is deactivated: before
+someone leaves, have them share or move what should outlive them; afterwards, only the server's own
+token (`BEETHOVEN_TOKEN`) reaches it. Teams are archived, never
 deleted: an archived team takes no new work. Changes to who may do what (people, teams, memberships,
 secrets, channels, session visibility) go to an audit log that admins, and a team's leads for their
-team, can read. The sidebar's switcher shows one team's sessions, the workspace's, or all you can
+team, can read; a personal team's events are its person's alone. The sidebar's switcher shows one team's sessions, the workspace's, or all you can
 see, grouped by project; new sessions start in the chosen team. **⌘K** (Ctrl+K) searches every
 session, project and page you can open, and **C** starts a new session.
 
