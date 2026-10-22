@@ -331,6 +331,31 @@ Slack only delivers events to a public HTTPS address, so the server needs one; f
 tunnel such as `cloudflared tunnel --url http://localhost:7070` works, with its host in
 `BEETHOVEN_HOSTS`.
 
+### Threads: agents hearing back
+
+Sessions take part in threads on GitHub, and what's said there comes back to them as a new prompt,
+so agents answer reviewers, CI and each other without anyone copying messages across. A session
+**owns** the pull request (and branch) it opens, and **follows** the issues and pull requests it
+comments on, the one an automation started it for, and any it's asked to with the `follow` tool.
+When an automation's agent reviews a pull request another session opened, its review reaches that
+session, which makes the changes, pushes and replies; the reply reaches the reviewer in turn.
+
+- **What's passed on**: comments, reviews (not bare approvals) and line comments, and failing CI on
+  a session's own branch. A merged or closed pull request ends the thread.
+- **Batched**: what arrives together is handed over as one prompt once the thread has been quiet for
+  ten seconds (at most a minute), so a review with many line comments is one prompt. The inbox is
+  in the database: nothing is lost to a restart, and redeliveries are ignored.
+- **Bounded**: what a session posts carries a hidden marker and is recorded, so its own words never
+  come back to it. Each prompt counts the exchanges between agents that led to it; past four, it's
+  noted on the timeline for a person instead of run. A session is handed at most twelve prompts an
+  hour. An automation never fires on its own runs' comments, and doesn't hear a second time what it
+  fires on itself.
+- **Trusted**: only people who can write to the repository (owners, members, collaborators) and
+  this server's agents are heard; other apps' comments and strangers' on public repositories aren't.
+
+The session page lists what it follows, with mute and leave, and what came from its threads,
+including anything held back and why.
+
 ### Insights
 
 The **Insights** page measures how sessions go over the last 7, 30 or 90 days, compared with the
@@ -446,6 +471,7 @@ HTML and SVG included, downloads, so a file can't run script as the person viewi
 | `GET /api/capabilities` | the capabilities sandboxes can be given; settings and environments list theirs in `capabilities` |
 | `GET /api/auth` · `POST /api/auth/setup` · `/login` · `/logout` | who is signed in; create the first account; sign in and out |
 | `GET /api/sessions/{id}/events` | server-sent events; `Last-Event-ID` resumes |
+| `GET /api/sessions/{id}/threads` · `PUT` · `DELETE ?subject=` | the threads it takes part in and what came from them; mute one; leave one |
 | `GET /api/events` | live state of every session |
 | `/api/automations[/{id}[/run\|/runs]]` | CRUD, run now, run history |
 | `GET /api/sessions/{id}/artifacts[/{aid}]` | files shown in the viewer; one file's content (`?download=1` saves it) |
@@ -504,6 +530,7 @@ internal/sandbox     Provider interface, Docker and Modal implementations, sandb
 internal/agent       Harness interface, Claude Code implementation
 internal/tools       MCP tool server
 internal/automation  schedules, webhooks, repository events, failure policy
+internal/relay       threads' comments, reviews and CI back to their sessions, within bounds
 internal/event       host-neutral repository events and the triggers that match them
 internal/store       SQLite migrations and queries, environments, settings, encrypted secrets
 internal/github      the GitHub App, its tokens and accounts, clone URLs, pull requests
