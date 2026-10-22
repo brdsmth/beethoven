@@ -82,7 +82,7 @@ func deliver(t *testing.T, r *relay.Relay) {
 func TestAgentCommentReachesTheSessionThatOpenedThePR(t *testing.T) {
 	env := fake.NewEnv(t)
 	auto := automation.New(env.M, log)
-	r := relay.New(env.M, auto, log, now)
+	r := relay.New(env.M, log, now)
 
 	owner := run(t, env, session.Request{Prompt: "fix the login bug", Repos: app, Author: jane, Source: "web"})
 	url, err := env.M.OpenPR(ctx, owner.ID, "", "Fix login", "", nil)
@@ -153,7 +153,7 @@ func TestAgentCommentReachesTheSessionThatOpenedThePR(t *testing.T) {
 
 func TestBounds(t *testing.T) {
 	env := fake.NewEnv(t)
-	r := relay.New(env.M, nil, log, now)
+	r := relay.New(env.M, log, now)
 	a := run(t, env, session.Request{Prompt: "a", Repos: app, Author: jane, Source: "web"})
 	b := run(t, env, session.Request{Prompt: "b", Repos: app, Author: jane, Source: "web"})
 	for _, s := range []store.Session{a, b} {
@@ -223,7 +223,7 @@ func TestBounds(t *testing.T) {
 	}
 
 	// A session is handed at most PerHour prompts an hour.
-	limited := relay.New(env.M, nil, log, relay.Config{MaxHops: 4, PerHour: 1, Tick: 1})
+	limited := relay.New(env.M, log, relay.Config{MaxHops: 4, PerHour: 1, Tick: 1})
 	limited.Route(ctx, comment(5, "bob", "Four.", "https://github.com/acme/app/issues/5#issuecomment-7"))
 	deliver(t, limited)
 	if inbox, _ := env.DB.SessionInbox(ctx, b.ID, 1); !strings.Contains(inbox[0].Outcome, "last hour") {
@@ -231,7 +231,7 @@ func TestBounds(t *testing.T) {
 	}
 
 	// Items wait while their thread is busy.
-	patient := relay.New(env.M, nil, log, relay.Config{Quiet: 1 << 40, MaxWait: 1 << 40, MaxHops: 4, PerHour: 100, Tick: 1})
+	patient := relay.New(env.M, log, relay.Config{Quiet: 1 << 40, MaxWait: 1 << 40, MaxHops: 4, PerHour: 100, Tick: 1})
 	patient.Route(ctx, comment(5, "bob", "Five.", "https://github.com/acme/app/issues/5#issuecomment-8"))
 	deliver(t, patient)
 	if pending, _ := env.DB.PendingInbox(ctx); len(pending) != 1 {
@@ -241,7 +241,7 @@ func TestBounds(t *testing.T) {
 
 func TestCIAndTheEndOfAThread(t *testing.T) {
 	env := fake.NewEnv(t)
-	r := relay.New(env.M, nil, log, now)
+	r := relay.New(env.M, log, now)
 	owner := run(t, env, session.Request{Prompt: "fix it", Repos: app, Author: jane, Source: "web"})
 	if _, err := env.M.OpenPR(ctx, owner.ID, "", "", "", nil); err != nil {
 		t.Fatal(err)
@@ -294,7 +294,7 @@ func TestCIAndTheEndOfAThread(t *testing.T) {
 // A pull request opened before links existed still finds its session.
 func TestOwnerFromTrackedPullRequests(t *testing.T) {
 	env := fake.NewEnv(t)
-	r := relay.New(env.M, nil, log, now)
+	r := relay.New(env.M, log, now)
 	owner := run(t, env, session.Request{Prompt: "fix it", Repos: app, Author: jane, Source: "web"})
 	if _, err := env.M.OpenPR(ctx, owner.ID, "", "", "", nil); err != nil {
 		t.Fatal(err)
@@ -319,7 +319,7 @@ func TestOwnerFromTrackedPullRequests(t *testing.T) {
 func TestAutomationsDontDoubleUp(t *testing.T) {
 	env := fake.NewEnv(t)
 	auto := automation.New(env.M, log)
-	r := relay.New(env.M, auto, log, now)
+	r := relay.New(env.M, log, now)
 	a, _, err := auto.Create(ctx, automation.Spec{Name: "Answer comments", Prompt: "answer", Repos: app, Enabled: true, Reuse: true,
 		Trigger: &event.Trigger{Event: event.PRComment}}, "")
 	if err != nil {
@@ -337,13 +337,15 @@ func TestAutomationsDontDoubleUp(t *testing.T) {
 	run := started[0].SessionID
 
 	second := comment(3, "bob", "And what about errors?", "https://github.com/acme/app/issues/3#issuecomment-71")
-	if n, _ := r.Route(ctx, second); n != 0 {
-		t.Errorf("the relay passed on what the automation handles itself to %d sessions", n)
-	}
+	r.Route(ctx, second) // as the webhook does: route, then the automations, then delivery later
 	if started, _ := auto.Dispatch(ctx, second); len(started) != 1 || started[0].SessionID != run {
 		t.Errorf("the automation didn't continue its session: %+v", started)
 	} else {
 		wait(t, env, started[0].ID)
+	}
+	deliver(t, r)
+	if got := relayed(t, env, run); len(got) != 0 {
+		t.Errorf("the run heard a second time what its automation ran on: %+v", got)
 	}
 
 	// Its own answer doesn't set it off again.
@@ -363,7 +365,7 @@ func TestAutomationsDontDoubleUp(t *testing.T) {
 func TestForgedMarkers(t *testing.T) {
 	env := fake.NewEnv(t)
 	auto := automation.New(env.M, log)
-	r := relay.New(env.M, auto, log, now)
+	r := relay.New(env.M, log, now)
 	owner := run(t, env, session.Request{Prompt: "fix it", Repos: app, Author: jane, Source: "web"})
 	if _, err := env.M.OpenPR(ctx, owner.ID, "", "", "", nil); err != nil {
 		t.Fatal(err)
@@ -409,7 +411,7 @@ func TestForgedMarkers(t *testing.T) {
 // reason to wait a moment for the record, which then counts.
 func TestOwnCommentRecordedLate(t *testing.T) {
 	env := fake.NewEnv(t)
-	r := relay.New(env.M, nil, log, now)
+	r := relay.New(env.M, log, now)
 	agent := run(t, env, session.Request{Prompt: "review", Repos: app, Author: jane, Source: "web"})
 	owner := run(t, env, session.Request{Prompt: "fix it", Repos: app, Author: jane, Source: "web"})
 	if _, err := env.M.OpenPR(ctx, owner.ID, "", "", "", nil); err != nil {
@@ -436,7 +438,7 @@ func TestOwnCommentRecordedLate(t *testing.T) {
 func TestAutomationRunsHearEachOther(t *testing.T) {
 	env := fake.NewEnv(t)
 	auto := automation.New(env.M, log)
-	r := relay.New(env.M, auto, log, now)
+	r := relay.New(env.M, log, now)
 	if _, _, err := auto.Create(ctx, automation.Spec{Name: "Answer comments", Prompt: "answer", Repos: app, Enabled: true,
 		Trigger: &event.Trigger{Event: event.PRComment}}, ""); err != nil {
 		t.Fatal(err)
@@ -452,10 +454,12 @@ func TestAutomationRunsHearEachOther(t *testing.T) {
 	}
 	runA := start(comment(4, "bob", "First question.", "https://github.com/acme/app/issues/4#issuecomment-90"))
 	second := comment(4, "bob", "Second question.", "https://github.com/acme/app/issues/4#issuecomment-91")
-	if n, _ := r.Route(ctx, second); n != 0 {
-		t.Errorf("run A heard what its automation fires on itself (%d)", n)
-	}
+	r.Route(ctx, second)
 	runB := start(second)
+	deliver(t, r)
+	if got := relayed(t, env, runA); len(got) != 0 {
+		t.Errorf("run A heard what its automation started run B for: %+v", got)
+	}
 
 	// Run A answers. Its automation won't fire on its own run's words, so run
 	// B, which follows the thread too, hears it from the relay.
@@ -498,7 +502,7 @@ func TestAutomationRunsHearEachOther(t *testing.T) {
 // even when a person's prompt was queued in between.
 func TestCIHop(t *testing.T) {
 	env := fake.NewEnv(t)
-	r := relay.New(env.M, nil, log, now)
+	r := relay.New(env.M, log, now)
 	owner := run(t, env, session.Request{Prompt: "fix it", Repos: app, Author: jane, Source: "web"})
 	if _, err := env.M.OpenPR(ctx, owner.ID, "", "", "", nil); err != nil {
 		t.Fatal(err)
@@ -525,4 +529,80 @@ func TestCIHop(t *testing.T) {
 		t.Errorf("CI's prompt hop %d; want 3, after the hop-2 prompt that pushed", last.Hop)
 	}
 	env.M.Stop(ctx, owner.ID)
+}
+
+// Whether an automation took an event is decided by what it did, once it
+// has: when it doesn't run (here, paused meanwhile), its run hears it.
+func TestRunHearsWhatItsAutomationDidntRunOn(t *testing.T) {
+	env := fake.NewEnv(t)
+	auto := automation.New(env.M, log)
+	r := relay.New(env.M, log, now)
+	a, _, err := auto.Create(ctx, automation.Spec{Name: "Answer comments", Prompt: "answer", Repos: app, Enabled: true, Reuse: true,
+		Trigger: &event.Trigger{Event: event.PRComment}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := auto.Dispatch(ctx, comment(6, "bob", "Why?", "https://github.com/acme/app/issues/6#issuecomment-100"))
+	if err != nil || len(started) != 1 {
+		t.Fatalf("dispatch %+v %v", started, err)
+	}
+	wait(t, env, started[0].ID)
+	spec := automation.Spec{Name: a.Name, Prompt: a.Prompt, Repos: a.Repos, Reuse: true, Enabled: false, Trigger: &event.Trigger{Event: event.PRComment}}
+	if _, err := auto.Update(ctx, a.ID, spec); err != nil {
+		t.Fatal(err)
+	}
+	next := comment(6, "bob", "Anyone?", "https://github.com/acme/app/issues/6#issuecomment-101")
+	r.Route(ctx, next)
+	if started, _ := auto.Dispatch(ctx, next); len(started) != 0 {
+		t.Fatalf("a paused automation ran: %+v", started)
+	}
+	deliver(t, r)
+	if got := relayed(t, env, started[0].SessionID); len(got) != 1 || !strings.Contains(got[0].Content, "Anyone?") {
+		t.Errorf("the run's prompts: %+v", got)
+	}
+}
+
+// A reopened pull request is followed again by the sessions it had ended for.
+func TestReopenedPullRequest(t *testing.T) {
+	env := fake.NewEnv(t)
+	r := relay.New(env.M, log, now)
+	owner := run(t, env, session.Request{Prompt: "fix it", Repos: app, Author: jane, Source: "web"})
+	if _, err := env.M.OpenPR(ctx, owner.ID, "", "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	pr := event.Event{Host: event.GitHub, Repo: "acme/app", Number: 1, Subject: "pr:1", Branch: owner.Branch, Actor: "bob"}
+	closed, reopened := pr, pr
+	closed.Kind, closed.Occurrence = event.PRClosed, "d-close"
+	reopened.Kind, reopened.Occurrence = event.PROpened, "d-reopen"
+	r.Route(ctx, closed)
+	r.Route(ctx, reopened)
+	if links, _ := env.DB.ThreadLinks(ctx, "github:acme/app:#1"); len(links) != 1 {
+		t.Fatalf("not following the reopened pull request: %+v", links)
+	}
+	if links, _ := env.DB.ThreadLinks(ctx, "github:acme/app:branch:"+owner.Branch); len(links) != 1 {
+		t.Errorf("not following the reopened pull request's branch: %+v", links)
+	}
+	if n, _ := r.Route(ctx, comment(1, "bob", "Back to it.", "https://github.com/acme/app/issues/1#issuecomment-110")); n != 1 {
+		t.Errorf("a comment on the reopened pull request reached %d sessions", n)
+	}
+	events, _ := env.DB.EventsOfType(ctx, owner.ID, session.EvThread)
+	if len(events) != 2 || !strings.Contains(string(events[1].Data), "reopened") {
+		t.Errorf("owner notes: %+v", events)
+	}
+}
+
+// Asking the origin of the same comment twice waits once.
+func TestOriginWaitsOnce(t *testing.T) {
+	env := fake.NewEnv(t)
+	e := comment(1, "rando", event.Mark("Hi.", "made-up", 0), "https://github.com/acme/app/issues/1#issuecomment-120")
+	start := time.Now()
+	env.M.Origin(ctx, e, true)
+	first := time.Since(start)
+	start = time.Now()
+	if _, ok := env.M.Origin(ctx, e, true); ok {
+		t.Error("an unrecorded comment counted as an agent's")
+	}
+	if second := time.Since(start); first < session.OriginWait || second > session.OriginWait/2 {
+		t.Errorf("waited %v, then %v", first, second)
+	}
 }

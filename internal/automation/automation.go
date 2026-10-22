@@ -255,13 +255,6 @@ func (s *Service) fires(ctx context.Context, a store.Automation, e event.Event, 
 	return true
 }
 
-// Fires reports whether the automation fires on e itself, so its runs
-// needn't be told about e another way.
-func (s *Service) Fires(ctx context.Context, automationID string, e event.Event) bool {
-	a, err := s.db.Automation(ctx, automationID)
-	return err == nil && s.fires(ctx, a, e, s.origin(ctx, e, false)) && s.mayRun(ctx, a) == nil
-}
-
 // Trigger is an automation's stored trigger.
 func Trigger(a store.Automation) event.Trigger {
 	t := event.Trigger{Event: a.TriggerEvent, Conditions: []event.Condition{}}
