@@ -331,7 +331,8 @@ When an automation's agent reviews a pull request another session opened, its re
 session, which makes the changes, pushes and replies; the reply reaches the reviewer in turn.
 
 - **What's passed on**: comments, reviews (not bare approvals) and line comments, and failing CI on
-  a session's own branch. A merged or closed pull request ends the thread.
+  a session's own branch. A merged or closed pull request ends the thread; reopening it takes the
+  thread up again.
 - **Batched**: what arrives together is handed over as one prompt once the thread has been quiet for
   ten seconds (at most a minute), so a review with many line comments is one prompt. The inbox is
   in the database: nothing is lost to a restart, and redeliveries are ignored.
@@ -341,8 +342,8 @@ session, which makes the changes, pushes and replies; the reply reaches the revi
   exchanges between agents that led to it; past four, it's noted on the timeline for a person
   instead of run. Failing CI counts as one more round after the prompt that pushed. A session is
   handed at most twelve prompts an hour. An automation never fires on its own runs' comments, and
-  its runs aren't told a second time what it fires on itself (only what it really fires on).
-  A merged or closed pull request stays ended.
+  its runs aren't told a second time what it ran on itself (judged by what it did, once it has).
+  A merged or closed pull request stays ended until it's reopened.
 - **Trusted**: only people who can write to the repository (owners, members, collaborators) and
   this server's agents are heard; other apps' comments and strangers' on public repositories aren't.
 

@@ -55,6 +55,13 @@ func (s *Store) ThreadLinks(ctx context.Context, subject string) ([]Link, error)
 		ORDER BY created_at`, subject)
 }
 
+// ReopenThread takes a thread up again for the sessions it had ended for,
+// and lists them.
+func (s *Store) ReopenThread(ctx context.Context, subject string) ([]string, error) {
+	return query(ctx, s.w, func(r scanner) (id string, err error) { return id, r.Scan(&id) },
+		`UPDATE session_links SET closed_at = NULL WHERE subject=? AND closed_at IS NOT NULL RETURNING session_id`, subject)
+}
+
 // ThreadEnded reports whether a thread ended for a session in it: its pull
 // request was merged or closed.
 func (s *Store) ThreadEnded(ctx context.Context, subject string) (bool, error) {

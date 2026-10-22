@@ -54,25 +54,17 @@ type Config struct {
 
 var Defaults = Config{Quiet: 10 * time.Second, MaxWait: time.Minute, MaxHops: session.MaxHops, PerHour: 12, Tick: 2 * time.Second}
 
-// Automations says whether an automation fires on an event itself.
-type Automations interface {
-	Fires(ctx context.Context, automationID string, e event.Event) bool
-}
-
 type Relay struct {
-	m     *session.Manager
-	autos Automations
-	db    *store.Store
-	log   *slog.Logger
-	cfg   Config
-	wake  chan struct{}
-	now   func() time.Time
+	m    *session.Manager
+	db   *store.Store
+	log  *slog.Logger
+	cfg  Config
+	wake chan struct{}
+	now  func() time.Time
 }
 
-// New makes a relay; autos, if set, keeps it from telling an automation's
-// runs what the automation fires on itself.
-func New(m *session.Manager, autos Automations, log *slog.Logger, cfg Config) *Relay {
-	return &Relay{m: m, autos: autos, db: m.Store(), log: log, cfg: cfg, wake: make(chan struct{}, 1), now: time.Now}
+func New(m *session.Manager, log *slog.Logger, cfg Config) *Relay {
+	return &Relay{m: m, db: m.Store(), log: log, cfg: cfg, wake: make(chan struct{}, 1), now: time.Now}
 }
 
 // What happens to an event's kind.
@@ -80,6 +72,7 @@ const (
 	ignore  = iota
 	deliver // to the sessions taking part
 	ends    // the thread is over: note it and stop following
+	reopens // the thread is back: follow it again
 )
 
 func (r *Relay) action(e event.Event) int {
@@ -98,6 +91,8 @@ func (r *Relay) action(e event.Event) int {
 		}
 	case event.PRMerged, event.PRClosed, event.IssueClosed:
 		return ends
+	case event.PROpened: // opened, or reopened
+		return reopens
 	}
 	return ignore
 }
@@ -108,6 +103,8 @@ func (r *Relay) Route(ctx context.Context, e event.Event) (int, error) {
 	switch r.action(e) {
 	case ends:
 		return 0, r.end(ctx, e)
+	case reopens:
+		return 0, r.reopen(ctx, e)
 	case ignore:
 		return 0, nil
 	}
@@ -138,9 +135,6 @@ func (r *Relay) Route(ctx context.Context, e event.Event) (int, error) {
 	var errs []error
 	for _, l := range links {
 		if l.Muted || e.Kind == event.ChecksDone && l.Role != store.LinkOwner {
-			continue
-		}
-		if r.automationHandles(ctx, l.SessionID, e) {
 			continue
 		}
 		added, err := r.db.AddToInbox(ctx, store.InboxItem{SessionID: l.SessionID, Subject: subject, Occurrence: e.Host + ":" + e.Occurrence,
@@ -203,20 +197,6 @@ func (r *Relay) participants(ctx context.Context, e event.Event, subject string)
 	return append(links, l), nil
 }
 
-// automationHandles reports whether the session is an automation's run and
-// that automation fires on e itself: into the same session when it reuses
-// one, else into a fresh run, so the old run needn't hear about it too. It
-// asks the automation, so nothing is held back that it won't fire on: its
-// own run's words, too long a chain of agents, a repository it no longer
-// watches.
-func (r *Relay) automationHandles(ctx context.Context, sessionID string, e event.Event) bool {
-	if r.autos == nil {
-		return false
-	}
-	s, err := r.db.Session(ctx, sessionID)
-	return err == nil && s.AutomationID != "" && r.autos.Fires(ctx, s.AutomationID, e)
-}
-
 // end notes on its sessions' timelines that a thread is over, and stops
 // following it.
 func (r *Relay) end(ctx context.Context, e event.Event) error {
@@ -241,6 +221,31 @@ func (r *Relay) end(ctx context.Context, e event.Event) error {
 		}
 		if err := r.db.EndThread(ctx, subject); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// reopen follows a reopened pull request (and its branch) again, for the
+// sessions that followed it until it was closed, and notes it on their
+// timelines. A pull request opening for the first time has no ended links:
+// nothing to do.
+func (r *Relay) reopen(ctx context.Context, e event.Event) error {
+	subjects := []string{e.Thread()}
+	if e.Branch != "" {
+		subjects = append(subjects, event.ThreadOf(e.Host, e.Repo, "branch:"+e.Branch))
+	}
+	for _, subject := range subjects {
+		ids, err := r.db.ReopenThread(ctx, subject)
+		if err != nil {
+			return err
+		}
+		if subject != e.Thread() {
+			continue
+		}
+		for _, id := range ids {
+			r.m.Note(ctx, id, map[string]string{"subject": subject, "kind": e.Kind, "actor": e.Actor, "url": e.URL,
+				"note": "Pull request reopened; following it again"})
 		}
 	}
 	return nil
@@ -333,7 +338,11 @@ func (r *Relay) deliver(ctx context.Context, sessionID string, inbox []store.Inb
 			it.reason = fmt.Sprintf("agents went back and forth %d times; a person needs to step in", it.hop-1)
 		}
 		if it.reason == "" && s.AutomationID != "" {
-			// An automation that reuses this session may have fired on it already.
+			// The session is an automation's run, and the automation fired on
+			// this itself: into this session if it reuses one, else into a fresh
+			// run, which takes it from here. That's known for sure by now (the
+			// automations ran when the event arrived, before the thread went
+			// quiet), so a run that wasn't started, or failed to, isn't counted.
 			if _, err := r.db.PromptByDedupKey(ctx, "automation:"+s.AutomationID+":"+x.Occurrence); err == nil {
 				it.reason = "its automation already ran on it"
 			}

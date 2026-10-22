@@ -109,6 +109,8 @@ type Manager struct {
 	turns  sync.WaitGroup
 
 	mu        sync.Mutex
+	waitMu    sync.Mutex           // guards waited
+	waited    map[string]time.Time // comments Origin waited for, by URL
 	runners   map[string]*runner
 	notifiers []Notifier
 }
@@ -420,8 +422,8 @@ func (m *Manager) PRStatus(ctx context.Context, sessionID, repo string) (*PRStat
 // repositories, as the person the session works for. The comment is
 // recorded, so when it comes back it isn't sent to the session again, and
 // counts as a hop for the agents it reaches; it carries a hidden marker
-// saying so is on its way (see Origin). The session follows the thread from then on: replies come back
-// to it.
+// saying a record is on its way (see Origin). The session follows the
+// thread from then on: replies come back to it.
 func (m *Manager) Comment(ctx context.Context, sessionID, repo string, number int, body string) (string, error) {
 	s, ref, err := m.threadIn(ctx, sessionID, repo, number)
 	if err != nil {
@@ -460,18 +462,29 @@ var OriginWait = 1500 * time.Millisecond
 // carries, and at what hop, from what the server recorded posting. Only
 // the record counts: the marker in the text is a hint that a record is on
 // its way, which with wait set is worth waiting a moment for, but anyone
-// can type a marker, or copy one when quoting an agent.
+// can type a marker, or copy one when quoting an agent. Each comment is
+// waited for once: asking again (the relay, then the automations, about
+// the same delivery) only looks.
 func (m *Manager) Origin(ctx context.Context, e event.Event, wait bool) (event.Provenance, bool) {
 	if e.CommentURL == "" {
 		return event.Provenance{}, false
 	}
 	_, hinted := event.Marked(e.Comment)
+	wait = wait && hinted && m.firstWait(e.CommentURL)
 	deadline := time.Now().Add(OriginWait)
 	for {
 		if o, err := m.db.OutboundByRef(ctx, e.CommentURL); err == nil {
 			return event.Provenance{SessionID: o.SessionID, Hop: o.Hop}, true
 		}
-		if !wait || !hinted || time.Now().After(deadline) {
+		if !wait {
+			return event.Provenance{}, false
+		}
+		if time.Now().After(deadline) {
+			// Someone typed or quoted a marker, or posting took longer than
+			// OriginWait to return: then an agent's words count as a person's
+			// here, and start the count of hops again.
+			m.log.Warn("a comment carries the marker but no record of posting it arrived; taking it as a person's",
+				"comment", e.CommentURL, "actor", e.Actor, "waited", OriginWait)
 			return event.Provenance{}, false
 		}
 		select {
@@ -480,6 +493,27 @@ func (m *Manager) Origin(ctx context.Context, e event.Event, wait bool) (event.P
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+}
+
+// firstWait reports whether Origin hasn't waited for this comment yet, and
+// notes that it now has.
+func (m *Manager) firstWait(ref string) bool {
+	m.waitMu.Lock()
+	defer m.waitMu.Unlock()
+	now := time.Now()
+	for k, at := range m.waited {
+		if now.Sub(at) > 10*time.Minute {
+			delete(m.waited, k)
+		}
+	}
+	if _, ok := m.waited[ref]; ok {
+		return false
+	}
+	if m.waited == nil {
+		m.waited = map[string]time.Time{}
+	}
+	m.waited[ref] = now
+	return true
 }
 
 // Follow makes a session hear about what happens on an issue or pull request

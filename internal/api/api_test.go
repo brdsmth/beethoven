@@ -172,7 +172,7 @@ func TestGitHubEvents(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	gh := github.New("test-token")
 	gh.RepoWebhookSecret = "s3cret"
-	srv := httptest.NewServer((&api.Server{M: env.M, Auto: automation.New(env.M, log), Relay: relay.New(env.M, nil, log, relay.Defaults),
+	srv := httptest.NewServer((&api.Server{M: env.M, Auto: automation.New(env.M, log), Relay: relay.New(env.M, log, relay.Defaults),
 		GitHub: gh, Token: "api-token", Log: log}).Handler())
 	defer srv.Close()
 
