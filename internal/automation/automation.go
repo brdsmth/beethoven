@@ -413,27 +413,18 @@ func (s *Service) tick(ctx context.Context, now time.Time) {
 // PromptFinished keeps the consecutive-failure count and pauses an
 // automation after MaxFailures.
 func (s *Service) PromptFinished(ctx context.Context, _ store.Session, p store.Prompt) {
-	if p.AutomationID == "" {
+	if p.AutomationID == "" || p.Status != store.Done && p.Status != store.Failed {
 		return
 	}
-	a, err := s.db.Automation(ctx, p.AutomationID)
+	// Only the count and the pause change, in place: saving the whole
+	// automation would undo an edit made while the run was finishing.
+	paused, err := s.db.RecordAutomationRun(ctx, p.AutomationID, p.Status == store.Done, MaxFailures)
 	if err != nil {
+		s.log.Error("record automation run", "automation", p.AutomationID, "err", err)
 		return
 	}
-	switch p.Status {
-	case store.Done:
-		a.Failures = 0
-	case store.Failed:
-		a.Failures++
-		if a.Failures >= MaxFailures {
-			a.Enabled = false
-			s.log.Warn("automation paused after repeated failures", "automation", a.ID)
-		}
-	default:
-		return
-	}
-	if err := s.db.SaveAutomation(ctx, &a); err != nil {
-		s.log.Error("save automation", "automation", a.ID, "err", err)
+	if paused {
+		s.log.Warn("automation paused after repeated failures", "automation", p.AutomationID)
 	}
 }
 

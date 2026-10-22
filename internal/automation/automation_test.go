@@ -185,3 +185,24 @@ func TestDispatchEvents(t *testing.T) {
 		t.Errorf("review session repos = %+v", s.Repos)
 	}
 }
+
+// A run finishing doesn't undo an edit made meanwhile: only the count of
+// failures and the pause change.
+func TestRunFinishingKeepsEdits(t *testing.T) {
+	svc, env := setup(t)
+	a, _, _ := svc.Create(ctx, Spec{Name: "n", Prompt: "p", Enabled: true}, "")
+	_, p, err := svc.Fire(ctx, a, "manual", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Update(ctx, a.ID, Spec{Name: "renamed", Prompt: "p", Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	finished, _ := env.DB.Prompt(ctx, p.ID)
+	finished.Status = store.Done
+	svc.PromptFinished(ctx, store.Session{}, finished)
+	if got, _ := env.DB.Automation(ctx, a.ID); got.Name != "renamed" || got.Enabled {
+		t.Errorf("the edit was undone: %+v", got)
+	}
+	waitIdle(t, env, a)
+}
