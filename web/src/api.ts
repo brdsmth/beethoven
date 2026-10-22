@@ -17,6 +17,8 @@ export type Prompt = {
   automation_id?: string; status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
   error?: string; result?: string; cost_usd: number; created_at: string; started_at?: string; finished_at?: string;
   attachments?: Attachment[];
+  /** Exchanges between agents that led to it; absent for people's. */
+  hop?: number;
 };
 /** A file attached to a prompt. */
 export type Attachment = { id: string; name: string; content_type: string; size: number };
@@ -137,6 +139,15 @@ export type Reliability = {
     id: string; name: string; trigger: string; enabled: boolean; failures: number; runs: number; succeeded: number; failed: number;
     merged: number; spend: number; last_status?: string; last_at?: string;
   }[];
+};
+/** A thread elsewhere a session takes part in: a pull request it opened, an issue it commented on. */
+export type ThreadLink = {
+  subject: string; session_id: string; role: 'owner' | 'follower'; reason: string; muted: boolean; created_at: string; closed_at?: string;
+};
+/** Something that happened on one of a session's threads, and what became of it. */
+export type InboxItem = {
+  id: number; subject: string; kind: string; actor: string; received_at: string; delivered_at?: string; prompt_id?: string; outcome?: string;
+  data: { url?: string; comment_url?: string; number?: number; repo?: string };
 };
 export type GitHubRepo = { repo: string; description?: string; private: boolean; default_branch: string };
 export type SlackStatus = {

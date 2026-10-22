@@ -1,7 +1,8 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'preact/hooks';
 import {
-  api, get, onGlobal, subscribe, withFiles, type Environment, type Ev, type Info, type Prompt, type PullRequest, type Session,
+  api, get, onGlobal, subscribe, withFiles, type Environment, type Ev, type InboxItem, type Info, type Prompt, type PullRequest, type Session,
+  type ThreadLink,
 } from './api';
 import { AttachButton, Attachments, PendingFiles, useFiles } from './attach';
 import { useCapabilities } from './capabilities';
@@ -28,10 +29,11 @@ type Model = {
   logs: Record<string, string[]>; // live sandbox boot output per prompt
   caps: { enabled: string[]; suggested: string[] }; // the sandbox's capabilities, and those its repositories suggest
   files: Shown[]; // shown in the viewer, oldest first
+  threadNotes: number; // notes about the session's threads so far, to know when to look at them again
   seq: number;
 };
 const newModel = (): Model => ({
-  prompts: {}, blocks: [], groups: {}, results: {}, ends: {}, deltas: {}, logs: {}, caps: { enabled: [], suggested: [] }, files: [], seq: 0,
+  prompts: {}, blocks: [], groups: {}, results: {}, ends: {}, deltas: {}, logs: {}, caps: { enabled: [], suggested: [] }, files: [], threadNotes: 0, seq: 0,
 });
 
 function group(m: Model, id: string) {
@@ -47,6 +49,7 @@ function apply(m: Model, e: Ev) {
   const p = e.prompt || '', d = e.data || {};
   const patch = (id: string, v: Partial<Prompt>) => { if (m.prompts[id]) m.prompts[id] = { ...m.prompts[id], ...v }; };
   if (e.type === 'artifact' && d.kind === 'file' && !m.files.some(f => f.id === d.id)) m.files.push(d); // also on the timeline
+  if (e.type === 'thread') m.threadNotes++; // also shown on the timeline
   if (e.type === 'capability') { // added during the session; also shown on the timeline
     m.caps = { enabled: [...new Set([...m.caps.enabled, d.id])], suggested: m.caps.suggested.filter(x => x !== d.id) };
   }
@@ -124,7 +127,8 @@ export function SessionView({ id }: { id: string }) {
     <ViewerContext.Provider value={openFile}>
       <div class="split">
         <div class="session">
-          <Header s={s} kids={kids} stats={<Stats m={m} prs={prs} />} caps={m.caps} changed={x => { m.session = x; rerender(0); }} extra={files} />
+          <Header s={s} kids={kids} stats={<Stats m={m} prs={prs} />} caps={m.caps} changed={x => { m.session = x; rerender(0); }} extra={files}
+            version={Object.keys(m.prompts).length + m.threadNotes + (s.repos.filter(r => r.pr_url).length)} />
           <div class="timeline" ref={scroller} onScroll={() => {
             const el = scroller.current!;
             stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -173,8 +177,10 @@ function Stats({ m, prs }: { m: Model; prs: PullRequest[] }) {
   );
 }
 
-function Header({ s, kids, stats, caps, changed, extra }: {
+function Header({ s, kids, stats, caps, changed, extra, version }: {
   s: Session; kids: Session[]; stats: ComponentChildren; caps: Model['caps']; changed: (s: Session) => void; extra?: ComponentChildren;
+  /** Changes when the threads may have: a prompt or a thread note arrived. */
+  version: number;
 }) {
   const team = useTeamIndex()(s.team_id);
   const [pr, setPr] = useState<{ url: string; warning: string }>();
@@ -238,6 +244,7 @@ function Header({ s, kids, stats, caps, changed, extra }: {
           </div>
         )}
         <SessionCapabilities caps={caps} />
+        <Threads id={s.id} version={version} />
         {kids.length > 0 && (
           <div class="meta kids">
             <span>Children</span>
@@ -257,6 +264,75 @@ function Header({ s, kids, stats, caps, changed, extra }: {
 
 /** The toolchains the session's sandbox has: those its repositories need,
  * found by the sandbox, and any the agent added. Nobody picks them here. */
+/** Where a thread is, for people: "acme/app #42", "⎇ feature in acme/app". */
+export function threadName(subject: string) {
+  const [, repo = '', what = ''] = subject.match(/^[^:]+:([^:]+):(.*)$/) || [];
+  if (what.startsWith('#')) return `${repo} ${what}`;
+  if (what.startsWith('branch:')) return `⎇ ${what.slice(7)} in ${repo}`;
+  return subject;
+}
+
+const threadURL = (subject: string) => {
+  const [, host, repo, what] = subject.match(/^([^:]+):([^:]+):(.*)$/) || [];
+  if (host !== 'github') return '';
+  if (what.startsWith('#')) return `https://github.com/${repo}/issues/${what.slice(1)}`;
+  if (what.startsWith('branch:')) return `https://github.com/${repo}/tree/${what.slice(7)}`;
+  return '';
+};
+
+const KIND_LABEL: Record<string, string> = {
+  'pull_request.comment': 'comment', 'issue.comment': 'comment', 'pull_request.review': 'review',
+  'pull_request.review_comment': 'line comment', 'checks.completed': 'CI failed',
+};
+
+/** The threads elsewhere the session takes part in: what said there comes
+ * back to it as a prompt. Each can be muted or left. */
+function Threads({ id, version }: { id: string; version: number }) {
+  const [v, setV] = useState<{ threads: ThreadLink[]; inbox: InboxItem[] }>();
+  const load = () => get<{ threads: ThreadLink[]; inbox: InboxItem[] }>(`/api/sessions/${id}/threads`).then(setV, () => {});
+  useEffect(() => { load(); }, [id, version]);
+  const open = v?.threads.filter(t => !t.closed_at) || [];
+  if (!v || (!open.length && !v.inbox.length)) return null;
+  const base = `/api/sessions/${id}/threads`;
+  const mute = (t: ThreadLink) => api('PUT', base, { subject: t.subject, muted: !t.muted }).then(load, fail);
+  const leave = (t: ThreadLink) => api('DELETE', `${base}?subject=${encodeURIComponent(t.subject)}`).then(load, fail);
+  const held = v.inbox.filter(x => x.outcome?.startsWith('dropped') && !/own words|automation already/.test(x.outcome));
+  return (
+    <div class="meta threads">
+      <span title="What's said on these threads comes back to this session as a prompt">Following</span>
+      {open.map(t => {
+        const url = threadURL(t.subject);
+        return (
+          <span key={t.subject} class={'thread' + (t.muted ? ' muted' : '')}>
+            {url ? <a href={url} target="_blank" rel="noopener noreferrer">{threadName(t.subject)}</a> : threadName(t.subject)}
+            {t.role === 'owner' && <span class="dim" title="This session opened it">· yours</span>}
+            {t.muted && <span class="dim">· muted</span>}
+            <button type="button" class="thread-btn" title={t.muted ? 'Pass on what happens here again' : 'Stop passing on what happens here, for now'}
+              onClick={() => mute(t)}>{t.muted ? 'Unmute' : 'Mute'}</button>
+            <button type="button" class="thread-btn" title="Stop following" aria-label="Stop following" onClick={() => leave(t)}>✕</button>
+          </span>
+        );
+      })}
+      {v.inbox.length > 0 && (
+        <details class="thread-activity">
+          <summary>{v.inbox.length} from threads{held.length ? `, ${held.length} held back` : ''}</summary>
+          <ul>
+            {v.inbox.slice(0, 12).map(x => (
+              <li key={x.id}>
+                <span class="dim">{ago(x.received_at)}</span> {x.actor || 'GitHub'}: {KIND_LABEL[x.kind] || x.kind} on {threadName(x.subject)}
+                {' · '}
+                <span class={x.outcome?.startsWith('dropped') ? 'warn' : 'dim'}>
+                  {!x.delivered_at ? 'waiting for the thread to go quiet' : x.outcome === 'delivered' ? 'passed on' : x.outcome?.replace(/^dropped: /, 'held back: ')}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function SessionCapabilities({ caps }: { caps: Model['caps'] }) {
   const list = useCapabilities();
   if (!list || !caps.enabled.length) return null;
@@ -305,14 +381,17 @@ function UserBubble({ p }: { p: Prompt }) {
       <div class="user-head">
         <b>{p.author?.name || 'You'}</b>
         <span class="dim">{ago(p.created_at)}</span>
-        {p.source !== 'web' && <span class="tag">{p.source}</span>}
+        {p.source !== 'web' && <span class="tag">{p.source === 'relay' ? 'from a thread' : p.source}</span>}
+        {!!p.hop && <span class="tag" title="Exchanges between agents that led to this prompt">agent hop {p.hop}</span>}
         <Chip status={p.status} />
         {p.status === 'queued' && (
           <button class="x" title="Cancel this prompt" aria-label="Cancel prompt"
             onClick={() => api('DELETE', `/api/sessions/${p.session_id}/prompts/${p.id}`).catch(fail)}>✕</button>
         )}
       </div>
-      {p.content && <div class="pre">{p.content}</div>}
+      {p.content && (p.source === 'relay'
+        ? <details class="relayed"><summary>{p.content.split('\n')[0]} <span class="dim">What was passed on</span></summary><div class="pre">{p.content}</div></details>
+        : <div class="pre">{p.content}</div>)}
       {!!p.attachments?.length && <Attachments session={p.session_id} files={p.attachments} />}
     </div>
   );
@@ -343,6 +422,13 @@ function Item({ e, m, live, sub }: { e: Ev; m: Model; live: boolean; sub?: Recor
     }
     case 'warning':
       return <div class="line warn">Warning: {d.message}</div>;
+    case 'thread':
+      return (
+        <div class="line dim">
+          {threadName(d.subject || '')}: {d.actor && <>{d.actor} · </>}
+          {d.url ? <Link href={d.url}>{d.note}</Link> : d.note}
+        </div>
+      );
     case 'capability':
       return (
         <div class="line dim">
