@@ -726,6 +726,7 @@ func systemPrompt(s store.Session, eff Effective) string {
 	b.WriteString("For independent pieces of work that can proceed in parallel, you can start child sessions with spawn_session and follow them with get_session.\n")
 	b.WriteString("If the work needs a toolchain the sandbox lacks (a mobile app with Expo, Android builds, Go, Rust, Bun, Python with uv), " +
 		"call list_capabilities and add_capability instead of installing it by hand: a capability comes with instructions, and later sessions get it too.\n")
+	b.WriteString("If the person asks for a plan, reply with the plan and stop there: do not change files, commit or open pull requests until they ask you to go ahead.\n")
 	b.WriteString("Finish with a short summary of what you did and anything left undone.")
 	if eff.Instructions != "" {
 		b.WriteString("\n\n" + eff.Instructions)
