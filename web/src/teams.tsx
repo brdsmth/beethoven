@@ -458,8 +458,9 @@ export function VisibilityBadge({ s, onChange }: { s: Session; onChange: (s: Ses
   const me = useMe();
   const [busy, setBusy] = useState(false);
   const team = useTeamIndex()(s.team_id);
-  // In a personal team, the team is the person: "Team" and "Only me" are the same.
-  const options: [string, string][] = team?.personal ? [['workspace', 'Everyone'], ['team', 'Only me']]
+  // In a personal team, the team is the person: "Team" and "Only me" are the same, shown once.
+  const options: [string, string][] = team?.personal
+    ? [['workspace', 'Everyone'], [s.visibility === 'private' ? 'private' : 'team', 'Only me']]
     : [['workspace', 'Everyone'], ...(s.team_id ? [['team', 'Team'] as [string, string]] : []),
       ...(s.account_id && s.account_id === me?.account?.id ? [['private', 'Only me'] as [string, string]] : [])];
   if (!me?.people && !s.team_id) return null;

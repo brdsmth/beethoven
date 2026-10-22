@@ -34,8 +34,8 @@ export function useScope(): [Scope, (s: Scope) => void] {
   useEffect(() => { scopeWaiters.add(setV); return () => { scopeWaiters.delete(setV); }; }, []);
   return [v, setScope];
 }
-/** The team a scope names, if it names one. */
 /** As a team in a request: work that belongs to no team, the workspace's. */
 export const WORKSPACE = 'workspace';
+/** The team a scope names, if it names one. */
 export const scopeTeam = (s: Scope) => (s === 'all' || s === 'workspace' ? '' : s);
 

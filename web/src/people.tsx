@@ -224,9 +224,8 @@ export function AccountPage() {
         <p class="hint">Your commits are authored by your GitHub account once you <a href="#/settings/github">connect it</a>; until then, by this name and email.</p>
       </Group>
       {mine.length > 0 && (
-        <Group title="Default team" hint="Where your Slack direct messages go, and the team new sessions start in.">
+        <Group title="Default team" hint="Where your Slack direct messages go, and the team new sessions, projects and automations start in. Unless you choose, it's the team you were invited to, else your personal team.">
           <select aria-label="Default team" value={me.default_team_id} onChange={e => save({ default_team_id: e.currentTarget.value })}>
-            <option value="">None: the workspace</option>
             {mine.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
         </Group>
