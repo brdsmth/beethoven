@@ -63,7 +63,7 @@ func TestEnvironmentSession(t *testing.T) {
 		t.Errorf("agent args = %v in %s", turn.Args, turn.Dir)
 	}
 	system := argAfter(turn.Args, "--append-system-prompt")
-	for _, want := range []string{`"Web stack" environment: API and frontend`, "/workspace/api: acme/api (primary)", "Be terse.\n\nUse pnpm."} {
+	for _, want := range []string{`"Web stack" environment: API and frontend`, "/workspace/api: acme/api (primary)", "Be terse.\n\nUse pnpm.", "asks for a plan, reply with the plan"} {
 		if !strings.Contains(system, want) {
 			t.Errorf("system prompt lacks %q:\n%s", want, system)
 		}
