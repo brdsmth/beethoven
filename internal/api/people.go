@@ -490,9 +490,18 @@ func (s *Server) auditLog(w http.ResponseWriter, r *http.Request) {
 		forbid(w, "see the audit log")
 		return
 	}
+	if store.IsPersonalTeam(team) && !access.ManageTeam(who, team) {
+		hidden(w)
+		return
+	}
 	var before int64
 	fmt.Sscan(q.Get("before"), &before)
-	list, err := s.M.Store().AuditEvents(r.Context(), team, before, 100)
+	// A personal team's events are its person's alone, as the team is.
+	f := store.AuditFilter{TeamID: team, Before: before, Limit: 100, AllPersonal: who.Server}
+	if who.IsPerson() {
+		f.Personal = store.PersonalTeamID(who.AccountID)
+	}
+	list, err := s.M.Store().AuditEvents(r.Context(), f)
 	if err != nil {
 		replyErr(w, err)
 		return

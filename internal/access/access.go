@@ -111,17 +111,17 @@ func JoinTeam(a Actor, t store.Team) bool {
 
 // --------------------------------------------------------------- sessions
 
-// ReadSession: see a session, its timeline and its files. Whoever started
-// it, and whoever it's shared with, always may; beyond them its visibility
-// decides. Workspace owners see private sessions, and admins team ones,
-// except in personal teams.
+// ReadSession: see a session, its timeline and its files. Whoever it's
+// shared with always may; beyond them its visibility decides: a private
+// one is its starter's, a team one its team's. Workspace owners see
+// private sessions, and admins team ones, except in personal teams.
 func ReadSession(a Actor, s store.Session) bool {
-	if a.Server || Started(a, s) || SharedWith(a, s) {
+	if a.Server || SharedWith(a, s) {
 		return true
 	}
 	switch s.Visibility {
 	case store.VisibilityPrivate:
-		return a.Owner() && !store.IsPersonalTeam(s.TeamID)
+		return Started(a, s) || (a.Owner() && !store.IsPersonalTeam(s.TeamID))
 	case store.VisibilityTeam:
 		return UseTeam(a, s.TeamID)
 	}

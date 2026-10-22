@@ -341,9 +341,10 @@ func useInvite(ctx context.Context, tx *sql.Tx, in Invite, token, accountID stri
 	if joined {
 		o.TeamID = in.TeamID
 		// Their work goes to the team they were invited to, unless they
-		// already chose a team beyond their personal one.
-		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET default_team_id=? WHERE id=? AND default_team_id IN ('', ?)`,
-			in.TeamID, accountID, PersonalTeamID(accountID)); err != nil {
+		// chose a team (their personal one included) they're still in.
+		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET default_team_id=? WHERE id=? AND NOT EXISTS
+			(SELECT 1 FROM team_members m WHERE m.team_id = accounts.default_team_id AND m.account_id = accounts.id)`,
+			in.TeamID, accountID); err != nil {
 			return false, err
 		}
 	}

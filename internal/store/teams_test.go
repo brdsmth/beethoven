@@ -174,6 +174,20 @@ func TestTeams(t *testing.T) {
 	if id, _ := s.DefaultTeam(ctx, dee.ID); id != web.ID {
 		t.Errorf("default team after joining web = %q", id)
 	}
+	// Someone who chose their personal team keeps it when invited to a team.
+	s.SetDefaultTeam(ctx, cy.ID, PersonalTeamID(cy.ID))
+	if err := s.CreateTeam(ctx, &Team{Name: "Ops"}, owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	opsTeam, _ := s.TeamBySlug(ctx, "ops")
+	inv5 := Invite{Role: RoleMember, TeamID: opsTeam.ID, Email: "c@x.dev", CreatedBy: owner.ID}
+	tok5, _ := s.CreateInvite(ctx, &inv5)
+	if _, err := s.JoinInvite(ctx, tok5, cy); err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := s.DefaultTeam(ctx, cy.ID); id != PersonalTeamID(cy.ID) {
+		t.Errorf("a chosen personal default after joining ops = %q", id)
+	}
 	// Nobody joins or leaves a personal team.
 	if err := s.SetTeamMember(ctx, PersonalTeamID(dee.ID), cy.ID, TeamMemberRole); !errors.Is(err, ErrPersonalTeam) {
 		t.Errorf("joined someone's personal team: %v", err)
@@ -183,6 +197,16 @@ func TestTeams(t *testing.T) {
 	}
 	if err := s.CreateTeam(ctx, &Team{Name: "Sneaky", Slug: "personal-" + cy.ID}, ""); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a team took a personal short name: %v", err)
+	}
+	opsTeam.Slug = "personal-ops"
+	if err := s.SaveTeam(ctx, &opsTeam); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a team renamed to a personal short name: %v", err)
+	}
+	// One that had such a name before they were reserved keeps it.
+	s.w.ExecContext(ctx, `UPDATE teams SET slug='personal-legacy' WHERE id=?`, opsTeam.ID)
+	opsTeam.Slug, opsTeam.Color = "personal-legacy", "#112233"
+	if err := s.SaveTeam(ctx, &opsTeam); err != nil {
+		t.Errorf("a legacy reserved short name, unchanged: %v", err)
 	}
 
 	if err := s.ArchiveTeam(ctx, web.ID, true); err != nil {
@@ -211,10 +235,10 @@ func TestTeams(t *testing.T) {
 
 	s.Audit(ctx, AuditEvent{ActorID: owner.ID, Actor: "o", TeamID: web.ID, Action: "team.created", Target: web.ID}, map[string]string{"name": web.Name})
 	s.Audit(ctx, AuditEvent{Action: "account.updated", Target: bob.ID}, nil)
-	if all, _ := s.AuditEvents(ctx, "", 0, 0); len(all) != 2 || all[0].Action != "account.updated" {
+	if all, _ := s.AuditEvents(ctx, AuditFilter{}); len(all) != 2 || all[0].Action != "account.updated" {
 		t.Errorf("audit = %+v", all)
 	}
-	if mine, _ := s.AuditEvents(ctx, web.ID, 0, 0); len(mine) != 1 || string(mine[0].Detail) != `{"name":"Web Platform"}` {
+	if mine, _ := s.AuditEvents(ctx, AuditFilter{TeamID: web.ID}); len(mine) != 1 || string(mine[0].Detail) != `{"name":"Web Platform"}` {
 		t.Errorf("team audit = %+v", mine)
 	}
 }

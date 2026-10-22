@@ -303,6 +303,21 @@ func TestTeams(t *testing.T) {
 	if code, _ := cy.call("PUT", "/api/sessions/"+mine+"/shares", `{"account_ids":[]}`); code != 200 || sees(ann)[mine] {
 		t.Errorf("cy unshares: %d", code)
 	}
+	// A personal team's audit events are its person's alone.
+	if code, l := cy.call("GET", "/api/audit?team="+cyOwn, ""); code != 200 || len(l.([]any)) < 2 {
+		t.Errorf("cy's own audit log: %d %v", code, l)
+	}
+	for name, b := range map[string]*browser{"ada (admin)": ada, "the owner": owner} {
+		if code, _ := b.call("GET", "/api/audit?team="+cyOwn, ""); code != 404 {
+			t.Errorf("%s reads cy's personal audit log: %d", name, code)
+		}
+		_, l := b.call("GET", "/api/audit", "")
+		for _, e := range l.([]any) {
+			if field(e, "team_id") == cyOwn {
+				t.Errorf("%s sees cy's personal audit event %v", name, e)
+			}
+		}
+	}
 
 	if got := sees(cy); !got[private] || !got[open] || got[teamSession] {
 		t.Errorf("cy sees %v", got)
