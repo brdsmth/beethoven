@@ -239,7 +239,7 @@ function NewSession({ info }: { info?: Info }) {
                   : me?.account ? 'Only me' : 'Everyone'}</option>
                 <option value="workspace">Everyone</option>
                 {teamObj && !teamObj.personal && <option value="team">The team</option>}
-                {me?.account && <option value="private">Only me</option>}
+                {me?.account && !teamObj?.personal && <option value="private">Only me</option>}
               </select>
             </label>
           </div>
