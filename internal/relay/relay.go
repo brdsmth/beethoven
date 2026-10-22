@@ -11,8 +11,9 @@
 // quiet for a moment, so a review with ten line comments is one prompt.
 //
 // Agents setting each other off could go on forever, so it's bounded:
-//   - What a session posts carries a hidden marker and is recorded; when it
-//     comes back, the session that wrote it doesn't get it.
+//   - What a session posts is recorded; when it comes back, the session
+//     that wrote it doesn't get it. (It also carries a hidden marker, but
+//     anyone can type one: only the record counts.)
 //   - Each prompt counts the exchanges between agents that led to it (its
 //     hop). An agent's words reaching another agent are one more; past
 //     MaxHops they're noted on the timeline instead of run. People's words
@@ -51,19 +52,27 @@ type Config struct {
 	Tick    time.Duration // how often Run looks
 }
 
-var Defaults = Config{Quiet: 10 * time.Second, MaxWait: time.Minute, MaxHops: 4, PerHour: 12, Tick: 2 * time.Second}
+var Defaults = Config{Quiet: 10 * time.Second, MaxWait: time.Minute, MaxHops: session.MaxHops, PerHour: 12, Tick: 2 * time.Second}
 
-type Relay struct {
-	m    *session.Manager
-	db   *store.Store
-	log  *slog.Logger
-	cfg  Config
-	wake chan struct{}
-	now  func() time.Time
+// Automations says whether an automation fires on an event itself.
+type Automations interface {
+	Fires(ctx context.Context, automationID string, e event.Event) bool
 }
 
-func New(m *session.Manager, log *slog.Logger, cfg Config) *Relay {
-	return &Relay{m: m, db: m.Store(), log: log, cfg: cfg, wake: make(chan struct{}, 1), now: time.Now}
+type Relay struct {
+	m     *session.Manager
+	autos Automations
+	db    *store.Store
+	log   *slog.Logger
+	cfg   Config
+	wake  chan struct{}
+	now   func() time.Time
+}
+
+// New makes a relay; autos, if set, keeps it from telling an automation's
+// runs what the automation fires on itself.
+func New(m *session.Manager, autos Automations, log *slog.Logger, cfg Config) *Relay {
+	return &Relay{m: m, autos: autos, db: m.Store(), log: log, cfg: cfg, wake: make(chan struct{}, 1), now: time.Now}
 }
 
 // What happens to an event's kind.
@@ -93,18 +102,6 @@ func (r *Relay) action(e event.Event) int {
 	return ignore
 }
 
-// Origin is who among this server's sessions said something an event
-// carries: what the server recorded posting, else what the text's marker
-// claims.
-func Origin(ctx context.Context, db *store.Store, e event.Event) (event.Provenance, bool) {
-	if e.CommentURL != "" {
-		if o, err := db.OutboundByRef(ctx, e.CommentURL); err == nil {
-			return event.Provenance{SessionID: o.SessionID, Hop: o.Hop}, true
-		}
-	}
-	return event.Marked(e.Comment)
-}
-
 // Route puts e in the inbox of every session taking part in its thread and
 // returns how many sessions it's for.
 func (r *Relay) Route(ctx context.Context, e event.Event) (int, error) {
@@ -114,7 +111,9 @@ func (r *Relay) Route(ctx context.Context, e event.Event) (int, error) {
 	case ignore:
 		return 0, nil
 	}
-	_, ours := Origin(ctx, r.db, e)
+	// Only what the server recorded posting is its agents': a marker in a
+	// stranger's or another app's text doesn't get it past these checks.
+	_, ours := r.m.Origin(ctx, e, true)
 	if e.Bot && !ours && e.Kind != event.ChecksDone {
 		return 0, nil // other apps' comments: coverage reports, dependency bots; CI itself is heard
 	}
@@ -165,10 +164,14 @@ func (r *Relay) Route(ctx context.Context, e event.Event) (int, error) {
 
 // participants are the sessions in a thread. A pull request or branch with
 // no owner on record (opened before links, or recorded late) is owned by
-// the session that opened it, found the slower way and recorded.
+// the session that opened it, found the slower way and recorded, unless
+// its thread has ended: a merged or closed pull request stays ended.
 func (r *Relay) participants(ctx context.Context, e event.Event, subject string) ([]store.Link, error) {
 	links, err := r.db.ThreadLinks(ctx, subject)
 	if err != nil || slices.ContainsFunc(links, func(l store.Link) bool { return l.Role == store.LinkOwner }) {
+		return links, err
+	}
+	if ended, err := r.db.ThreadEnded(ctx, subject); err != nil || ended {
 		return links, err
 	}
 	owner := ""
@@ -185,7 +188,7 @@ func (r *Relay) participants(ctx context.Context, e event.Event, subject string)
 			}
 		}
 	case strings.HasPrefix(e.Subject, "pr:"):
-		if p, err := r.db.PullRequest(ctx, e.Repo, e.Number); err == nil {
+		if p, err := r.db.PullRequest(ctx, e.Repo, e.Number); err == nil && p.State == "open" {
 			owner = p.SessionID
 		}
 	}
@@ -202,19 +205,16 @@ func (r *Relay) participants(ctx context.Context, e event.Event, subject string)
 
 // automationHandles reports whether the session is an automation's run and
 // that automation fires on e itself: into the same session when it reuses
-// one, else into a fresh run, so the old run needn't hear about it too.
+// one, else into a fresh run, so the old run needn't hear about it too. It
+// asks the automation, so nothing is held back that it won't fire on: its
+// own run's words, too long a chain of agents, a repository it no longer
+// watches.
 func (r *Relay) automationHandles(ctx context.Context, sessionID string, e event.Event) bool {
+	if r.autos == nil {
+		return false
+	}
 	s, err := r.db.Session(ctx, sessionID)
-	if err != nil || s.AutomationID == "" {
-		return false
-	}
-	a, err := r.db.Automation(ctx, s.AutomationID)
-	if err != nil || !a.Enabled || a.TriggerEvent != e.Kind {
-		return false
-	}
-	t := event.Trigger{Event: a.TriggerEvent}
-	json.Unmarshal(a.TriggerConditions, &t.Conditions)
-	return t.Matches(e)
+	return err == nil && s.AutomationID != "" && r.autos.Fires(ctx, s.AutomationID, e)
 }
 
 // end notes on its sessions' timelines that a thread is over, and stops
@@ -307,10 +307,7 @@ func (r *Relay) deliver(ctx context.Context, sessionID string, inbox []store.Inb
 	if err != nil {
 		return err
 	}
-	latest := 0 // the hop of the session's latest prompt
-	if ps, err := r.db.Prompts(ctx, sessionID); err == nil && len(ps) > 0 {
-		latest = ps[len(ps)-1].Hop
-	}
+	prompts, _ := r.db.Prompts(ctx, sessionID)
 	var keep, drop []item
 	for _, x := range inbox {
 		it := item{InboxItem: x}
@@ -319,13 +316,18 @@ func (r *Relay) deliver(ctx context.Context, sessionID string, inbox []store.Inb
 			drop = append(drop, it)
 			continue
 		}
-		switch p, ok := Origin(ctx, r.db, it.e); {
+		switch p, ok := r.m.Origin(ctx, it.e, false); {
 		case ok && p.SessionID == sessionID:
 			it.reason = "its own words"
 		case ok:
 			it.hop, it.from = p.Hop+1, p.SessionID
 		case it.e.Kind == event.ChecksDone:
-			it.hop = latest + 1 // CI answering the session's own push: fixing it again is one more round
+			// CI answers the session's own push, so fixing it again is one more
+			// round after the prompt that made that push. That's taken to be the
+			// last one that had started when CI reported: a guess, as CI doesn't
+			// say which push it ran on, but one that a prompt queued meanwhile
+			// (a person's, which would start the count again) doesn't upset.
+			it.hop = ranBefore(prompts, x.ReceivedAt) + 1
 		}
 		if it.reason == "" && it.hop > r.cfg.MaxHops {
 			it.reason = fmt.Sprintf("agents went back and forth %d times; a person needs to step in", it.hop-1)
@@ -379,6 +381,17 @@ func (r *Relay) deliver(ctx context.Context, sessionID string, inbox []store.Inb
 		return errors.Join(err, r.db.SettleInbox(ctx, ids, "", "failed: "+err.Error()))
 	}
 	return r.db.SettleInbox(ctx, ids, p.ID, "delivered")
+}
+
+// ranBefore is the hop of the last prompt that had started by t; 0 if none.
+func ranBefore(prompts []store.Prompt, t time.Time) int {
+	hop := 0
+	for _, p := range prompts {
+		if p.StartedAt != nil && !p.StartedAt.After(t) {
+			hop = p.Hop
+		}
+	}
+	return hop
 }
 
 // prompt tells the agent what happened and what's expected of it.

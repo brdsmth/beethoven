@@ -196,7 +196,7 @@ func serve(args []string) error {
 		CacheDir:    filepath.Join(*dataDir, "cache", "capabilities"),
 	}, db, box, agent.Claude{}, gh, log)
 	auto := automation.New(m, log)
-	rel := relay.New(m, log, relay.Defaults)
+	rel := relay.New(m, auto, log, relay.Defaults)
 	sl := &slack.Client{DB: db}
 	if v := os.Getenv("BEETHOVEN_SLACK_APP"); v != "" {
 		if sl.EnvApp, err = slack.LoadApp(v); err != nil {

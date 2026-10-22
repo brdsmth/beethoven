@@ -346,8 +346,9 @@ func Mark(text, sessionID string, hop int) string {
 	return strings.TrimRight(text, "\n") + fmt.Sprintf("\n\n<!-- beethoven:session=%s hop=%d -->", sessionID, hop)
 }
 
-// Marked reads the marker in text, if any. Anyone can write one, so it's a
-// claim: trust what the server recorded posting first.
+// Marked reads the marker in text, if any. Anyone can write one, or copy
+// one when quoting an agent, so it proves nothing: it's only a hint that
+// the server recorded posting the text (session.Manager.Origin).
 func Marked(text string) (Provenance, bool) {
 	m := marker.FindStringSubmatch(text)
 	if m == nil {

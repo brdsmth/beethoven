@@ -417,10 +417,10 @@ func (m *Manager) PRStatus(ctx context.Context, sessionID, repo string) (*PRStat
 }
 
 // Comment posts on an issue or pull request in one of the session's
-// repositories, as the person the session works for. The comment carries a
-// hidden marker naming the session and is recorded, so when it comes back
-// it isn't sent to the session again, and counts as a hop for the agents it
-// reaches. The session follows the thread from then on: replies come back
+// repositories, as the person the session works for. The comment is
+// recorded, so when it comes back it isn't sent to the session again, and
+// counts as a hop for the agents it reaches; it carries a hidden marker
+// saying so is on its way (see Origin). The session follows the thread from then on: replies come back
 // to it.
 func (m *Manager) Comment(ctx context.Context, sessionID, repo string, number int, body string) (string, error) {
 	s, ref, err := m.threadIn(ctx, sessionID, repo, number)
@@ -445,6 +445,41 @@ func (m *Manager) Comment(ctx context.Context, sessionID, repo string, number in
 	}
 	m.link(ctx, s.ID, store.LinkFollower, "commented", event.ThreadOf(event.GitHub, ref, fmt.Sprintf("issue:%d", number)))
 	return url, nil
+}
+
+// MaxHops is how many exchanges between agents may lead to a prompt: an
+// agent's words setting another agent to work are one more each time.
+const MaxHops = 4
+
+// OriginWait is how long Origin waits for a comment carrying the marker to
+// be recorded: GitHub can tell us about a comment before the call posting
+// it has returned.
+var OriginWait = 1500 * time.Millisecond
+
+// Origin says which of this server's sessions posted the comment an event
+// carries, and at what hop, from what the server recorded posting. Only
+// the record counts: the marker in the text is a hint that a record is on
+// its way, which with wait set is worth waiting a moment for, but anyone
+// can type a marker, or copy one when quoting an agent.
+func (m *Manager) Origin(ctx context.Context, e event.Event, wait bool) (event.Provenance, bool) {
+	if e.CommentURL == "" {
+		return event.Provenance{}, false
+	}
+	_, hinted := event.Marked(e.Comment)
+	deadline := time.Now().Add(OriginWait)
+	for {
+		if o, err := m.db.OutboundByRef(ctx, e.CommentURL); err == nil {
+			return event.Provenance{SessionID: o.SessionID, Hop: o.Hop}, true
+		}
+		if !wait || !hinted || time.Now().After(deadline) {
+			return event.Provenance{}, false
+		}
+		select {
+		case <-ctx.Done():
+			return event.Provenance{}, false
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // Follow makes a session hear about what happens on an issue or pull request
