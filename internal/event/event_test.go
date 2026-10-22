@@ -62,3 +62,31 @@ func TestDescribeFencesText(t *testing.T) {
 		t.Errorf("describe = %s", d)
 	}
 }
+
+func TestThreadsAndMarkers(t *testing.T) {
+	if got := ThreadOf(GitHub, "Acme/App", "pr:42"); got != "github:acme/app:#42" {
+		t.Errorf("pull request thread %q", got)
+	}
+	if ThreadOf(GitHub, "acme/app", "issue:42") != ThreadOf(GitHub, "acme/app", "pr:42") {
+		t.Errorf("issues and pull requests share numbers, so their threads should match")
+	}
+	if got := ThreadOf(GitHub, "acme/app", "branch:feat/x"); got != "github:acme/app:branch:feat/x" {
+		t.Errorf("branch thread %q", got)
+	}
+	text := Mark("Looks good.\n", "abc123", 2)
+	p, ok := Marked(text)
+	if !ok || p.SessionID != "abc123" || p.Hop != 2 || Unmark(text) != "Looks good." {
+		t.Errorf("marked %q: %+v %v, unmarked %q", text, p, ok, Unmark(text))
+	}
+	if _, ok := Marked("no marker"); ok {
+		t.Error("found a marker in plain text")
+	}
+	if d := (Event{Kind: PRComment, Comment: text}).Describe(); strings.Contains(d, "beethoven:session") {
+		t.Errorf("the agent sees the marker:\n%s", d)
+	}
+	for association, want := range map[string]bool{"": true, "owner": true, "member": true, "collaborator": true, "contributor": false, "none": false} {
+		if (Event{Association: association}).Trusted() != want {
+			t.Errorf("%q trusted = %v", association, !want)
+		}
+	}
+}

@@ -14,11 +14,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/brdsmth/beethoven/internal/agent"
+	"github.com/brdsmth/beethoven/internal/event"
 	"github.com/brdsmth/beethoven/internal/sandbox"
 	"github.com/brdsmth/beethoven/internal/store"
 )
@@ -203,6 +206,7 @@ type Request struct {
 	Key           string // continuation key: reuse the session previously started with this key
 	DedupKey      string // a prompt with the same key is only queued once
 	AutomationID  string
+	Hop           int // agent-to-agent exchanges that led here; 0 for people
 }
 
 // Submit queues r.Prompt on the session named by r.Key, or on a new session.
@@ -211,7 +215,7 @@ func (m *Manager) Submit(ctx context.Context, r Request) (store.Session, store.P
 		return store.Session{}, store.Prompt{}, fmt.Errorf("%w: empty prompt", ErrInvalid)
 	}
 	in := PromptInput{Content: r.Prompt, Attachments: r.Attachments, Author: r.Author, AccountID: r.AccountID,
-		Source: r.Source, DedupKey: r.DedupKey, AutomationID: r.AutomationID}
+		Source: r.Source, DedupKey: r.DedupKey, AutomationID: r.AutomationID, Hop: r.Hop}
 	if r.Key != "" {
 		// A continued session keeps its own settings; carry the request's
 		// choices on the prompt instead.
@@ -329,6 +333,7 @@ type PromptInput struct {
 	Source       string
 	DedupKey     string
 	AutomationID string
+	Hop          int // agent-to-agent exchanges that led here; 0 for people
 }
 
 // Enqueue adds a prompt to an existing session's queue.
@@ -412,7 +417,11 @@ func (m *Manager) PRStatus(ctx context.Context, sessionID, repo string) (*PRStat
 }
 
 // Comment posts on an issue or pull request in one of the session's
-// repositories, as the person the session works for.
+// repositories, as the person the session works for. The comment carries a
+// hidden marker naming the session and is recorded, so when it comes back
+// it isn't sent to the session again, and counts as a hop for the agents it
+// reaches. The session follows the thread from then on: replies come back
+// to it.
 func (m *Manager) Comment(ctx context.Context, sessionID, repo string, number int, body string) (string, error) {
 	s, ref, err := m.threadIn(ctx, sessionID, repo, number)
 	if err != nil {
@@ -421,7 +430,75 @@ func (m *Manager) Comment(ctx context.Context, sessionID, repo string, number in
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("%w: the comment is empty", ErrInvalid)
 	}
-	return m.scm.Comment(forPerson(ctx, s), ref, number, body)
+	hop, promptID := 0, ""
+	if r, err := m.runner(ctx, sessionID); err == nil {
+		hop, promptID = r.currentHop(), r.currentPrompt()
+	}
+	url, err := m.scm.Comment(forPerson(ctx, s), ref, number, event.Mark(body, s.ID, hop))
+	if err != nil {
+		return url, err
+	}
+	if url != "" {
+		if err := m.db.AddOutbound(ctx, store.Outbound{Ref: url, SessionID: s.ID, PromptID: promptID, Hop: hop}); err != nil {
+			m.log.Error("record comment", "session", s.ID, "err", err)
+		}
+	}
+	m.link(ctx, s.ID, store.LinkFollower, "commented", event.ThreadOf(event.GitHub, ref, fmt.Sprintf("issue:%d", number)))
+	return url, nil
+}
+
+// Follow makes a session hear about what happens on an issue or pull request
+// in one of its repositories.
+func (m *Manager) Follow(ctx context.Context, sessionID, repo string, number int) (string, error) {
+	_, ref, err := m.threadIn(ctx, sessionID, repo, number)
+	if err != nil {
+		return "", err
+	}
+	subject := event.ThreadOf(event.GitHub, ref, fmt.Sprintf("issue:%d", number))
+	return subject, m.db.AddLink(ctx, store.Link{Subject: subject, SessionID: sessionID, Role: store.LinkFollower, Reason: "asked"})
+}
+
+// Unfollow stops a session hearing about an issue or pull request.
+func (m *Manager) Unfollow(ctx context.Context, sessionID, repo string, number int) error {
+	_, ref, err := m.threadIn(ctx, sessionID, repo, number)
+	if err != nil {
+		return err
+	}
+	return m.db.RemoveLink(ctx, event.ThreadOf(event.GitHub, ref, fmt.Sprintf("issue:%d", number)), sessionID)
+}
+
+// Note puts something on a session's timeline without running its agent:
+// what happened on a thread it follows, and why it wasn't handed over.
+func (m *Manager) Note(ctx context.Context, sessionID string, data map[string]string) {
+	if r, err := m.runner(ctx, sessionID); err == nil {
+		r.emit(r.currentPrompt(), EvThread, data)
+	}
+}
+
+// link makes a session take part in a thread; failing only costs the
+// session hearing about it, so it's logged.
+func (m *Manager) link(ctx context.Context, sessionID, role, reason, subject string) {
+	if err := m.db.AddLink(context.WithoutCancel(ctx), store.Link{Subject: subject, SessionID: sessionID, Role: role, Reason: reason}); err != nil {
+		m.log.Error("link session", "session", sessionID, "subject", subject, "err", err)
+	}
+}
+
+// Link makes a session take part in a thread, as a follower: for sources
+// that start sessions about one, like automations fired by an event.
+func (m *Manager) Link(ctx context.Context, sessionID, reason, subject string) {
+	m.link(ctx, sessionID, store.LinkFollower, reason, subject)
+}
+
+var pullNumber = regexp.MustCompile(`/pull/(\d+)`)
+
+// prNumber reads a pull request's number from its URL; 0 if it has none.
+func prNumber(url string) int {
+	m := pullNumber.FindStringSubmatch(url)
+	if m == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
 }
 
 // AddLabels labels an issue or pull request in one of the session's

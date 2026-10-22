@@ -33,14 +33,18 @@ func TestNormalize(t *testing.T) {
 			}},
 		{"pull_request", `{"action": "closed", "pull_request": {"number": 3, "merged": true}, ` + repo + `}`,
 			func(e *event.Event) bool { return e.Kind == event.PRMerged }},
-		{"issue_comment", `{"action": "created", "issue": {"number": 3, "pull_request": {}}, "comment": {"body": "@agent fix it"}, ` + repo + `}`,
+		{"issue_comment", `{"action": "created", "issue": {"number": 3, "pull_request": {}}, "comment": {"body": "@agent fix it",
+			"author_association": "COLLABORATOR"}, ` + repo + `}`,
 			func(e *event.Event) bool {
-				return e.Kind == event.PRComment && e.Comment == "@agent fix it" && e.Subject == "pr:3"
+				return e.Kind == event.PRComment && e.Comment == "@agent fix it" && e.Subject == "pr:3" && e.Association == "collaborator" && e.Trusted()
 			}},
 		{"issue_comment", `{"action": "created", "issue": {"number": 9}, "comment": {"body": "hi"}, ` + repo + `}`,
 			func(e *event.Event) bool { return e.Kind == event.IssueComment && e.Subject == "issue:9" }},
-		{"pull_request_review", `{"action": "submitted", "review": {"state": "CHANGES_REQUESTED", "body": "no"}, "pull_request": {"number": 3}, ` + repo + `}`,
-			func(e *event.Event) bool { return e.Kind == event.PRReview && e.State == "changes_requested" }},
+		{"pull_request_review", `{"action": "submitted", "review": {"state": "CHANGES_REQUESTED", "body": "no", "author_association": "NONE"},
+			"pull_request": {"number": 3}, ` + repo + `}`,
+			func(e *event.Event) bool {
+				return e.Kind == event.PRReview && e.State == "changes_requested" && !e.Trusted()
+			}},
 		{"workflow_run", `{"action": "completed", "workflow_run": {"name": "CI", "head_branch": "main", "head_sha": "abc", "conclusion": "failure"}, ` + repo + `}`,
 			func(e *event.Event) bool {
 				return e.Kind == event.ChecksDone && e.CheckName == "CI" && e.Conclusion == "failure"

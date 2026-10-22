@@ -342,6 +342,7 @@ type Prompt struct {
 	Usage        Usage      `json:"usage"`
 	Turns        int        `json:"turns,omitempty"`       // the agent's turns, as it reported them
 	AgentModel   string     `json:"agent_model,omitempty"` // the model that did most of the work
+	Hop          int        `json:"hop,omitempty"`         // agent-to-agent exchanges that led to it; 0 for people
 	CreatedAt    time.Time  `json:"created_at"`
 	StartedAt    *time.Time `json:"started_at,omitempty"`
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
@@ -364,7 +365,7 @@ func (u *Usage) Add(v Usage) {
 
 const promptCols = `id, session_id, content, model, effort, author_name, author_email, account_id, source,
 	COALESCE(automation_id,''), COALESCE(dedup_key,''), status, error, result, cost_usd, input_tokens, output_tokens,
-	cache_read_tokens, cache_write_tokens, turns, agent_model, created_at, started_at, finished_at`
+	cache_read_tokens, cache_write_tokens, turns, agent_model, hop, created_at, started_at, finished_at`
 
 func scanPrompt(row scanner) (Prompt, error) {
 	var p Prompt
@@ -372,7 +373,7 @@ func scanPrompt(row scanner) (Prompt, error) {
 	var started, finished sql.NullInt64
 	err := row.Scan(&p.ID, &p.SessionID, &p.Content, &p.Model, &p.Effort, &p.Author.Name, &p.Author.Email, &p.AccountID, &p.Source,
 		&p.AutomationID, &p.DedupKey, &p.Status, &p.Error, &p.Result, &p.CostUSD, &p.Usage.Input, &p.Usage.Output,
-		&p.Usage.CacheRead, &p.Usage.CacheWrite, &p.Turns, &p.AgentModel, &created, &started, &finished)
+		&p.Usage.CacheRead, &p.Usage.CacheWrite, &p.Turns, &p.AgentModel, &p.Hop, &created, &started, &finished)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, ErrNotFound
 	}
@@ -391,10 +392,10 @@ func (s *Store) CreatePrompt(ctx context.Context, p *Prompt) (created bool, err 
 	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx, `INSERT INTO prompts (id, session_id, content, model, effort, author_name,
-		author_email, account_id, source, automation_id, dedup_key, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+		author_email, account_id, source, automation_id, dedup_key, status, hop, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(dedup_key) DO NOTHING`,
 		p.ID, p.SessionID, p.Content, p.Model, p.Effort, p.Author.Name, p.Author.Email, p.AccountID, p.Source,
-		null(p.AutomationID), null(p.DedupKey), p.Status, ms(p.CreatedAt))
+		null(p.AutomationID), null(p.DedupKey), p.Status, p.Hop, ms(p.CreatedAt))
 	if err != nil {
 		return false, err
 	}

@@ -22,6 +22,9 @@ const (
 	EvCapabilities = "capabilities"
 	// A capability added during the session: {id, name, by, kept, where, env}.
 	EvCapability = "capability"
+	// Something happened on a thread the session follows that it wasn't
+	// handed as a prompt: {subject, kind, actor, url, note}.
+	EvThread = "thread"
 )
 
 // AllSessions is the hub key whose subscribers see every session's
