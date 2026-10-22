@@ -126,8 +126,6 @@ func (t *Team) Validate() error {
 		return fmt.Errorf("%w: a team's short name uses lowercase letters, digits and dashes", ErrInvalid)
 	case IsPersonalTeam(t.ID) && t.Slug != t.ID:
 		return fmt.Errorf("%w: a personal team keeps its short name", ErrInvalid)
-	case !IsPersonalTeam(t.ID) && strings.HasPrefix(t.Slug, personalPrefix):
-		return fmt.Errorf("%w: short names starting with %q are for personal teams", ErrInvalid, personalPrefix)
 	case IsPersonalTeam(t.ID) && t.JoinPolicy != JoinInvite:
 		return fmt.Errorf("%w: nobody else can join a personal team", ErrInvalid)
 	case t.Color != "" && !colorPattern.MatchString(t.Color):
@@ -168,6 +166,9 @@ func (s *Store) CreateTeam(ctx context.Context, t *Team, leadID string) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := reservedSlug(t.Slug); err != nil {
+		return err
+	}
 	t.ID, t.CreatedAt, t.UpdatedAt = NewID(), time.Now(), time.Now()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO teams (id, slug, name, description, color, join_policy,
 		default_visibility, default_environment_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
@@ -188,8 +189,16 @@ func (s *Store) CreateTeam(ctx context.Context, t *Team, leadID string) error {
 	return tx.Commit()
 }
 
-// createPersonalTeam gives an account its personal team, within tx, and
-// makes it where the account's work goes.
+// reservedSlug refuses a short name kept for personal teams.
+func reservedSlug(slug string) error {
+	if strings.HasPrefix(slug, personalPrefix) {
+		return fmt.Errorf("%w: short names starting with %q are for personal teams", ErrInvalid, personalPrefix)
+	}
+	return nil
+}
+
+// createPersonalTeam gives an account its personal team, within tx. With
+// no default team chosen, it is where the account's work goes.
 func createPersonalTeam(ctx context.Context, tx *sql.Tx, accountID string, at time.Time) error {
 	id := PersonalTeamID(accountID)
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO teams (id, slug, name, description, join_policy,
@@ -197,11 +206,8 @@ func createPersonalTeam(ctx context.Context, tx *sql.Tx, accountID string, at ti
 		id, id, ms(at), ms(at)); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO team_members (team_id, account_id, role, created_at)
-		VALUES (?,?,'lead',?)`, id, accountID, ms(at)); err != nil {
-		return err
-	}
-	_, err := tx.ExecContext(ctx, `UPDATE accounts SET default_team_id=? WHERE id=? AND default_team_id=''`, id, accountID)
+	_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO team_members (team_id, account_id, role, created_at)
+		VALUES (?,?,'lead',?)`, id, accountID, ms(at))
 	return err
 }
 
@@ -209,6 +215,15 @@ func createPersonalTeam(ctx context.Context, tx *sql.Tx, accountID string, at ti
 func (s *Store) SaveTeam(ctx context.Context, t *Team) error {
 	if err := t.Validate(); err != nil {
 		return err
+	}
+	// A team that had a reserved short name before they were reserved keeps
+	// it, but none can take one.
+	var was string
+	if err := s.r.QueryRowContext(ctx, `SELECT slug FROM teams WHERE id=?`, t.ID).Scan(&was); err == nil && was != t.Slug &&
+		!IsPersonalTeam(t.ID) {
+		if err := reservedSlug(t.Slug); err != nil {
+			return err
+		}
 	}
 	t.UpdatedAt = time.Now()
 	_, err := s.w.ExecContext(ctx, `UPDATE teams SET slug=?, name=?, description=?, color=?, join_policy=?,
@@ -346,7 +361,8 @@ func (s *Store) Memberships(ctx context.Context, accountID string) (map[string]s
 }
 
 // DefaultTeam is where a person's work goes when nothing else says: the
-// team they chose, if they're still in it, else their personal team.
+// team they chose (or were invited to), if they're still in it, else their
+// personal team.
 func (s *Store) DefaultTeam(ctx context.Context, accountID string) (string, error) {
 	var id string
 	err := s.r.QueryRowContext(ctx, `SELECT COALESCE((SELECT a.default_team_id FROM accounts a JOIN team_members m
@@ -356,7 +372,8 @@ func (s *Store) DefaultTeam(ctx context.Context, accountID string) (string, erro
 	return id, err
 }
 
-// SetDefaultTeam sets where a person's work goes when nothing else says.
+// SetDefaultTeam sets where a person's work goes when nothing else says;
+// "" leaves it to the team an invitation brings, else their personal team.
 func (s *Store) SetDefaultTeam(ctx context.Context, accountID, teamID string) error {
 	_, err := s.w.ExecContext(ctx, `UPDATE accounts SET default_team_id=? WHERE id=?`, teamID, accountID)
 	return err
@@ -376,16 +393,17 @@ type Viewer struct {
 
 // readable selects the sessions the viewer may read.
 func (v Viewer) readable() (string, []any) {
-	args := []any{v.Server, v.AccountID, v.AccountID, v.AccountID, v.Admin}
+	args := []any{v.Server, v.AccountID, v.AccountID, v.Admin}
 	for _, t := range v.Teams {
 		args = append(args, t)
 	}
-	args = append(args, v.Owner)
-	return `(? OR (? != '' AND (account_id = ? OR id IN (SELECT session_id FROM session_shares WHERE account_id = ?)))
+	args = append(args, v.Owner, v.AccountID, v.AccountID)
+	return `(? OR (? != '' AND id IN (SELECT session_id FROM session_shares WHERE account_id = ?))
 		OR visibility NOT IN ('team', 'private')
 		OR (visibility = 'team' AND ((? AND substr(owner_team_id, 1, 9) != '` + personalPrefix + `')
 			OR owner_team_id IN (` + placeholders(len(v.Teams)) + `)))
-		OR (visibility = 'private' AND ? AND substr(owner_team_id, 1, 9) != '` + personalPrefix + `'))`, args
+		OR (visibility = 'private' AND ((? AND substr(owner_team_id, 1, 9) != '` + personalPrefix + `')
+			OR (? != '' AND account_id = ?))))`, args
 }
 
 // ShareSession sets the people a session is shared with, and returns them.
@@ -460,9 +478,20 @@ func (s *Store) Audit(ctx context.Context, e AuditEvent, detail any) error {
 	return err
 }
 
-// AuditEvents lists events newest first, optionally for one team, before
-// an id (for paging).
-func (s *Store) AuditEvents(ctx context.Context, teamID string, before int64, limit int) ([]AuditEvent, error) {
+// AuditFilter picks audit events: optionally one team's, before an id
+// (for paging). Personal teams' events are left out, but for the one
+// Personal names (the viewer's own) or with AllPersonal (the server).
+type AuditFilter struct {
+	TeamID      string
+	Before      int64
+	Limit       int
+	Personal    string
+	AllPersonal bool
+}
+
+// AuditEvents lists events newest first.
+func (s *Store) AuditEvents(ctx context.Context, f AuditFilter) ([]AuditEvent, error) {
+	teamID, before, limit := f.TeamID, f.Before, f.Limit
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
@@ -470,6 +499,10 @@ func (s *Store) AuditEvents(ctx context.Context, teamID string, before int64, li
 	if teamID != "" {
 		q += ` AND team_id=?`
 		args = append(args, teamID)
+	}
+	if !f.AllPersonal {
+		q += ` AND (substr(team_id, 1, 9) != '` + personalPrefix + `' OR team_id=?)`
+		args = append(args, f.Personal)
 	}
 	if before > 0 {
 		q += ` AND id < ?`
