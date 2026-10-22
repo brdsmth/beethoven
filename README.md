@@ -146,10 +146,16 @@ team's first project becomes its default. Owners and admins manage people, teams
 unmake owners, and the last one can't leave. Admins create **teams**: a team has leads and members,
 and owns its sessions, projects, automations, secrets and Slack channels. Leads manage the team's
 people, secrets, channels and settings; members use and manage its projects and automations; anyone
-may join a team that's open to all. A session belongs to a team, or to the workspace (no team), and
-is seen by **everyone**, its **team** (a team's default) or **only** whoever started it; its owner or
-the team's lead can change that. Only a team's members prompt its sessions, whoever can see them.
-Work without a team belongs to the workspace and behaves as before teams. Teams are archived, never
+may join a team that's open to all. Work is private until it's shared: everyone also has a
+**personal team** that only they see (admins and owners included), which nobody can join. New
+sessions, projects and automations go to the person's default team: the team their invitation added
+them to, else their personal team (they can pick another under their profile). A session belongs to a
+team, or to the workspace (no team, only when asked for), and is seen by **everyone**, its **team** (a
+team's default) or **only** whoever started it (a person's workspace session, unless they say
+otherwise); its owner or the team's lead can change that, and can share it with named people, who may
+read it but not prompt it. Workspace owners see private sessions and admins team ones, except in
+personal teams. Only a team's members prompt its sessions, whoever can see them. Projects and
+automations without a team, made before personal teams or asked for, are everyone's. Teams are archived, never
 deleted: an archived team takes no new work. Changes to who may do what (people, teams, memberships,
 secrets, channels, session visibility) go to an audit log that admins, and a team's leads for their
 team, can read. The sidebar's switcher shows one team's sessions, the workspace's, or all you can
@@ -191,7 +197,7 @@ scripts at all.
 **Projects.** A named, reusable workspace (an *environment* in the API): an ordered list of up to ten
 repositories (the first is the primary, each with its own base branch), setup and start scripts, its
 own secrets, and overrides of the global settings (model, effort, instructions, sandbox image, CPUs,
-memory). A project belongs to a team or the workspace; only a team's members see and use its
+memory). A project belongs to a team (by default its maker's default team) or the workspace; only a team's members see and use its
 projects, and a team's project starts only that team's sessions. A session started from a project
 copies its repositories and checks each out at `/workspace/<name>`; editing the project later doesn't
 move existing sessions, but its scripts, secrets and settings are read live. A session can also
@@ -425,7 +431,7 @@ HTML and SVG included, downloads, so a file can't run script as the person viewi
 
 | | |
 |---|---|
-| `GET/POST /api/sessions` | list (`?team=` ids or `workspace`, `?mine=1`, `?q=` title, `?archived=1` or `all`); create `{prompt, environment_id \| repos, model, effort, title, team_id, visibility}` |
+| `GET/POST /api/sessions` | list (`?team=` ids or `workspace`, `?mine=1`, `?q=` title, `?archived=1` or `all`); create `{prompt, environment_id \| repos, model, effort, title, team_id, visibility}`; `team_id` defaults to the project's team, else the person's default team; `"workspace"` asks for none |
 | `GET /api/sessions/{id}` | session, prompts and pull requests |
 | `POST /api/sessions/{id}/prompts` | queue `{content, model}` |
 | | to attach files to either, send a multipart form: the JSON in a `request` field, each file in a `file` field |
@@ -456,6 +462,7 @@ HTML and SVG included, downloads, so a file can't run script as the person viewi
 | `PUT /api/me` · `GET/POST /api/tokens` · `DELETE /api/tokens/{id}` | `{name, default_team_id}`; personal API tokens |
 | `PUT /api/me/onboarding` | getting started: `{tour_seen, started, done}` |
 | `PUT /api/sessions/{id}/visibility` | `{visibility: workspace \| team \| private}` |
+| `PUT /api/sessions/{id}/shares` | `{account_ids}`: the people it's shared with, who may read it |
 | `PUT /api/slack/channels/{team}/{channel}/team` | `{owner_team_id}`: the team a channel belongs to |
 | `GET /api/audit?team=&before=` | changes to who may do what |
 | `GET /api/projects/options` | where a new project's repository can go, and the stacks |
