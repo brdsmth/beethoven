@@ -19,6 +19,7 @@ import (
 	"github.com/brdsmth/beethoven/internal/automation"
 	"github.com/brdsmth/beethoven/internal/fake"
 	"github.com/brdsmth/beethoven/internal/github"
+	"github.com/brdsmth/beethoven/internal/relay"
 	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/store"
 )
@@ -171,7 +172,8 @@ func TestGitHubEvents(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	gh := github.New("test-token")
 	gh.RepoWebhookSecret = "s3cret"
-	srv := httptest.NewServer((&api.Server{M: env.M, Auto: automation.New(env.M, log), GitHub: gh, Token: "api-token", Log: log}).Handler())
+	srv := httptest.NewServer((&api.Server{M: env.M, Auto: automation.New(env.M, log), Relay: relay.New(env.M, log, relay.Defaults),
+		GitHub: gh, Token: "api-token", Log: log}).Handler())
 	defer srv.Close()
 
 	code, out := do(t, "POST", srv.URL+"/api/automations", `{"name":"fix","prompt":"Fix it.","repos":[{"repo":"acme/app"}],"enabled":true,
@@ -194,8 +196,34 @@ func TestGitHubEvents(t *testing.T) {
 	}
 	code, out = do(t, "POST", srv.URL+"/webhooks/github", body, "X-GitHub-Event", "issues", "X-GitHub-Delivery", "d1",
 		"X-Hub-Signature-256", sign("s3cret"))
-	if ids, _ := out["sessions"].([]any); code != http.StatusAccepted || len(ids) != 1 {
+	ids, _ := out["sessions"].([]any)
+	if code != http.StatusAccepted || len(ids) != 1 {
 		t.Fatalf("delivery: %d %v", code, out)
+	}
+	// The run follows the issue it was started for: a comment there is
+	// passed on to it.
+	run := ids[0].(string)
+	labeled := body
+	body = `{"action":"created","issue":{"number":7,"title":"Crash"},"comment":{"body":"It also crashes on save.",
+		"html_url":"https://github.com/acme/app/issues/7#issuecomment-1","author_association":"MEMBER"},
+		"repository":{"full_name":"acme/app"},"sender":{"login":"bob","type":"User"}}`
+	if code, out := do(t, "POST", srv.URL+"/webhooks/github", body, "X-GitHub-Event", "issue_comment", "X-GitHub-Delivery", "d2",
+		"X-Hub-Signature-256", sign("s3cret")); code != http.StatusAccepted || out["relayed"] != 1.0 {
+		t.Errorf("comment delivery: %d %v", code, out)
+	}
+	body = labeled
+	auth := []string{"Authorization", "Bearer api-token"}
+	code, out = do(t, "GET", srv.URL+"/api/sessions/"+run+"/threads", "", auth...)
+	threads, _ := out["threads"].([]any)
+	inbox, _ := out["inbox"].([]any)
+	if code != 200 || len(threads) != 1 || len(inbox) != 1 {
+		t.Fatalf("threads: %d %v", code, out)
+	}
+	if code, _ := do(t, "PUT", srv.URL+"/api/sessions/"+run+"/threads", `{"subject":"github:acme/app:#7","muted":true}`, auth...); code != http.StatusNoContent {
+		t.Errorf("mute: %d", code)
+	}
+	if code, _ := do(t, "DELETE", srv.URL+"/api/sessions/"+run+"/threads?subject=github:acme/app:%237", "", auth...); code != http.StatusNoContent {
+		t.Errorf("leave: %d", code)
 	}
 	if code, out := do(t, "POST", srv.URL+"/webhooks/github", `{"zen":"hi"}`, "X-GitHub-Event", "ping",
 		"X-Hub-Signature-256", func() string { b := body; body = `{"zen":"hi"}`; s := sign("s3cret"); body = b; return s }()); code != 200 || out["ignored"] != true {
