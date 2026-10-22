@@ -24,6 +24,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/brdsmth/beethoven/internal/event"
+	"github.com/brdsmth/beethoven/internal/relay"
 	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/store"
 )
@@ -192,9 +193,24 @@ func (s *Service) request(ctx context.Context, a store.Automation, source, promp
 // sources, events don't wait for an automation's previous run: each is
 // about its own issue or pull request, and with Reuse, events about the
 // same one queue on its session.
+//
+// What this server's own agents post can fire automations too, so one
+// agent's review sets another to work, within the same bounds as the relay:
+// an automation never fires on its own runs' words, and a chain of agents
+// stops after relay.Defaults.MaxHops.
 func (s *Service) Dispatch(ctx context.Context, e event.Event) ([]store.Prompt, error) {
-	if e.Bot && e.Comment != "" {
-		return nil, nil // bots' comments and reviews, ours included, would set off loops
+	origin, ours := relay.Origin(ctx, s.db, e)
+	if e.Bot && e.Comment != "" && !ours {
+		return nil, nil // other apps' comments and reviews would set off loops
+	}
+	hop := 0
+	var from store.Session
+	if ours {
+		hop = origin.Hop + 1
+		if hop > relay.Defaults.MaxHops {
+			return nil, nil
+		}
+		from, _ = s.db.Session(ctx, origin.SessionID)
 	}
 	cands, err := s.db.TriggeredAutomations(ctx, e.Kind)
 	if err != nil {
@@ -203,10 +219,10 @@ func (s *Service) Dispatch(ctx context.Context, e event.Event) ([]store.Prompt, 
 	var started []store.Prompt
 	var errs []error
 	for _, a := range cands {
-		if !Trigger(a).Matches(e) || !s.watches(ctx, a, e.Repo) {
+		if !Trigger(a).Matches(e) || !s.watches(ctx, a, e.Repo) || ours && from.AutomationID == a.ID {
 			continue
 		}
-		_, p, err := s.fireEvent(ctx, a, e)
+		_, p, err := s.fireEvent(ctx, a, e, hop)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("automation %s: %w", a.ID, err))
 			continue
@@ -237,7 +253,7 @@ func (s *Service) watches(ctx context.Context, a store.Automation, repo string) 
 	return slices.ContainsFunc(repos, func(r store.RepoRef) bool { return strings.EqualFold(r.Repo, repo) })
 }
 
-func (s *Service) fireEvent(ctx context.Context, a store.Automation, e event.Event) (store.Session, store.Prompt, error) {
+func (s *Service) fireEvent(ctx context.Context, a store.Automation, e event.Event, hop int) (store.Session, store.Prompt, error) {
 	dedupKey := "automation:" + a.ID + ":" + e.Host + ":" + e.Occurrence
 	if p, err := s.db.PromptByDedupKey(ctx, dedupKey); err == nil {
 		sess, err := s.db.Session(ctx, p.SessionID)
@@ -266,8 +282,14 @@ func (s *Service) fireEvent(ctx context.Context, a store.Automation, e event.Eve
 	if a.Reuse {
 		req.Key = "automation:" + a.ID + ":" + e.Host + ":" + e.Repo + ":" + e.Subject
 	}
-	req.DedupKey = dedupKey
-	return s.m.Submit(ctx, req)
+	req.DedupKey, req.Hop = dedupKey, hop
+	sess, p, err := s.m.Submit(ctx, req)
+	if err == nil && e.Number > 0 {
+		// The run takes part in the thread it was started for: what's said
+		// there afterwards comes back to it.
+		s.m.Link(ctx, sess.ID, "triggered", e.Thread())
+	}
+	return sess, p, err
 }
 
 // mayRun checks the person an automation runs as may still run it: their

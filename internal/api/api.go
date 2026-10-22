@@ -21,6 +21,7 @@ import (
 	"github.com/brdsmth/beethoven/internal/event"
 	"github.com/brdsmth/beethoven/internal/github"
 	"github.com/brdsmth/beethoven/internal/insights"
+	"github.com/brdsmth/beethoven/internal/relay"
 	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/slack"
 	"github.com/brdsmth/beethoven/internal/store"
@@ -30,6 +31,7 @@ import (
 type Server struct {
 	M        *session.Manager
 	Auto     *automation.Service
+	Relay    *relay.Relay // optional: brings what happens on sessions' threads back to them
 	GitHub   *github.Client
 	Slack    *slack.Client // optional, with SlackBot
 	SlackBot *slack.Bot
@@ -91,6 +93,9 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/sessions/{id}/artifacts/{aid}", s.artifact)
 	api("POST /api/sessions/{id}/capabilities", s.addCapability)
 	api("GET /api/sessions/{id}/events", s.sessionEvents)
+	api("GET /api/sessions/{id}/threads", s.threads)
+	api("PUT /api/sessions/{id}/threads", s.muteThread)
+	api("DELETE /api/sessions/{id}/threads", s.leaveThread)
 	api("GET /api/events", s.allEvents)
 	api("GET /api/capabilities", s.listCapabilities)
 
@@ -894,6 +899,12 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusOK, map[string]any{"ignored": true})
 		return
 	}
+	routed := 0
+	if s.Relay != nil {
+		if routed, err = s.Relay.Route(r.Context(), *e); err != nil {
+			s.Log.Warn("github event: not passed on to every session in its thread", "kind", e.Kind, "repo", e.Repo, "err", err)
+		}
+	}
 	started, err := s.Auto.Dispatch(r.Context(), *e)
 	if err != nil {
 		s.Log.Warn("github event: some automations didn't run", "kind", e.Kind, "repo", e.Repo, "err", err)
@@ -902,7 +913,57 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 	for _, p := range started {
 		ids = append(ids, p.SessionID)
 	}
-	reply(w, http.StatusAccepted, map[string]any{"event": e.Kind, "sessions": ids})
+	reply(w, http.StatusAccepted, map[string]any{"event": e.Kind, "sessions": ids, "relayed": routed})
+}
+
+// threads lists the threads elsewhere a session takes part in, and what
+// lately came from them.
+func (s *Server) threads(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.session(w, r, nil, ""); !ok {
+		return
+	}
+	links, err := s.M.Store().SessionLinks(r.Context(), r.PathValue("id"))
+	if err != nil {
+		replyErr(w, err)
+		return
+	}
+	inbox, err := s.M.Store().SessionInbox(r.Context(), r.PathValue("id"), 50)
+	if err != nil {
+		replyErr(w, err)
+		return
+	}
+	reply(w, http.StatusOK, map[string]any{"threads": orEmpty(links), "inbox": orEmpty(inbox)})
+}
+
+// muteThread stops or resumes what happens on a thread coming to a session.
+func (s *Server) muteThread(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Subject string `json:"subject"`
+		Muted   bool   `json:"muted"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if _, ok := s.session(w, r, access.ManageSession, "change what this session follows"); !ok {
+		return
+	}
+	if err := s.M.Store().MuteLink(r.Context(), in.Subject, r.PathValue("id"), in.Muted); err != nil {
+		replyErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// leaveThread takes a session out of the ?subject thread.
+func (s *Server) leaveThread(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.session(w, r, access.ManageSession, "change what this session follows"); !ok {
+		return
+	}
+	if err := s.M.Store().RemoveLink(r.Context(), r.URL.Query().Get("subject"), r.PathValue("id")); err != nil {
+		replyErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // eventKinds lists the events automations can trigger on.

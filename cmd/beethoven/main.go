@@ -26,6 +26,7 @@ import (
 	"github.com/brdsmth/beethoven/internal/api"
 	"github.com/brdsmth/beethoven/internal/automation"
 	"github.com/brdsmth/beethoven/internal/github"
+	"github.com/brdsmth/beethoven/internal/relay"
 	"github.com/brdsmth/beethoven/internal/sandbox"
 	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/slack"
@@ -195,6 +196,7 @@ func serve(args []string) error {
 		CacheDir:    filepath.Join(*dataDir, "cache", "capabilities"),
 	}, db, box, agent.Claude{}, gh, log)
 	auto := automation.New(m, log)
+	rel := relay.New(m, log, relay.Defaults)
 	sl := &slack.Client{DB: db}
 	if v := os.Getenv("BEETHOVEN_SLACK_APP"); v != "" {
 		if sl.EnvApp, err = slack.LoadApp(v); err != nil {
@@ -216,6 +218,7 @@ func serve(args []string) error {
 		return err
 	}
 	go auto.Run(ctx)
+	go rel.Run(ctx)
 	go gh.TrackPullRequests(ctx, 10*time.Minute, log)
 
 	if model := os.Getenv("BEETHOVEN_MODEL"); model != "" {
@@ -237,7 +240,7 @@ func serve(args []string) error {
 		log.Warn("this server has no account yet: the first person to open " + where + " creates the one that owns it")
 	}
 	srv := &http.Server{Addr: *addr, Handler: (&api.Server{
-		M: m, Auto: auto, GitHub: gh, Slack: sl, SlackBot: bot, SignIn: signIn, Token: os.Getenv("BEETHOVEN_TOKEN"),
+		M: m, Auto: auto, Relay: rel, GitHub: gh, Slack: sl, SlackBot: bot, SignIn: signIn, Token: os.Getenv("BEETHOVEN_TOKEN"),
 		Hosts: hosts, UI: web.FS(), Log: log, Version: version,
 	}).Handler(), ReadHeaderTimeout: 10 * time.Second}
 
