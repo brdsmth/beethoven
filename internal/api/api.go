@@ -86,6 +86,7 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/sessions/{id}/archive", s.archive)
 	api("POST /api/sessions/{id}/pr", s.openPR)
 	api("PUT /api/sessions/{id}/visibility", s.setVisibility)
+	api("PUT /api/sessions/{id}/shares", s.shareSession)
 	api("GET /api/sessions/{id}/attachments/{aid}", s.attachment)
 	api("GET /api/sessions/{id}/artifacts", s.artifacts)
 	api("GET /api/sessions/{id}/artifacts/{aid}", s.artifact)
@@ -284,8 +285,16 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request, may func(access
 	return sess, true
 }
 
+// workspaceTeam, as a team id in a request, asks for work that belongs to
+// no team: the workspace's, which everyone may use.
+const workspaceTeam = "workspace"
+
 // target checks the viewer may start work owned by teamID in environmentID
-// (either may be empty), and returns the team the work will belong to.
+// (either may be empty), and returns the team the work will belong to:
+// teamID, else the project's team, else the person's default team (their
+// personal one unless they chose another), so nothing is shared unless
+// they say. Work for the workspace, no team, takes asking for it
+// (workspaceTeam), or the server acting for nobody in particular.
 func (s *Server) target(w http.ResponseWriter, r *http.Request, teamID, environmentID string) (string, bool) {
 	who := actor(r)
 	if environmentID != "" {
@@ -294,9 +303,21 @@ func (s *Server) target(w http.ResponseWriter, r *http.Request, teamID, environm
 			fail(w, http.StatusBadRequest, "no such project")
 			return "", false
 		}
+		if teamID == workspaceTeam && e.TeamID != "" {
+			fail(w, http.StatusBadRequest, e.Name+" belongs to a team: its work can't belong to the workspace")
+			return "", false
+		}
 		teamID = firstOf(teamID, e.TeamID)
 	}
-	if teamID == "" {
+	if teamID == "" && who.IsPerson() {
+		id, err := s.M.Store().DefaultTeam(r.Context(), who.AccountID)
+		if err != nil {
+			replyErr(w, err)
+			return "", false
+		}
+		teamID = id
+	}
+	if teamID == "" || teamID == workspaceTeam {
 		return "", true
 	}
 	t, err := s.M.Store().Team(r.Context(), teamID)
@@ -312,6 +333,16 @@ func (s *Server) target(w http.ResponseWriter, r *http.Request, teamID, environm
 		return "", false
 	}
 	return teamID, true
+}
+
+// visibilityFor is who sees a new session of team: as asked, else the
+// team's default; a person's session that belongs to no team is theirs
+// alone until they share it.
+func visibilityFor(r *http.Request, team, asked string) string {
+	if asked == "" && team == "" && accountOf(r) != "" {
+		return store.VisibilityPrivate
+	}
+	return asked
 }
 
 // accountOf is the person a request's work is for: the viewer, unless the
@@ -336,7 +367,7 @@ type createReq struct {
 	Effort        string          `json:"effort"`
 	Title         string          `json:"title"`
 	Source        string          `json:"source"`
-	TeamID        string          `json:"team_id"`    // the owning team; a team project's by default
+	TeamID        string          `json:"team_id"`    // the owning team, or "workspace"; the project's, else the person's default team
 	Visibility    string          `json:"visibility"` // workspace, team or private; the team's default otherwise
 }
 
@@ -358,7 +389,8 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, p, err := s.M.Submit(r.Context(), session.Request{Prompt: in.Prompt, Attachments: files,
 		EnvironmentID: in.EnvironmentID, Repos: in.Repos, Model: in.Model, Effort: in.Effort, Title: in.Title,
-		Author: s.author(r), AccountID: accountOf(r), TeamID: team, Visibility: in.Visibility, Source: in.Source})
+		Author: s.author(r), AccountID: accountOf(r), TeamID: team, Visibility: visibilityFor(r, team, in.Visibility),
+		Source: in.Source})
 	if err != nil {
 		replyErr(w, err)
 		return
@@ -559,6 +591,50 @@ func (s *Server) setVisibility(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r, sess.TeamID, "session.visibility_changed", sess.ID,
 		map[string]string{"title": sess.Title, "from": before.Visibility, "to": sess.Visibility})
+	reply(w, http.StatusOK, sess)
+}
+
+// maxShares bounds how many people one session is shared with by name.
+const maxShares = 100
+
+// shareSession sets the people a session is shared with by name: they may
+// read it, whatever its visibility, but not prompt it.
+func (s *Server) shareSession(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		AccountIDs []string `json:"account_ids"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	before, ok := s.session(w, r, access.ManageSession, "change who sees this session")
+	if !ok {
+		return
+	}
+	if len(in.AccountIDs) > maxShares {
+		fail(w, http.StatusBadRequest, fmt.Sprintf("share with at most %d people; share with a team instead", maxShares))
+		return
+	}
+	ids, names := []string{}, []string{}
+	seen := map[string]bool{}
+	for _, id := range in.AccountIDs {
+		if seen[id] || id == before.AccountID {
+			continue // whoever started it sees it anyway
+		}
+		seen[id] = true
+		a, err := s.M.Store().Account(r.Context(), id)
+		if err != nil || a.Disabled {
+			fail(w, http.StatusBadRequest, "no such person: "+id)
+			return
+		}
+		ids, names = append(ids, id), append(names, firstOf(a.Name, a.Email))
+	}
+	sess, err := s.M.Share(r.Context(), before.ID, ids)
+	if err != nil {
+		replyErr(w, err)
+		return
+	}
+	s.audit(r, sess.TeamID, "session.shared", sess.ID,
+		map[string]any{"title": sess.Title, "shared_with": names})
 	reply(w, http.StatusOK, sess)
 }
 
@@ -783,7 +859,7 @@ func (s *Server) updateAutomation(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "an automation's team can't change")
 		return
 	}
-	if _, ok := s.target(w, r, before.TeamID, spec.EnvironmentID); !ok {
+	if _, ok := s.target(w, r, firstOf(before.TeamID, workspaceTeam), spec.EnvironmentID); !ok {
 		return
 	}
 	a, err := s.Auto.Update(r.Context(), r.PathValue("id"), spec)

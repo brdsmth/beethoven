@@ -53,7 +53,12 @@ func (s *Store) HasAccounts(ctx context.Context) (bool, error) {
 // account exists it fails with ErrConflict.
 func (s *Store) CreateOwner(ctx context.Context, a Account, passwordHash string) (Account, error) {
 	a.ID, a.Role, a.Owner, a.CreatedAt = NewID(), RoleOwner, true, time.Now()
-	res, err := s.w.ExecContext(ctx, `INSERT INTO accounts (id, email, name, password_hash, owner, role, created_at)
+	tx, err := s.w.BeginTx(ctx, nil)
+	if err != nil {
+		return a, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `INSERT INTO accounts (id, email, name, password_hash, owner, role, created_at)
 		SELECT ?, ?, ?, ?, 1, 'owner', ? WHERE NOT EXISTS (SELECT 1 FROM accounts)`,
 		a.ID, a.Email, a.Name, passwordHash, ms(a.CreatedAt))
 	if err != nil {
@@ -62,7 +67,10 @@ func (s *Store) CreateOwner(ctx context.Context, a Account, passwordHash string)
 	if n, _ := res.RowsAffected(); n == 0 {
 		return a, ErrConflict
 	}
-	return a, nil
+	if err := createPersonalTeam(ctx, tx, a.ID, a.CreatedAt); err != nil {
+		return a, err
+	}
+	return a, tx.Commit()
 }
 
 const accountCols = `a.id, a.email, a.name, a.role, a.disabled_at IS NOT NULL, a.created_at`
@@ -310,7 +318,7 @@ func useInvite(ctx context.Context, tx *sql.Tx, in Invite, token, accountID stri
 		return false, err
 	}
 	joined := false
-	if in.TeamID != "" {
+	if in.TeamID != "" && !IsPersonalTeam(in.TeamID) {
 		res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO team_members (team_id, account_id, role, created_at)
 			SELECT id, ?, 'member', ? FROM teams WHERE id=? AND archived_at IS NULL`, accountID, now, in.TeamID)
 		if err != nil {
@@ -332,9 +340,10 @@ func useInvite(ctx context.Context, tx *sql.Tx, in Invite, token, accountID stri
 	}
 	if joined {
 		o.TeamID = in.TeamID
-		// Their work goes to the team they were invited to, unless they already chose.
-		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET default_team_id=? WHERE id=? AND default_team_id=''`,
-			in.TeamID, accountID); err != nil {
+		// Their work goes to the team they were invited to, unless they
+		// already chose a team beyond their personal one.
+		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET default_team_id=? WHERE id=? AND default_team_id IN ('', ?)`,
+			in.TeamID, accountID, PersonalTeamID(accountID)); err != nil {
 			return false, err
 		}
 	}
@@ -360,6 +369,10 @@ func (s *Store) AcceptInvite(ctx context.Context, token string, a Account, passw
 	if _, err := tx.ExecContext(ctx, `INSERT INTO accounts (id, email, name, password_hash, owner, role, created_at)
 		VALUES (?,?,?,?,?,?,?)`, a.ID, a.Email, a.Name, passwordHash, a.Owner, a.Role, ms(a.CreatedAt)); err != nil {
 		return a, conflict(err)
+	}
+	// The invitation's team, if it has one, then becomes where their work goes.
+	if err := createPersonalTeam(ctx, tx, a.ID, a.CreatedAt); err != nil {
+		return a, err
 	}
 	if _, err := useInvite(ctx, tx, in, token, a.ID, true); err != nil {
 		return a, err

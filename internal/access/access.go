@@ -6,8 +6,14 @@
 // The server is one workspace of people. Teams group people and own
 // resources (sessions, projects, automations, secrets); a resource without
 // a team belongs to the workspace, as everything did before teams.
-// Workspace owners and admins manage everything; team leads manage their
-// team; members use what their teams own and what the workspace owns.
+// Workspace owners and admins manage everything but people's personal
+// teams; team leads manage their team; members use what their teams own
+// and what the workspace owns.
+//
+// Work is private until it's shared. Everyone has a personal team that
+// only they see, where their work goes unless they choose another team. A
+// team's members see its work; anyone else sees a session only if it is
+// shared with them by name, or with everyone (workspace visibility).
 package access
 
 import (
@@ -68,44 +74,85 @@ func (a Actor) IsPerson() bool { return !a.Server && a.AccountID != "" }
 
 // Viewer is the store's view of the actor, for list predicates.
 func (a Actor) Viewer() store.Viewer {
-	return store.Viewer{AccountID: a.AccountID, Admin: a.Admin(), Owner: a.Owner(), Teams: a.TeamIDs()}
+	return store.Viewer{AccountID: a.AccountID, Server: a.Server, Admin: a.Admin(), Owner: a.Owner(), Teams: a.TeamIDs()}
 }
 
 // ----------------------------------------------------------------- teams
 
+// oversees reports whether the actor's workspace role reaches a team it
+// isn't in: an admin's reaches any team but a personal one. The server
+// itself reaches every team.
+func oversees(a Actor, teamID string) bool {
+	return a.Server || (a.Admin() && !store.IsPersonalTeam(teamID))
+}
+
 // UseTeam: start work owned by a team, and read what it owns.
-func UseTeam(a Actor, teamID string) bool { return teamID == "" || a.Admin() || a.Member(teamID) }
+func UseTeam(a Actor, teamID string) bool {
+	return teamID == "" || a.Member(teamID) || oversees(a, teamID)
+}
 
 // ManageTeam: edit a team, its members, secrets and channels.
-func ManageTeam(a Actor, teamID string) bool { return a.Admin() || a.Lead(teamID) }
+func ManageTeam(a Actor, teamID string) bool { return a.Lead(teamID) || oversees(a, teamID) }
 
-// JoinTeam: join a team by oneself.
+// SeeTeam: know a team exists. Personal teams are hidden from all but
+// their person.
+func SeeTeam(a Actor, t store.Team) bool {
+	if t.Personal || store.IsPersonalTeam(t.ID) {
+		return a.Member(t.ID) || a.Server
+	}
+	return t.ArchivedAt == nil || UseTeam(a, t.ID)
+}
+
+// JoinTeam: join a team by oneself. Nobody joins a personal team.
 func JoinTeam(a Actor, t store.Team) bool {
-	return a.AccountID != "" && t.ArchivedAt == nil && (t.JoinPolicy == store.JoinOpen || a.Admin())
+	return a.AccountID != "" && t.ArchivedAt == nil && !store.IsPersonalTeam(t.ID) &&
+		(t.JoinPolicy == store.JoinOpen || a.Admin())
 }
 
 // --------------------------------------------------------------- sessions
 
-// ReadSession: see a session, its timeline and its files.
+// ReadSession: see a session, its timeline and its files. Whoever started
+// it, and whoever it's shared with, always may; beyond them its visibility
+// decides. Workspace owners see private sessions, and admins team ones,
+// except in personal teams.
 func ReadSession(a Actor, s store.Session) bool {
+	if a.Server || Started(a, s) || SharedWith(a, s) {
+		return true
+	}
 	switch s.Visibility {
 	case store.VisibilityPrivate:
-		return (a.AccountID != "" && a.AccountID == s.AccountID) || a.Owner()
+		return a.Owner() && !store.IsPersonalTeam(s.TeamID)
 	case store.VisibilityTeam:
-		return a.Admin() || a.Member(s.TeamID)
+		return UseTeam(a, s.TeamID)
 	}
 	return true
 }
 
+// Started reports whether the actor is the person a session works for.
+func Started(a Actor, s store.Session) bool { return a.AccountID != "" && a.AccountID == s.AccountID }
+
+// SharedWith reports whether a session is shared with the actor by name.
+func SharedWith(a Actor, s store.Session) bool {
+	if a.AccountID == "" {
+		return false
+	}
+	for _, id := range s.SharedWith {
+		if id == a.AccountID {
+			return true
+		}
+	}
+	return false
+}
+
 // PromptSession: send prompts, stop work, open pull requests. Beyond
 // reading, a team's session needs membership in the team; a private one,
-// being its owner.
+// being its owner. Sharing a session lets people read it, not prompt it.
 func PromptSession(a Actor, s store.Session) bool {
 	if !ReadSession(a, s) {
 		return false
 	}
 	if s.Visibility == store.VisibilityPrivate {
-		return a.AccountID != "" && a.AccountID == s.AccountID
+		return Started(a, s)
 	}
 	return UseTeam(a, s.TeamID)
 }
@@ -116,13 +163,13 @@ func ManageSession(a Actor, s store.Session) bool {
 	if !ReadSession(a, s) {
 		return false
 	}
-	if a.AccountID != "" && a.AccountID == s.AccountID {
+	if Started(a, s) {
 		return true
 	}
 	if s.Visibility == store.VisibilityPrivate {
-		return a.Owner()
+		return a.Server || (a.Owner() && !store.IsPersonalTeam(s.TeamID))
 	}
-	return a.Admin() || (s.TeamID != "" && a.Lead(s.TeamID))
+	return oversees(a, s.TeamID) || (s.TeamID != "" && a.Lead(s.TeamID))
 }
 
 // --------------------------------------------- projects, automations, tools

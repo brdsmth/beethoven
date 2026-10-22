@@ -7,15 +7,17 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
 
-// Session visibility: who may read a session.
+// Session visibility: who may read a session, beyond the person who
+// started it and the people it is shared with.
 const (
 	VisibilityWorkspace = "workspace" // everyone
-	VisibilityTeam      = "team"      // the owning team's members, and admins
-	VisibilityPrivate   = "private"   // the person who started it, and owners
+	VisibilityTeam      = "team"      // the owning team's members, and admins unless the team is personal
+	VisibilityPrivate   = "private"   // the person who started it, and owners unless the team is personal
 )
 
 // ValidVisibility reports whether v suits a session owned by teamID.
@@ -40,6 +42,25 @@ func IsTeamScope(scope string) bool { return strings.HasPrefix(scope, "team:") }
 // TeamOfScope is the team a team scope names.
 func TeamOfScope(scope string) string { return strings.TrimPrefix(scope, "team:") }
 
+// A personal team is one person's own: it holds their work until they share
+// it, has them alone as its lead, and nobody else sees it, admins included.
+// Its id, and short name, are derived from the account's.
+const personalPrefix = "personal-"
+
+// PersonalTeamID is the id of an account's personal team.
+func PersonalTeamID(accountID string) string { return personalPrefix + accountID }
+
+// IsPersonalTeam reports whether a team id names a personal team.
+func IsPersonalTeam(teamID string) bool { return strings.HasPrefix(teamID, personalPrefix) }
+
+// PersonalOwner is the account whose personal team teamID is, if it is one.
+func PersonalOwner(teamID string) string {
+	if !IsPersonalTeam(teamID) {
+		return ""
+	}
+	return strings.TrimPrefix(teamID, personalPrefix)
+}
+
 // Team groups people and owns work.
 type Team struct {
 	ID                   string     `json:"id"`
@@ -51,7 +72,8 @@ type Team struct {
 	DefaultVisibility    string     `json:"default_visibility"`     // team or workspace
 	DefaultEnvironmentID string     `json:"default_environment_id"` // the project new sessions start in
 	ArchivedAt           *time.Time `json:"archived_at,omitempty"`
-	Members              int        `json:"members"` // how many, when listed
+	Personal             bool       `json:"personal,omitempty"` // one person's own team
+	Members              int        `json:"members"`            // how many, when listed
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
 }
@@ -102,6 +124,12 @@ func (t *Team) Validate() error {
 		return fmt.Errorf("%w: the description is longer than 300 characters", ErrInvalid)
 	case !slugPattern.MatchString(t.Slug):
 		return fmt.Errorf("%w: a team's short name uses lowercase letters, digits and dashes", ErrInvalid)
+	case IsPersonalTeam(t.ID) && t.Slug != t.ID:
+		return fmt.Errorf("%w: a personal team keeps its short name", ErrInvalid)
+	case !IsPersonalTeam(t.ID) && strings.HasPrefix(t.Slug, personalPrefix):
+		return fmt.Errorf("%w: short names starting with %q are for personal teams", ErrInvalid, personalPrefix)
+	case IsPersonalTeam(t.ID) && t.JoinPolicy != JoinInvite:
+		return fmt.Errorf("%w: nobody else can join a personal team", ErrInvalid)
 	case t.Color != "" && !colorPattern.MatchString(t.Color):
 		return fmt.Errorf("%w: color must look like #3366ff", ErrInvalid)
 	case t.JoinPolicy != JoinOpen && t.JoinPolicy != JoinInvite:
@@ -126,6 +154,7 @@ func scanTeam(row scanner) (Team, error) {
 		return t, ErrNotFound
 	}
 	t.ArchivedAt, t.CreatedAt, t.UpdatedAt = optMS(archived), fromMS(created), fromMS(updated)
+	t.Personal = IsPersonalTeam(t.ID)
 	return t, err
 }
 
@@ -157,6 +186,23 @@ func (s *Store) CreateTeam(ctx context.Context, t *Team, leadID string) error {
 		t.Members = 1
 	}
 	return tx.Commit()
+}
+
+// createPersonalTeam gives an account its personal team, within tx, and
+// makes it where the account's work goes.
+func createPersonalTeam(ctx context.Context, tx *sql.Tx, accountID string, at time.Time) error {
+	id := PersonalTeamID(accountID)
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO teams (id, slug, name, description, join_policy,
+		default_visibility, created_at, updated_at) VALUES (?,?,'Personal','Only you see what''s here.','invite','team',?,?)`,
+		id, id, ms(at), ms(at)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO team_members (team_id, account_id, role, created_at)
+		VALUES (?,?,'lead',?)`, id, accountID, ms(at)); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE accounts SET default_team_id=? WHERE id=? AND default_team_id=''`, id, accountID)
+	return err
 }
 
 // SaveTeam writes a team's editable fields.
@@ -225,6 +271,9 @@ func (s *Store) TeamMembers(ctx context.Context, teamID string) ([]TeamMember, e
 		WHERE m.team_id=? ORDER BY m.role != 'lead', lower(COALESCE(NULLIF(a.name,''), a.email))`, teamID)
 }
 
+// ErrPersonalTeam refuses a change to who is in a personal team.
+var ErrPersonalTeam = fmt.Errorf("%w: a personal team is its person's alone; share work through another team", ErrInvalid)
+
 // ErrLastLead refuses a change that would leave a team without a lead.
 var ErrLastLead = fmt.Errorf("%w: a team needs at least one lead; make someone else a lead first", ErrInvalid)
 
@@ -232,6 +281,9 @@ var ErrLastLead = fmt.Errorf("%w: a team needs at least one lead; make someone e
 func (s *Store) SetTeamMember(ctx context.Context, teamID, accountID, role string) error {
 	if role != TeamLead && role != TeamMemberRole {
 		return fmt.Errorf("%w: a team role is lead or member", ErrInvalid)
+	}
+	if IsPersonalTeam(teamID) {
+		return ErrPersonalTeam
 	}
 	return s.changeMembership(ctx, teamID, accountID, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO team_members (team_id, account_id, role, created_at) VALUES (?,?,?,?)
@@ -242,6 +294,9 @@ func (s *Store) SetTeamMember(ctx context.Context, teamID, accountID, role strin
 
 // RemoveTeamMember takes someone out of a team.
 func (s *Store) RemoveTeamMember(ctx context.Context, teamID, accountID string) error {
+	if IsPersonalTeam(teamID) {
+		return ErrPersonalTeam
+	}
 	return s.changeMembership(ctx, teamID, accountID, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `DELETE FROM team_members WHERE team_id=? AND account_id=?`, teamID, accountID)
 		return err
@@ -290,14 +345,14 @@ func (s *Store) Memberships(ctx context.Context, accountID string) (map[string]s
 	return out, err
 }
 
-// DefaultTeam is where a person's work goes when nothing else says.
+// DefaultTeam is where a person's work goes when nothing else says: the
+// team they chose, if they're still in it, else their personal team.
 func (s *Store) DefaultTeam(ctx context.Context, accountID string) (string, error) {
 	var id string
-	err := s.r.QueryRowContext(ctx, `SELECT a.default_team_id FROM accounts a JOIN team_members m
-		ON m.team_id = a.default_team_id AND m.account_id = a.id WHERE a.id=?`, accountID).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
+	err := s.r.QueryRowContext(ctx, `SELECT COALESCE((SELECT a.default_team_id FROM accounts a JOIN team_members m
+		ON m.team_id = a.default_team_id AND m.account_id = a.id WHERE a.id=?),
+		(SELECT team_id FROM team_members WHERE team_id=? AND account_id=?), '')`,
+		accountID, PersonalTeamID(accountID), accountID).Scan(&id)
 	return id, err
 }
 
@@ -313,6 +368,7 @@ func (s *Store) SetDefaultTeam(ctx context.Context, accountID, teamID string) er
 // they may see. It mirrors access.ReadSession; keep the two in step.
 type Viewer struct {
 	AccountID string
+	Server    bool // the server itself, which sees everything
 	Admin     bool // workspace owners and admins
 	Owner     bool // workspace owners
 	Teams     []string
@@ -320,14 +376,59 @@ type Viewer struct {
 
 // readable selects the sessions the viewer may read.
 func (v Viewer) readable() (string, []any) {
-	args := []any{v.Admin}
+	args := []any{v.Server, v.AccountID, v.AccountID, v.AccountID, v.Admin}
 	for _, t := range v.Teams {
 		args = append(args, t)
 	}
-	args = append(args, v.Owner, v.AccountID, v.AccountID)
-	return `(visibility NOT IN ('team', 'private')
-		OR (visibility = 'team' AND (? OR owner_team_id IN (` + placeholders(len(v.Teams)) + `)))
-		OR (visibility = 'private' AND (? OR (? != '' AND account_id = ?))))`, args
+	args = append(args, v.Owner)
+	return `(? OR (? != '' AND (account_id = ? OR id IN (SELECT session_id FROM session_shares WHERE account_id = ?)))
+		OR visibility NOT IN ('team', 'private')
+		OR (visibility = 'team' AND ((? AND substr(owner_team_id, 1, 9) != '` + personalPrefix + `')
+			OR owner_team_id IN (` + placeholders(len(v.Teams)) + `)))
+		OR (visibility = 'private' AND ? AND substr(owner_team_id, 1, 9) != '` + personalPrefix + `'))`, args
+}
+
+// ShareSession sets the people a session is shared with, and returns them.
+func (s *Store) ShareSession(ctx context.Context, sessionID string, accountIDs []string) ([]string, error) {
+	tx, err := s.w.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM session_shares WHERE session_id=?`, sessionID); err != nil {
+		return nil, err
+	}
+	now := ms(time.Now())
+	for _, id := range accountIDs {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO session_shares (session_id, account_id, created_at)
+			VALUES (?,?,?)`, sessionID, id, now); err != nil {
+			if strings.Contains(err.Error(), "FOREIGN KEY") {
+				return nil, ErrNotFound
+			}
+			return nil, err
+		}
+	}
+	var out string
+	if err := tx.QueryRowContext(ctx, `SELECT `+sharedWithCol+` FROM sessions WHERE id=?`, sessionID).Scan(&out); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return splitShares(out), tx.Commit()
+}
+
+// sharedWithCol lists, comma separated, whom a session is shared with.
+const sharedWithCol = `(SELECT COALESCE(group_concat(sh.account_id, ','), '') FROM session_shares sh
+	WHERE sh.session_id = sessions.id)`
+
+func splitShares(s string) []string {
+	if s == "" {
+		return nil
+	}
+	out := strings.Split(s, ",")
+	sort.Strings(out)
+	return out
 }
 
 // ------------------------------------------------------------------- audit

@@ -13,12 +13,15 @@ import (
 
 var ctx = context.Background()
 
+// annsOwn is ann's personal team.
+var annsOwn = store.PersonalTeamID("ann")
+
 // actors covers every kind of reader.
 var actors = map[string]access.Actor{
 	"server":       access.Server(""),
-	"owner":        {AccountID: "own", Role: store.RoleOwner},
+	"owner":        {AccountID: "own", Role: store.RoleOwner, Teams: map[string]string{store.PersonalTeamID("own"): store.TeamLead}},
 	"admin":        {AccountID: "adm", Role: store.RoleAdmin},
-	"ann (lead a)": {AccountID: "ann", Role: store.RoleMember, Teams: map[string]string{"a": store.TeamLead}},
+	"ann (lead a)": {AccountID: "ann", Role: store.RoleMember, Teams: map[string]string{"a": store.TeamLead, annsOwn: store.TeamLead}},
 	"bob (in a,b)": {AccountID: "bob", Role: store.RoleMember, Teams: map[string]string{"a": "member", "b": "member"}},
 	"cy (no team)": {AccountID: "cy", Role: store.RoleMember},
 }
@@ -33,17 +36,22 @@ func TestListsMatchTheRules(t *testing.T) {
 	defer db.Close()
 	var all []store.Session
 	for _, vis := range []string{store.VisibilityWorkspace, store.VisibilityTeam, store.VisibilityPrivate} {
-		for _, team := range []string{"", "a", "b"} {
+		for _, team := range []string{"", "a", "b", annsOwn} {
 			for _, owner := range []string{"", "ann", "bob", "cy"} {
-				if !store.ValidVisibility(vis, team) {
-					continue
+				for _, shared := range [][]string{nil, {"cy"}, {"bob", "adm"}} {
+					if !store.ValidVisibility(vis, team) {
+						continue
+					}
+					s := store.Session{ID: store.NewID(), Title: fmt.Sprintf("%s/%s/%s/%v", vis, team, owner, shared), Branch: "b",
+						Source: "test", Status: "idle", Sandbox: "none", Visibility: vis, TeamID: team, AccountID: owner}
+					if err := db.CreateSession(ctx, &s); err != nil {
+						t.Fatal(err)
+					}
+					if s.SharedWith, err = db.ShareSession(ctx, s.ID, shared); err != nil {
+						t.Fatal(err)
+					}
+					all = append(all, s)
 				}
-				s := store.Session{ID: store.NewID(), Title: fmt.Sprintf("%s/%s/%s", vis, team, owner), Branch: "b",
-					Source: "test", Status: "idle", Sandbox: "none", Visibility: vis, TeamID: team, AccountID: owner}
-				if err := db.CreateSession(ctx, &s); err != nil {
-					t.Fatal(err)
-				}
-				all = append(all, s)
 			}
 		}
 	}
@@ -70,6 +78,10 @@ func TestRules(t *testing.T) {
 	teamA := store.Session{Visibility: store.VisibilityTeam, TeamID: "a", AccountID: "bob"}
 	openA := store.Session{Visibility: store.VisibilityWorkspace, TeamID: "a", AccountID: "bob"}
 	private := store.Session{Visibility: store.VisibilityPrivate, AccountID: "bob"}
+	annsTeam := store.Session{Visibility: store.VisibilityTeam, TeamID: annsOwn, AccountID: "ann"}
+	annsPrivate := store.Session{Visibility: store.VisibilityPrivate, TeamID: annsOwn, AccountID: "ann"}
+	sharedWithCy := store.Session{Visibility: store.VisibilityTeam, TeamID: annsOwn, AccountID: "ann", SharedWith: []string{"cy"}}
+	personal := store.Team{ID: annsOwn, Personal: true, JoinPolicy: store.JoinInvite}
 	cases := []struct {
 		what string
 		got  bool
@@ -97,6 +109,27 @@ func TestRules(t *testing.T) {
 		{"cy joins an open team", access.JoinTeam(cy, store.Team{JoinPolicy: store.JoinOpen}), true},
 		{"cy joins an invite-only team", access.JoinTeam(cy, store.Team{JoinPolicy: store.JoinInvite}), false},
 		{"the server, as nobody, can't join", access.JoinTeam(access.Server(""), store.Team{JoinPolicy: store.JoinOpen}), false},
+		{"ann reads her personal team's session", access.ReadSession(ann, annsTeam), true},
+		{"ann prompts it", access.PromptSession(ann, annsTeam), true},
+		{"bob reads ann's personal session", access.ReadSession(bob, annsTeam), false},
+		{"admin reads ann's personal session", access.ReadSession(admin, annsTeam), false},
+		{"owner reads ann's personal session", access.ReadSession(owner, annsTeam), false},
+		{"owner reads ann's private personal session", access.ReadSession(owner, annsPrivate), false},
+		{"admin manages ann's personal session", access.ManageSession(admin, annsTeam), false},
+		{"cy reads what ann shared with her", access.ReadSession(cy, sharedWithCy), true},
+		{"cy can't prompt it: sharing is for reading", access.PromptSession(cy, sharedWithCy), false},
+		{"cy can't manage it", access.ManageSession(cy, sharedWithCy), false},
+		{"bob still can't read it", access.ReadSession(bob, sharedWithCy), false},
+		{"cy reads their own session in a team they left", access.ReadSession(cy, store.Session{Visibility: store.VisibilityTeam, TeamID: "a", AccountID: "cy"}), true},
+		{"admin uses ann's personal project", access.UseEnvironment(admin, store.Environment{TeamID: annsOwn}), false},
+		{"ann uses her personal project", access.UseEnvironment(ann, store.Environment{TeamID: annsOwn}), true},
+		{"admin manages ann's personal team", access.ManageTeam(admin, annsOwn), false},
+		{"admin reads ann's personal secrets", access.ReadScope(admin, store.TeamScope(annsOwn), nil), false},
+		{"ann writes her personal secrets", access.WriteScope(ann, store.TeamScope(annsOwn), nil), true},
+		{"admin sees ann's personal team", access.SeeTeam(admin, personal), false},
+		{"ann sees her personal team", access.SeeTeam(ann, personal), true},
+		{"admin joins ann's personal team", access.JoinTeam(admin, personal), false},
+		{"the server reads ann's personal session", access.ReadSession(access.Server(""), annsTeam), true},
 	}
 	for _, c := range cases {
 		if c.got != c.want {

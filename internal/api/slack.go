@@ -203,8 +203,11 @@ func (s *Server) bindSlackChannel(w http.ResponseWriter, r *http.Request) {
 	if in.OwnerTeamID != "" {
 		t, err := s.M.Store().Team(r.Context(), in.OwnerTeamID)
 		switch {
-		case err != nil:
+		case err != nil || !access.SeeTeam(actor(r), t):
 			fail(w, http.StatusBadRequest, "no such team")
+			return
+		case t.Personal:
+			fail(w, http.StatusBadRequest, "a channel is shared: give it to a team, not a personal one")
 			return
 		case !access.ManageTeam(actor(r), t.ID):
 			forbid(w, "give a channel to "+t.Name+": ask its lead")
