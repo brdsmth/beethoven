@@ -4,7 +4,7 @@ import { AttachButton, PendingFiles, useFiles } from './attach';
 import { useCapabilities } from './capabilities';
 import { GitHubSetup } from './github';
 import { TARGET_PREF } from './pickers';
-import { scopeTeam, setScope, useMe, useScope, useTeams } from './state';
+import { WORKSPACE, scopeTeam, setScope, useMe, useScope, useTeams } from './state';
 import { TeamMark } from './teams';
 import { Seg, errText, go, hashParam, modEnter, toast, writePref } from './util';
 
@@ -37,7 +37,8 @@ export function NewProject({ info }: { info?: Info }) {
   const mine = teams?.filter(t => !t.archived_at && (t.role || me?.admin)) || [];
   const usable = (id?: string) => !!id && mine.some(t => t.id === id);
   const [team, setTeam] = useState<string>();
-  const teamID = team ?? (usable(scopeTeam(scope)) ? scopeTeam(scope) : usable(me?.default_team_id) ? me!.default_team_id : '');
+  const teamID = team ?? (scope === 'workspace' ? WORKSPACE : usable(scopeTeam(scope)) ? scopeTeam(scope)
+    : usable(me?.default_team_id) ? me!.default_team_id : '');
   const teamObj = teams?.find(t => t.id === teamID);
   const f = useFiles();
   const caps = useCapabilities();
@@ -131,11 +132,12 @@ export function NewProject({ info }: { info?: Info }) {
             <span class="with-mark">
               <TeamMark team={teamObj} />
               <select value={teamID} onChange={e => setTeam(e.currentTarget.value)}>
-                <option value="">Workspace: no team</option>
+                <option value={WORKSPACE}>Workspace: no team</option>
                 {mine.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
               </select>
             </span>
-            <span class="hint">{teamObj ? `The project, its variables and its sessions are ${teamObj.name}'s.` : 'Everyone here can use the project.'}</span>
+            <span class="hint">{teamObj?.personal ? 'The project, its variables and its sessions are yours alone.'
+              : teamObj ? `The project, its variables and its sessions are ${teamObj.name}'s.` : 'Everyone here can use the project.'}</span>
           </label>
         )}
         <label>Description

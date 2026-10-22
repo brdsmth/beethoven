@@ -35,5 +35,7 @@ export function useScope(): [Scope, (s: Scope) => void] {
   return [v, setScope];
 }
 /** The team a scope names, if it names one. */
+/** As a team in a request: work that belongs to no team, the workspace's. */
+export const WORKSPACE = 'workspace';
 export const scopeTeam = (s: Scope) => (s === 'all' || s === 'workspace' ? '' : s);
 

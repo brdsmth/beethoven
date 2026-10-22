@@ -10,7 +10,7 @@ import { GitHubReturn, GitHubSetup, githubStep } from './github';
 import { Insights } from './insights';
 import { InviteAccept } from './invite';
 import { adminNames, useAdmins } from './people';
-import { TeamMark, scopeTeam, useMe, useScope, useTeams } from './teams';
+import { TeamMark, WORKSPACE, scopeTeam, useMe, useScope, useTeams } from './teams';
 import { NewProject } from './project';
 import { SlackReturn, slackStep } from './slack';
 import { TARGET_PREF, TargetPicker, fromTarget, targetProblem, toTarget, type Pick } from './pickers';
@@ -153,7 +153,7 @@ function NewSession({ info }: { info?: Info }) {
   const [visibility, setVisibility] = useState<Visibility | ''>('');
   const mine = teams?.filter(t => !t.archived_at && (t.role || me?.admin)) || [];
   const usable = (id?: string) => !!id && mine.some(t => t.id === id);
-  const chosen = team ?? (scope === 'workspace' ? '' : usable(scopeTeam(scope)) ? scopeTeam(scope)
+  const chosen = team ?? (scope === 'workspace' ? WORKSPACE : usable(scopeTeam(scope)) ? scopeTeam(scope)
     : usable(me?.default_team_id) ? me!.default_team_id : '');
   const teamObj = teams?.find(t => t.id === chosen);
   const keep = useRef(opened); // getting started chose the first session's project: keep it until the team changes
@@ -226,7 +226,7 @@ function NewSession({ info }: { info?: Info }) {
                 <span class="with-mark">
                   <TeamMark team={teamObj} />
                   <select value={chosen} onChange={e => setTeam(e.currentTarget.value)}>
-                    <option value="">Workspace: no team</option>
+                    <option value={WORKSPACE}>Workspace: no team</option>
                     {mine.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </select>
                 </span>
@@ -234,9 +234,11 @@ function NewSession({ info }: { info?: Info }) {
             )}
             <label>Seen by
               <select value={visibility} onChange={e => setVisibility(e.currentTarget.value as Visibility | '')}>
-                <option value="">{teamObj ? `The team's default (${teamObj.default_visibility === 'team' ? 'the team' : 'everyone'})` : 'Everyone'}</option>
+                <option value="">{teamObj?.personal ? (teamObj.default_visibility === 'team' ? 'Only me' : 'Everyone')
+                  : teamObj ? `The team's default (${teamObj.default_visibility === 'team' ? 'the team' : 'everyone'})`
+                  : me?.account ? 'Only me' : 'Everyone'}</option>
                 <option value="workspace">Everyone</option>
-                {teamObj && <option value="team">The team</option>}
+                {teamObj && !teamObj.personal && <option value="team">The team</option>}
                 {me?.account && <option value="private">Only me</option>}
               </select>
             </label>

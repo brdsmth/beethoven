@@ -3,7 +3,7 @@ import { api, get, type Effective, type Environment, type RepoRef, type Secret, 
 import { CapabilityPicker } from './capabilities';
 import { RepoRows, cleanRepos } from './pickers';
 import { SecretsEditor } from './secrets';
-import { TeamLabel, TeamMark, useMe, useTeamIndex, useTeams } from './teams';
+import { TeamLabel, TeamMark, WORKSPACE, useMe, useTeamIndex, useTeams } from './teams';
 import { ConfirmButton, EffortSelect, Group, Head, ModelField, SaveBar, errText, go, hashParam, num, plural, str, toast, useLoad } from './util';
 
 export function Environments() {
@@ -128,8 +128,8 @@ export function EnvironmentEdit({ id, tab = 'configuration' }: { id: string; tab
       {isNew && !!teams?.length && (
         <label class="field team-field">
           <span class="field-label">Team</span>
-          <select value={team} onChange={e => setTeam(e.currentTarget.value)}>
-            <option value="">Workspace: everyone's</option>
+          <select value={team || me?.default_team_id || WORKSPACE} onChange={e => setTeam(e.currentTarget.value)}>
+            <option value={WORKSPACE}>Workspace: everyone's</option>
             {teams.filter(t => !t.archived_at && (t.role || me?.admin)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
           <span class="hint">Only the team's members see and use it. This can't change later.</span>
