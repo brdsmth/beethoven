@@ -11,7 +11,7 @@ import { ConfirmButton, Dot, Group, Head, SaveBar, ago, errText, fail, go, plura
 // secrets and Slack channels. The sidebar's switcher picks which team's
 // work to show; new sessions start in it.
 
-export { scopeTeam, setScope, useMe, useScope, useTeams, type Scope } from './state';
+export { WORKSPACE, scopeTeam, setScope, useMe, useScope, useTeams, type Scope } from './state';
 
 // Accents for teams without a color of their own, picked by id.
 const PALETTE = ['#4f6bed', '#0e9f6e', '#d97706', '#db2777', '#7c3aed', '#0891b2', '#dc2626', '#65a30d'];
@@ -457,8 +457,11 @@ export const VIS: Record<string, string> = { workspace: 'Everyone', team: 'Team'
 export function VisibilityBadge({ s, onChange }: { s: Session; onChange: (s: Session) => void }) {
   const me = useMe();
   const [busy, setBusy] = useState(false);
-  const options: [string, string][] = [['workspace', 'Everyone'], ...(s.team_id ? [['team', 'Team'] as [string, string]] : []),
-    ...(s.account_id && s.account_id === me?.account?.id ? [['private', 'Only me'] as [string, string]] : [])];
+  const team = useTeamIndex()(s.team_id);
+  // In a personal team, the team is the person: "Team" and "Only me" are the same.
+  const options: [string, string][] = team?.personal ? [['workspace', 'Everyone'], ['team', 'Only me']]
+    : [['workspace', 'Everyone'], ...(s.team_id ? [['team', 'Team'] as [string, string]] : []),
+      ...(s.account_id && s.account_id === me?.account?.id ? [['private', 'Only me'] as [string, string]] : [])];
   if (!me?.people && !s.team_id) return null;
   const change = async (v: string) => {
     setBusy(true);

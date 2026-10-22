@@ -8,6 +8,8 @@ export type Session = {
   /** The team that owns it; none = the workspace. */
   team_id?: string;
   visibility: Visibility;
+  /** People it's shared with by name, who may read it. */
+  shared_with?: string[];
   status: 'idle' | 'running' | 'done' | 'failed' | 'stopped';
   sandbox: 'none' | 'starting' | 'ready' | 'stopped' | 'failed';
   cost_usd: number; archived: boolean; created_at: string; updated_at: string;
@@ -202,6 +204,8 @@ export type Team = {
   id: string; slug: string; name: string; description: string; color: string;
   join_policy: 'open' | 'invite'; default_visibility: 'team' | 'workspace'; default_environment_id: string;
   archived_at?: string; members: number; created_at: string; updated_at: string;
+  /** One person's own team: only they see it, and it's where their work goes unless they choose another. */
+  personal?: boolean;
   /** The viewer's role in it, if any, and whether they may change it. */
   role?: 'lead' | 'member'; manages: boolean;
 };

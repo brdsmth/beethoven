@@ -3,7 +3,7 @@ import { api, get, type Automation, type Condition, type Environment, type Event
 import { Select } from './components';
 import { span } from './insights';
 import { TargetPicker, fromTarget, targetProblem, toTarget, type Pick } from './pickers';
-import { TeamLabel, useMe, useTeamIndex, useTeams } from './teams';
+import { TeamLabel, WORKSPACE, useMe, useTeamIndex, useTeams } from './teams';
 import { Chip, ConfirmButton, EffortSelect, ModelField, ago, fail, go, hashParam, money, targetLabel, toast, useForm, useLoad, when } from './util';
 
 const MAX_FAILURES = 3;
@@ -144,8 +144,8 @@ export function AutomationEdit({ id }: { id: string }) {
         <label>Name<input required {...bind('name')} /></label>
         {isNew && !!teams?.length && (
           <label>Team
-            <Select label="Team" value={f.team_id || ''} set={team_id => setF(p => ({ ...p, team_id }))}
-              options={[{ value: '', label: 'Workspace: no team' },
+            <Select label="Team" value={f.team_id || me?.default_team_id || WORKSPACE} set={team_id => setF(p => ({ ...p, team_id }))}
+              options={[{ value: WORKSPACE, label: 'Workspace: no team' },
                 ...teams.filter(t => !t.archived_at && (t.role || me?.admin)).map(t => ({ value: t.id, label: t.name }))]} />
             <span class="hint">It runs as you, in the team; its runs are the team's sessions. This can't change later.</span>
           </label>
@@ -153,7 +153,7 @@ export function AutomationEdit({ id }: { id: string }) {
         {!isNew && current?.team_id && <p class="crumbs"><TeamLabel team={teams?.find(t => t.id === current.team_id)} /></p>}
         <div class="field">
           <span class="field-label">Workspace</span>
-          <TargetPicker v={target} set={setTarget} team={f.team_id || ''} />
+          <TargetPicker v={target} set={setTarget} team={isNew ? f.team_id || me?.default_team_id || WORKSPACE : current?.team_id || WORKSPACE} />
         </div>
         <div class="grid2">
           <label>Model<ModelField value={f.model} set={model => setF(p => ({ ...p, model }))} def="Default" /></label>
