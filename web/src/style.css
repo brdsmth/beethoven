@@ -1048,3 +1048,18 @@ body.resizing iframe { pointer-events: none; }
 .art-log > div { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
 .art-log .tool { font-family: var(--mono); color: var(--muted); }
 .art-log .you { border-color: var(--accent); background: var(--blue-bg); }
+
+/* the threads a session takes part in */
+.meta.threads { align-items: center; }
+.thread { display: inline-flex; align-items: center; gap: 4px; padding: 0 2px 0 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); }
+.thread.muted { opacity: .55; }
+.thread-btn { border: 0; background: none; padding: 1px 5px; border-radius: 999px; font-size: 11px; color: var(--muted); cursor: pointer; }
+.thread-btn:hover { background: var(--hover); color: var(--text); }
+.thread-activity { flex-basis: 100%; font-size: var(--fs-small); }
+.thread-activity summary { cursor: pointer; color: var(--muted); width: fit-content; }
+.thread-activity ul { margin: 4px 0 0; padding-left: 18px; }
+.thread-activity li { margin: 2px 0; }
+.thread-activity .warn { color: var(--amber); }
+details.relayed summary { cursor: pointer; }
+details.relayed summary .dim { margin-left: 6px; font-size: var(--fs-small); }
+details.relayed .pre { margin-top: 6px; }
