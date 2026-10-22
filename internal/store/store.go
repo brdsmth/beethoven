@@ -608,6 +608,23 @@ func (s *Store) Automations(ctx context.Context) ([]Automation, error) {
 	return query(ctx, s.r, scanAutomation, `SELECT `+automationCols+` FROM automations ORDER BY created_at DESC`)
 }
 
+// RecordAutomationRun counts a finished run: a success clears the count of
+// failures in a row, a failure adds one and pauses the automation at max.
+// It reports whether this run paused it.
+func (s *Store) RecordAutomationRun(ctx context.Context, id string, ok bool, max int) (paused bool, err error) {
+	if ok {
+		_, err := s.w.ExecContext(ctx, `UPDATE automations SET failures=0 WHERE id=?`, id)
+		return false, err
+	}
+	var failures int
+	err = s.w.QueryRowContext(ctx, `UPDATE automations SET failures=failures+1,
+		enabled = CASE WHEN failures+1 >= ? THEN 0 ELSE enabled END WHERE id=? RETURNING failures`, max, id).Scan(&failures)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return failures == max, err // the run that reached max paused it; later ones find it paused
+}
+
 // SetAutomationHookHash replaces an automation's webhook token.
 func (s *Store) SetAutomationHookHash(ctx context.Context, id, hash string) error {
 	res, err := s.w.ExecContext(ctx, `UPDATE automations SET hook_hash=? WHERE id=?`, hash, id)
