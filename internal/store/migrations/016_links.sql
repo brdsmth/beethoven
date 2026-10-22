@@ -1,7 +1,8 @@
 -- Threads elsewhere that sessions take part in: a pull request a session
 -- opened, an issue or pull request it commented on or was started for, a
 -- branch it pushed. What happens in a thread comes back to its sessions.
--- subject names the thread host-neutrally: "github:owner/name:pr:42".
+-- subject names the thread host-neutrally: "github:owner/name:#42" (issues and
+-- pull requests share numbers), "github:owner/name:branch:feature".
 CREATE TABLE session_links (
   subject    TEXT NOT NULL,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
