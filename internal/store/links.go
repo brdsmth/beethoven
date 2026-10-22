@@ -55,6 +55,14 @@ func (s *Store) ThreadLinks(ctx context.Context, subject string) ([]Link, error)
 		ORDER BY created_at`, subject)
 }
 
+// ThreadEnded reports whether a thread ended for a session in it: its pull
+// request was merged or closed.
+func (s *Store) ThreadEnded(ctx context.Context, subject string) (bool, error) {
+	var n int
+	err := s.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_links WHERE subject=? AND closed_at IS NOT NULL`, subject).Scan(&n)
+	return n > 0, err
+}
+
 // SessionLinks lists the threads a session takes part in, ended ones too.
 func (s *Store) SessionLinks(ctx context.Context, sessionID string) ([]Link, error) {
 	return query(ctx, s.r, scanLink, `SELECT `+linkCols+` FROM session_links WHERE session_id=? ORDER BY created_at`, sessionID)

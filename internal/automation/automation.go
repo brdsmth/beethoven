@@ -24,7 +24,6 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/brdsmth/beethoven/internal/event"
-	"github.com/brdsmth/beethoven/internal/relay"
 	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/store"
 )
@@ -197,21 +196,10 @@ func (s *Service) request(ctx context.Context, a store.Automation, source, promp
 // What this server's own agents post can fire automations too, so one
 // agent's review sets another to work, within the same bounds as the relay:
 // an automation never fires on its own runs' words, and a chain of agents
-// stops after relay.Defaults.MaxHops.
+// stops after session.MaxHops. Only what the server recorded posting counts
+// as its agents': anyone can type the marker.
 func (s *Service) Dispatch(ctx context.Context, e event.Event) ([]store.Prompt, error) {
-	origin, ours := relay.Origin(ctx, s.db, e)
-	if e.Bot && e.Comment != "" && !ours {
-		return nil, nil // other apps' comments and reviews would set off loops
-	}
-	hop := 0
-	var from store.Session
-	if ours {
-		hop = origin.Hop + 1
-		if hop > relay.Defaults.MaxHops {
-			return nil, nil
-		}
-		from, _ = s.db.Session(ctx, origin.SessionID)
-	}
+	o := s.origin(ctx, e, true)
 	cands, err := s.db.TriggeredAutomations(ctx, e.Kind)
 	if err != nil {
 		return nil, err
@@ -219,10 +207,10 @@ func (s *Service) Dispatch(ctx context.Context, e event.Event) ([]store.Prompt, 
 	var started []store.Prompt
 	var errs []error
 	for _, a := range cands {
-		if !Trigger(a).Matches(e) || !s.watches(ctx, a, e.Repo) || ours && from.AutomationID == a.ID {
+		if !s.fires(ctx, a, e, o) {
 			continue
 		}
-		_, p, err := s.fireEvent(ctx, a, e, hop)
+		_, p, err := s.fireEvent(ctx, a, e, o.hop)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("automation %s: %w", a.ID, err))
 			continue
@@ -230,6 +218,48 @@ func (s *Service) Dispatch(ctx context.Context, e event.Event) ([]store.Prompt, 
 		started = append(started, p)
 	}
 	return started, errors.Join(errs...)
+}
+
+// origin is who among this server's sessions said what an event carries.
+type origin struct {
+	ours bool
+	hop  int    // of the prompt an event would start: one more than the words' own
+	from string // the automation whose run said it, if one did
+}
+
+func (s *Service) origin(ctx context.Context, e event.Event, wait bool) origin {
+	p, ok := s.m.Origin(ctx, e, wait)
+	if !ok {
+		return origin{}
+	}
+	o := origin{ours: true, hop: p.Hop + 1}
+	if sess, err := s.db.Session(ctx, p.SessionID); err == nil {
+		o.from = sess.AutomationID
+	}
+	return o
+}
+
+// fires reports whether a fires on e: it's on, its trigger matches, it
+// watches e's repository, e isn't another app's comment nor its own run's,
+// and the chain of agents behind e isn't too long. (Whether its person may
+// still run it is checked when it runs, which says why not.)
+func (s *Service) fires(ctx context.Context, a store.Automation, e event.Event, o origin) bool {
+	switch {
+	case !a.Enabled || a.TriggerEvent != e.Kind || !Trigger(a).Matches(e) || !s.watches(ctx, a, e.Repo):
+		return false
+	case e.Bot && e.Comment != "" && !o.ours:
+		return false // other apps' comments and reviews would set off loops
+	case o.ours && (o.from == a.ID || o.hop > session.MaxHops):
+		return false
+	}
+	return true
+}
+
+// Fires reports whether the automation fires on e itself, so its runs
+// needn't be told about e another way.
+func (s *Service) Fires(ctx context.Context, automationID string, e event.Event) bool {
+	a, err := s.db.Automation(ctx, automationID)
+	return err == nil && s.fires(ctx, a, e, s.origin(ctx, e, false)) && s.mayRun(ctx, a) == nil
 }
 
 // Trigger is an automation's stored trigger.
