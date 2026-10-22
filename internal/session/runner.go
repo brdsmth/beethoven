@@ -16,6 +16,7 @@ import (
 
 	"github.com/brdsmth/beethoven/internal/agent"
 	"github.com/brdsmth/beethoven/internal/capability"
+	"github.com/brdsmth/beethoven/internal/event"
 	"github.com/brdsmth/beethoven/internal/sandbox"
 	"github.com/brdsmth/beethoven/internal/store"
 )
@@ -67,7 +68,7 @@ func (r *runner) enqueue(ctx context.Context, in PromptInput) (store.Prompt, err
 	defer r.mu.Unlock()
 	p := store.Prompt{ID: store.NewID(), SessionID: r.id, Content: in.Content, Model: in.Model, Effort: in.Effort,
 		Author: in.Author, AccountID: in.AccountID, Source: in.Source, DedupKey: in.DedupKey, AutomationID: in.AutomationID,
-		Attachments: in.Attachments}
+		Attachments: in.Attachments, Hop: in.Hop}
 	if p.Author == (store.Author{}) {
 		p.Author = r.s.Author
 	}
@@ -554,6 +555,12 @@ func (r *runner) openPR(ctx context.Context, repo, title, body string, draft *bo
 		s.Repos[i].PRURL = url
 	})
 	r.emit(r.currentPrompt(), EvArtifact, map[string]string{"kind": "pr", "url": url, "title": title, "repo": ref.Repo})
+	// The session owns its pull request and branch: what reviewers and CI
+	// say there comes back to it.
+	if n := prNumber(url); n > 0 {
+		r.m.link(ctx, r.id, store.LinkOwner, "opened", event.ThreadOf(event.GitHub, ref.Repo, fmt.Sprintf("pr:%d", n)))
+	}
+	r.m.link(ctx, r.id, store.LinkOwner, "opened", event.ThreadOf(event.GitHub, ref.Repo, "branch:"+s.Branch))
 	if strings.Contains(out.String(), "::dirty") {
 		return url, errUncommitted
 	}
@@ -608,6 +615,16 @@ func (r *runner) save() {
 		return
 	}
 	r.m.publishSession(r.s)
+}
+
+// currentHop is the hop of the prompt running now; 0 when none is.
+func (r *runner) currentHop() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.turn != nil {
+		return r.turn.prompt.Hop
+	}
+	return 0
 }
 
 func (r *runner) currentPrompt() string {
@@ -720,7 +737,9 @@ func systemPrompt(s store.Session, eff Effective) string {
 			b.WriteString(", once per repository you changed, naming the repository")
 		}
 		b.WriteString(". To check whether a pull request can merge or how its CI is doing, call pull_request_status. ")
-		b.WriteString("To reply on an issue or pull request, or label one, call the comment and add_labels tools.\n")
+		b.WriteString("To reply on an issue or pull request, or label one, call the comment and add_labels tools. ")
+		b.WriteString("Reviews, comments and failing CI on your pull request, and replies on threads you commented on, come back to you as new prompts; " +
+			"call follow or unfollow to choose other threads.\n")
 	}
 	b.WriteString("When the person asks to see a file, or you make something visual (a mockup, screenshot, chart or image), call show_file to open it in the viewer beside the conversation.\n")
 	b.WriteString("For independent pieces of work that can proceed in parallel, you can start child sessions with spawn_session and follow them with get_session.\n")

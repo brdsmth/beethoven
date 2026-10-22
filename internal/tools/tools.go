@@ -6,6 +6,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -28,7 +29,12 @@ func Handler(m *session.Manager) http.Handler {
 		"whether it can merge (GitHub's own mergeable status, which accounts for conflicts, branch protection and required checks) " +
 		"and its CI checks. You have no GitHub credentials or gh CLI in the sandbox; use this instead."}, t.prStatus)
 	mcp.AddTool(srv, &mcp.Tool{Name: "comment", Description: "Post a comment on an issue or pull request in one of this session's " +
-		"repositories, as the person the session works for. Use it to answer the issue or pull request an automation started you on."}, t.comment)
+		"repositories, as the person the session works for. Use it to answer the issue or pull request an automation started you on. " +
+		"You follow the thread from then on: what people or other agents say there comes back to you as a new prompt."}, t.comment)
+	mcp.AddTool(srv, &mcp.Tool{Name: "follow", Description: "Follow an issue or pull request in one of this session's repositories: " +
+		"comments and reviews on it come back to you as new prompts. You already follow pull requests you opened, threads you " +
+		"commented on, and the one an automation started you for."}, t.follow)
+	mcp.AddTool(srv, &mcp.Tool{Name: "unfollow", Description: "Stop following an issue or pull request, when nothing more said there is for you."}, t.unfollow)
 	mcp.AddTool(srv, &mcp.Tool{Name: "add_labels", Description: "Add labels to an issue or pull request in one of this session's repositories. " +
 		"Labels the repository doesn't have yet are created."}, t.addLabels)
 	mcp.AddTool(srv, &mcp.Tool{Name: "show_file", Description: "Open a file from this sandbox in the viewer beside the conversation: " +
@@ -144,6 +150,33 @@ func (t *tools) comment(ctx context.Context, req *mcp.CallToolRequest, in commen
 		return nil, nil, err
 	}
 	return text("Commented: %s", url), nil, nil
+}
+
+type threadIn struct {
+	Repo   string `json:"repo,omitempty" jsonschema:"owner/name of the repository; required when the session has several"`
+	Number int    `json:"number" jsonschema:"the issue or pull request number"`
+}
+
+func (t *tools) follow(ctx context.Context, req *mcp.CallToolRequest, in threadIn) (*mcp.CallToolResult, any, error) {
+	me, err := t.caller(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := t.m.Follow(ctx, me.ID, in.Repo, in.Number); err != nil {
+		return nil, nil, err
+	}
+	return text("Following #%d: what's said there comes back to you.", in.Number), nil, nil
+}
+
+func (t *tools) unfollow(ctx context.Context, req *mcp.CallToolRequest, in threadIn) (*mcp.CallToolResult, any, error) {
+	me, err := t.caller(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := t.m.Unfollow(ctx, me.ID, in.Repo, in.Number); err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, nil, err
+	}
+	return text("No longer following #%d.", in.Number), nil, nil
 }
 
 type labelsIn struct {

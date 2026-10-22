@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/brdsmth/beethoven/internal/event"
 	"github.com/brdsmth/beethoven/internal/fake"
 	"github.com/brdsmth/beethoven/internal/session"
 	"github.com/brdsmth/beethoven/internal/store"
@@ -76,8 +77,8 @@ func TestTools(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	slices.Sort(names)
-	if want := []string{"add_capability", "add_labels", "comment", "create_pull_request", "get_session", "list_capabilities", "list_sessions",
-		"pull_request_status", "send_prompt", "show_file", "spawn_session", "stop_session"}; !slices.Equal(names, want) {
+	if want := []string{"add_capability", "add_labels", "comment", "create_pull_request", "follow", "get_session", "list_capabilities", "list_sessions",
+		"pull_request_status", "send_prompt", "show_file", "spawn_session", "stop_session", "unfollow"}; !slices.Equal(names, want) {
 		t.Errorf("tools = %v", names)
 	}
 
@@ -144,8 +145,17 @@ func TestTools(t *testing.T) {
 	if out, isErr := call(t, cs, "comment", map[string]any{"repo": "acme/other", "number": 7, "body": "x"}); !isErr {
 		t.Errorf("commented outside the session's repositories: %q", out)
 	}
-	if got := strings.Join(env.SCM.Comments, "|") + "|" + strings.Join(env.SCM.Labeled, "|"); got != "acme/app#7: Fixed in the PR.|acme/app#7: agent-done" {
+	if got := event.Unmark(strings.Join(env.SCM.Comments, "|")) + "|" + strings.Join(env.SCM.Labeled, "|"); got != "acme/app#7: Fixed in the PR.|acme/app#7: agent-done" {
 		t.Errorf("host saw %q", got)
+	}
+	if p, ok := event.Marked(env.SCM.Comments[0]); !ok || p.SessionID == "" {
+		t.Errorf("the comment doesn't name its session: %q", env.SCM.Comments[0])
+	}
+	if out, isErr := call(t, cs, "follow", map[string]any{"number": 9}); isErr || !strings.Contains(out, "Following #9") {
+		t.Errorf("follow = %q", out)
+	}
+	if out, isErr := call(t, cs, "unfollow", map[string]any{"number": 9}); isErr {
+		t.Errorf("unfollow = %q", out)
 	}
 }
 

@@ -101,16 +101,18 @@ type payload struct {
 	PullRequest *thread `json:"pull_request"`
 	Label       *label  `json:"label"`
 	Comment     *struct {
-		Body    string `json:"body"`
-		HTMLURL string `json:"html_url"`
-		Path    string `json:"path"`
-		ID      int64  `json:"id"`
+		Body        string `json:"body"`
+		HTMLURL     string `json:"html_url"`
+		Path        string `json:"path"`
+		ID          int64  `json:"id"`
+		Association string `json:"author_association"`
 	} `json:"comment"`
 	Review *struct {
-		Body    string `json:"body"`
-		State   string `json:"state"`
-		HTMLURL string `json:"html_url"`
-		ID      int64  `json:"id"`
+		Body        string `json:"body"`
+		State       string `json:"state"`
+		HTMLURL     string `json:"html_url"`
+		ID          int64  `json:"id"`
+		Association string `json:"author_association"`
 	} `json:"review"`
 	CheckSuite *struct {
 		ID         int64  `json:"id"`
@@ -181,7 +183,7 @@ func Normalize(kind, delivery string, body []byte) (*event.Event, error) {
 			e.Kind = event.PRComment
 		}
 		setThread(e, p.Issue, isPR)
-		e.Comment, e.CommentURL = p.Comment.Body, p.Comment.HTMLURL
+		e.Comment, e.CommentURL, e.Association = p.Comment.Body, p.Comment.HTMLURL, strings.ToLower(p.Comment.Association)
 	case "pull_request_review":
 		if p.Action != "submitted" || p.Review == nil {
 			return nil, nil
@@ -189,6 +191,7 @@ func Normalize(kind, delivery string, body []byte) (*event.Event, error) {
 		e.Kind = event.PRReview
 		setThread(e, p.PullRequest, true)
 		e.Comment, e.CommentURL, e.State = p.Review.Body, p.Review.HTMLURL, strings.ToLower(p.Review.State)
+		e.Association = strings.ToLower(p.Review.Association)
 	case "pull_request_review_comment":
 		if p.Action != "created" || p.Comment == nil {
 			return nil, nil
@@ -196,6 +199,7 @@ func Normalize(kind, delivery string, body []byte) (*event.Event, error) {
 		e.Kind = event.ReviewComment
 		setThread(e, p.PullRequest, true)
 		e.Comment, e.CommentURL, e.Path = p.Comment.Body, p.Comment.HTMLURL, p.Comment.Path
+		e.Association = strings.ToLower(p.Comment.Association)
 	case "workflow_run": // GitHub Actions
 		w := p.WorkflowRun
 		if p.Action != "completed" || w == nil {
