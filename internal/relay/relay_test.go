@@ -194,6 +194,13 @@ func TestBounds(t *testing.T) {
 	}
 	wait(t, env, got[0].ID)
 
+	// A review that's only line comments adds nothing of its own.
+	lines := comment(5, "bob", "", "https://github.com/acme/app/pull/5#pullrequestreview-9")
+	lines.Kind, lines.State = event.PRReview, "commented"
+	if n, _ := r.Route(ctx, lines); n != 0 {
+		t.Errorf("an empty review reached %d sessions", n)
+	}
+
 	// A muted thread is quiet.
 	if err := env.DB.MuteLink(ctx, "github:acme/app:#5", a.ID, true); err != nil {
 		t.Fatal(err)
@@ -232,7 +239,7 @@ func TestCIAndTheEndOfAThread(t *testing.T) {
 	env.M.Follow(ctx, follower.ID, "", 1)
 
 	ci := event.Event{Host: event.GitHub, Kind: event.ChecksDone, Repo: "acme/app", Branch: owner.Branch, Conclusion: "failure",
-		CheckName: "test", Occurrence: "d-ci", Subject: "commit:abc"}
+		CheckName: "test", Occurrence: "d-ci", Subject: "commit:abc", Actor: "github-actions[bot]", Bot: true}
 	if n, _ := r.Route(ctx, ci); n != 1 {
 		t.Errorf("failing CI reached %d sessions; want its branch's owner", n)
 	}

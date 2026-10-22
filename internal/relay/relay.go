@@ -78,8 +78,8 @@ func (r *Relay) action(e event.Event) int {
 	case event.PRComment, event.IssueComment, event.ReviewComment:
 		return deliver
 	case event.PRReview:
-		if e.State == "approved" && strings.TrimSpace(event.Unmark(e.Comment)) == "" {
-			return ignore // nothing to answer; the pull request shows it
+		if e.State != "changes_requested" && strings.TrimSpace(event.Unmark(e.Comment)) == "" {
+			return ignore // an approval, or a review that's only line comments, which come on their own
 		}
 		return deliver
 	case event.ChecksDone:
@@ -115,8 +115,8 @@ func (r *Relay) Route(ctx context.Context, e event.Event) (int, error) {
 		return 0, nil
 	}
 	_, ours := Origin(ctx, r.db, e)
-	if e.Bot && !ours {
-		return 0, nil // other apps' comments: CI reports, dependency bots
+	if e.Bot && !ours && e.Kind != event.ChecksDone {
+		return 0, nil // other apps' comments: coverage reports, dependency bots; CI itself is heard
 	}
 	if !e.Trusted() && !ours {
 		r.log.Info("relay: not passing on words from someone who can't write to the repository",
