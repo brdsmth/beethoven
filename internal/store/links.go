@@ -16,7 +16,7 @@ const (
 
 // Link is a session taking part in a thread elsewhere.
 type Link struct {
-	Subject   string     `json:"subject"` // "github:owner/name:pr:42"
+	Subject   string     `json:"subject"` // "github:owner/name:#42", "github:owner/name:branch:x"
 	SessionID string     `json:"session_id"`
 	Role      string     `json:"role"`
 	Reason    string     `json:"reason"`
