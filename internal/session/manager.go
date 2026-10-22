@@ -465,6 +465,20 @@ func (m *Manager) SetVisibility(ctx context.Context, sessionID, visibility strin
 	return r.snapshot(), nil
 }
 
+// Share sets the people a session is shared with, who may read it.
+func (m *Manager) Share(ctx context.Context, sessionID string, accountIDs []string) (store.Session, error) {
+	r, err := m.runner(ctx, sessionID)
+	if err != nil {
+		return store.Session{}, err
+	}
+	shared, err := m.db.ShareSession(ctx, sessionID, accountIDs)
+	if err != nil {
+		return store.Session{}, err
+	}
+	r.update(func(s *store.Session) { s.SharedWith = shared })
+	return r.snapshot(), nil
+}
+
 func (m *Manager) Session(ctx context.Context, id string) (store.Session, error) {
 	return m.db.Session(ctx, id)
 }

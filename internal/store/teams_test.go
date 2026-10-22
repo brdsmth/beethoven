@@ -134,13 +134,14 @@ func TestTeams(t *testing.T) {
 		t.Errorf("bob's memberships = %v", m)
 	}
 
-	// A default team only counts while one is a member.
+	// A default team only counts while one is a member; else work goes to
+	// the person's personal team.
 	s.SetDefaultTeam(ctx, bob.ID, web.ID)
 	if id, _ := s.DefaultTeam(ctx, bob.ID); id != web.ID {
 		t.Errorf("default team = %q", id)
 	}
 	s.SetDefaultTeam(ctx, owner.ID, web.ID)
-	if id, _ := s.DefaultTeam(ctx, owner.ID); id != "" {
+	if id, _ := s.DefaultTeam(ctx, owner.ID); id != PersonalTeamID(owner.ID) {
 		t.Errorf("default team of a non-member = %q", id)
 	}
 
@@ -148,14 +149,46 @@ func TestTeams(t *testing.T) {
 	inv2 := Invite{Role: RoleMember, TeamID: web.ID, CreatedBy: owner.ID}
 	tok2, _ := s.CreateInvite(ctx, &inv2)
 	cy, _ := s.AcceptInvite(ctx, tok2, Account{Email: "c@x.dev"}, "hash")
-	if m, _ := s.Memberships(ctx, cy.ID); m[web.ID] != TeamMemberRole {
+	if m, _ := s.Memberships(ctx, cy.ID); m[web.ID] != TeamMemberRole || m[PersonalTeamID(cy.ID)] != TeamLead {
 		t.Errorf("invited into the team: %v", m)
+	}
+	// Invited to a team, their work goes there; otherwise to their own.
+	if id, _ := s.DefaultTeam(ctx, cy.ID); id != web.ID {
+		t.Errorf("default team of someone invited to web = %q", id)
+	}
+	inv3 := Invite{Role: RoleMember, CreatedBy: owner.ID}
+	tok3, _ := s.CreateInvite(ctx, &inv3)
+	dee, _ := s.AcceptInvite(ctx, tok3, Account{Email: "d@x.dev"}, "hash")
+	if id, _ := s.DefaultTeam(ctx, dee.ID); id != PersonalTeamID(dee.ID) {
+		t.Errorf("default team of someone invited to no team = %q", id)
+	}
+	if own, err := s.Team(ctx, PersonalTeamID(dee.ID)); err != nil || !own.Personal || own.Members != 1 {
+		t.Errorf("personal team = %+v, %v", own, err)
+	}
+	// Invited to a team later, it replaces their personal team as the default.
+	inv4 := Invite{Role: RoleMember, TeamID: web.ID, Email: "d@x.dev", CreatedBy: owner.ID}
+	tok4, _ := s.CreateInvite(ctx, &inv4)
+	if _, err := s.JoinInvite(ctx, tok4, dee); err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := s.DefaultTeam(ctx, dee.ID); id != web.ID {
+		t.Errorf("default team after joining web = %q", id)
+	}
+	// Nobody joins or leaves a personal team.
+	if err := s.SetTeamMember(ctx, PersonalTeamID(dee.ID), cy.ID, TeamMemberRole); !errors.Is(err, ErrPersonalTeam) {
+		t.Errorf("joined someone's personal team: %v", err)
+	}
+	if err := s.RemoveTeamMember(ctx, PersonalTeamID(dee.ID), dee.ID); !errors.Is(err, ErrPersonalTeam) {
+		t.Errorf("left one's personal team: %v", err)
+	}
+	if err := s.CreateTeam(ctx, &Team{Name: "Sneaky", Slug: "personal-" + cy.ID}, ""); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a team took a personal short name: %v", err)
 	}
 
 	if err := s.ArchiveTeam(ctx, web.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.TeamBySlug(ctx, "web-platform"); got.ArchivedAt == nil || got.Members != 2 {
+	if got, _ := s.TeamBySlug(ctx, "web-platform"); got.ArchivedAt == nil || got.Members != 3 {
 		t.Errorf("archived team = %+v", got)
 	}
 
@@ -280,6 +313,13 @@ func TestMigratingKeepsData(t *testing.T) {
 	defer s.Close()
 	if a, _ := s.Account(ctx, "own"); a.Role != RoleOwner || !a.Owner {
 		t.Errorf("the owner = %+v", a)
+	}
+	// Everyone here before personal teams gets one, and works in it.
+	if m, _ := s.Memberships(ctx, "own"); m[PersonalTeamID("own")] != TeamLead {
+		t.Errorf("the owner's teams = %v", m)
+	}
+	if id, _ := s.DefaultTeam(ctx, "own"); id != PersonalTeamID("own") {
+		t.Errorf("the owner's default team = %q", id)
 	}
 	if envs, _ := s.Environments(ctx); len(envs) != 2 || envs[0].TeamID != "" || len(envs[1].Repos) != 1 && len(envs[0].Repos) != 1 {
 		t.Errorf("projects = %+v", envs)

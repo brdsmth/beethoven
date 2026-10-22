@@ -171,7 +171,8 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"repo": repo, "environment": env}
 	if strings.TrimSpace(in.Prompt) != "" || len(files) > 0 {
 		sess, p, err := s.M.Submit(ctx, session.Request{Prompt: in.Prompt, Attachments: files, EnvironmentID: env.ID,
-			Model: in.Model, Effort: in.Effort, Author: s.author(r), AccountID: accountOf(r), TeamID: team, Source: "web"})
+			Model: in.Model, Effort: in.Effort, Author: s.author(r), AccountID: accountOf(r), TeamID: team,
+			Visibility: visibilityFor(r, team, ""), Source: "web"})
 		if err != nil {
 			partly("couldn't start the session", err)
 			return

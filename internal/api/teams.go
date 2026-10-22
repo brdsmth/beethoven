@@ -22,8 +22,9 @@ func view(who access.Actor, t store.Team) teamView {
 	return teamView{Team: t, Role: who.Teams[t.ID], Manages: access.ManageTeam(who, t.ID)}
 }
 
-// listTeams lists every team: anyone may see which teams exist, as they
-// may join open ones. Archived teams show to their members and admins.
+// listTeams lists the teams the viewer may see: anyone may see which
+// teams exist, as they may join open ones. Archived teams show to their
+// members and admins; a personal team only to its person.
 func (s *Server) listTeams(w http.ResponseWriter, r *http.Request) {
 	who := actor(r)
 	list, err := s.M.Store().Teams(r.Context())
@@ -33,7 +34,7 @@ func (s *Server) listTeams(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]teamView, 0, len(list))
 	for _, t := range list {
-		if t.ArchivedAt != nil && !access.UseTeam(who, t.ID) {
+		if !access.SeeTeam(who, t) {
 			continue
 		}
 		out = append(out, view(who, t))
@@ -48,7 +49,7 @@ func (s *Server) team(w http.ResponseWriter, r *http.Request) (store.Team, bool)
 		replyErr(w, err)
 		return t, false
 	}
-	if t.ArchivedAt != nil && !access.UseTeam(actor(r), t.ID) {
+	if !access.SeeTeam(actor(r), t) {
 		hidden(w)
 		return t, false
 	}
@@ -149,6 +150,9 @@ func (s *Server) updateTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	before := t
 	in.apply(&t)
+	if t.Personal {
+		t.Slug, t.JoinPolicy = t.ID, store.JoinInvite // its short name and that nobody joins don't change
+	}
 	if err := s.checkDefaultProject(r, t); err != nil {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
@@ -174,6 +178,10 @@ func (s *Server) archiveTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	if !access.ManageTeam(actor(r), t.ID) {
 		forbid(w, "archive this team")
+		return
+	}
+	if t.Personal {
+		fail(w, http.StatusBadRequest, "a personal team can't be archived")
 		return
 	}
 	if err := s.M.Store().ArchiveTeam(r.Context(), t.ID, in.Archived); err != nil {

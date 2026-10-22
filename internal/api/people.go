@@ -164,8 +164,11 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if in.TeamID != "" {
-		if _, err := s.M.Store().Team(r.Context(), in.TeamID); err != nil {
+		if t, err := s.M.Store().Team(r.Context(), in.TeamID); err != nil || !access.SeeTeam(who, t) {
 			fail(w, http.StatusBadRequest, "no such team")
+			return
+		} else if t.Personal {
+			fail(w, http.StatusBadRequest, "nobody can be invited to a personal team")
 			return
 		}
 	}

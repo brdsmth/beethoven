@@ -224,12 +224,86 @@ func TestTeams(t *testing.T) {
 	if code, _ := cy.call("POST", "/api/sessions", `{"prompt":"x","environment_id":"`+project+`"}`); code != 400 {
 		t.Errorf("cy starts a session in the team's project: %d", code)
 	}
-	_, out = cy.call("POST", "/api/sessions", `{"prompt":"just mine","visibility":"private"}`)
+	_, out = cy.call("POST", "/api/sessions", `{"prompt":"just mine","team_id":"workspace","visibility":"private"}`)
 	private := field(out, "session", "id").(string)
-	_, out = cy.call("POST", "/api/sessions", `{"prompt":"for everyone"}`)
+	_, out = cy.call("POST", "/api/sessions", `{"prompt":"for everyone","team_id":"workspace","visibility":"workspace"}`)
 	open := field(out, "session", "id").(string)
 
 	sees := func(b *browser) map[string]bool { _, l := b.call("GET", "/api/sessions", ""); return ids(l) }
+
+	// Work nobody placed goes to its person's personal team, which only they see.
+	cyOwn := store.PersonalTeamID(idOf["cy"])
+	code, out = cy.call("POST", "/api/sessions", `{"prompt":"by default"}`)
+	if code != 201 || field(out, "session", "team_id") != cyOwn || field(out, "session", "visibility") != "team" {
+		t.Fatalf("cy's default session: %d %v", code, out)
+	}
+	mine := field(out, "session", "id").(string)
+	// The workspace's work is private unless shared with everyone.
+	_, out = cy.call("POST", "/api/sessions", `{"prompt":"workspace","team_id":"workspace"}`)
+	if field(out, "session", "team_id") != nil || field(out, "session", "visibility") != "private" {
+		t.Errorf("cy's workspace session: %v", field(out, "session"))
+	}
+	for name, b := range map[string]*browser{"ann": ann, "ada (admin)": ada, "the owner": owner} {
+		if sees(b)[mine] {
+			t.Errorf("%s sees cy's personal session", name)
+		}
+		if code, _ := b.call("GET", "/api/sessions/"+mine, ""); code != 404 {
+			t.Errorf("%s reads cy's personal session: %d", name, code)
+		}
+		if _, l := b.call("GET", "/api/teams", ""); ids(l)[cyOwn] {
+			t.Errorf("%s lists cy's personal team", name)
+		}
+		if code, _ := b.call("GET", "/api/teams/"+cyOwn, ""); code != 404 {
+			t.Errorf("%s reads cy's personal team: %d", name, code)
+		}
+	}
+	if !sees(cy)[mine] {
+		t.Error("cy doesn't see their own session")
+	}
+	if _, l := cy.call("GET", "/api/teams", ""); !ids(l)[cyOwn] {
+		t.Error("cy doesn't list their personal team")
+	}
+	if code, _ := cy.call("PUT", "/api/teams/"+cyOwn+"/members/"+idOf["ann"], `{}`); code != 400 {
+		t.Errorf("cy adds ann to their personal team: %d", code)
+	}
+	if code, _ := ada.call("PUT", "/api/teams/"+cyOwn+"/members/"+idOf["ada"], `{}`); code != 404 {
+		t.Errorf("an admin adds themself to cy's personal team: %d", code)
+	}
+	if code, _ := ada.call("POST", "/api/invites", `{"role":"member","team_id":"`+cyOwn+`"}`); code != 400 {
+		t.Errorf("an admin invites to cy's personal team: %d", code)
+	}
+	if code, _ := cy.call("POST", "/api/teams/"+cyOwn+"/archive", `{"archived":true}`); code != 400 {
+		t.Errorf("cy archives their personal team: %d", code)
+	}
+	if code, out := cy.call("PUT", "/api/teams/"+cyOwn, `{"name":"Cy's corner","join_policy":"open"}`); code != 200 ||
+		field(out, "slug") != cyOwn || field(out, "join_policy") != "invite" {
+		t.Errorf("cy renames their personal team: %d %v", code, out)
+	}
+
+	// Sharing by name: they may read, not prompt; only its manager shares.
+	if code, _ := ann.call("PUT", "/api/sessions/"+mine+"/shares", `{"account_ids":["`+idOf["ann"]+`"]}`); code != 404 {
+		t.Errorf("ann shares cy's session with ann: %d", code)
+	}
+	code, out = cy.call("PUT", "/api/sessions/"+mine+"/shares", `{"account_ids":["`+idOf["ann"]+`","`+idOf["ann"]+`"]}`)
+	if code != 200 || len(field(out, "shared_with").([]any)) != 1 {
+		t.Fatalf("cy shares with ann: %d %v", code, out)
+	}
+	if !sees(ann)[mine] || sees(bob)[mine] {
+		t.Error("sharing with ann: ann should see it, bob not")
+	}
+	if code, _ := ann.call("POST", "/api/sessions/"+mine+"/prompts", `{"content":"hi"}`); code != 403 {
+		t.Errorf("ann prompts what's shared with ann: %d", code)
+	}
+	if code, _ := ann.call("PUT", "/api/sessions/"+mine+"/shares", `{"account_ids":[]}`); code != 403 {
+		t.Errorf("ann changes cy's shares: %d", code)
+	}
+	if code, _ := cy.call("PUT", "/api/sessions/"+mine+"/shares", `{"account_ids":["nobody"]}`); code != 400 {
+		t.Errorf("cy shares with nobody: %d", code)
+	}
+	if code, _ := cy.call("PUT", "/api/sessions/"+mine+"/shares", `{"account_ids":[]}`); code != 200 || sees(ann)[mine] {
+		t.Errorf("cy unshares: %d", code)
+	}
+
 	if got := sees(cy); !got[private] || !got[open] || got[teamSession] {
 		t.Errorf("cy sees %v", got)
 	}

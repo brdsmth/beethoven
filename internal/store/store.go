@@ -177,6 +177,7 @@ type Session struct {
 	AccountID     string    `json:"account_id,omitempty"` // the person it acts for; their GitHub opens its pull requests
 	TeamID        string    `json:"team_id,omitempty"`    // the owning team; "" = the workspace
 	Visibility    string    `json:"visibility"`           // workspace, team or private
+	SharedWith    []string  `json:"shared_with"`          // accounts it is shared with, who may read it too
 	Status        string    `json:"status"`
 	Sandbox       string    `json:"sandbox"`
 	SandboxID     string    `json:"-"`
@@ -197,20 +198,20 @@ func (x Session) Primary() (RepoRef, bool) {
 
 const sessionCols = `id, title, repos, environment_id, branch, model, effort, COALESCE(parent_id,''), depth,
 	source, COALESCE(key,''), COALESCE(automation_id,''), author_name, author_email, account_id, owner_team_id,
-	visibility, status, sandbox, sandbox_id, agent_session, cost_usd, archived, created_at, updated_at`
+	visibility, status, sandbox, sandbox_id, agent_session, cost_usd, archived, created_at, updated_at, ` + sharedWithCol
 
 func scanSession(row scanner) (Session, error) {
 	var x Session
-	var repos string
+	var repos, shared string
 	var created, updated int64
 	err := row.Scan(&x.ID, &x.Title, &repos, &x.EnvironmentID, &x.Branch, &x.Model, &x.Effort, &x.ParentID,
 		&x.Depth, &x.Source, &x.Key, &x.AutomationID, &x.Author.Name, &x.Author.Email, &x.AccountID, &x.TeamID,
 		&x.Visibility, &x.Status, &x.Sandbox,
-		&x.SandboxID, &x.AgentSession, &x.CostUSD, &x.Archived, &created, &updated)
+		&x.SandboxID, &x.AgentSession, &x.CostUSD, &x.Archived, &created, &updated, &shared)
 	if errors.Is(err, sql.ErrNoRows) {
 		return x, ErrNotFound
 	}
-	x.Repos = decodeRepos(repos)
+	x.Repos, x.SharedWith = decodeRepos(repos), splitShares(shared)
 	x.CreatedAt, x.UpdatedAt = fromMS(created), fromMS(updated)
 	return x, err
 }
