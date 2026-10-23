@@ -63,33 +63,58 @@ func Open(path string, secretKey []byte) (*Store, error) {
 
 func (s *Store) Close() error { return errors.Join(s.r.Close(), s.w.Close()) }
 
-// migrate applies migrations/NNN_*.sql in order, tracking progress in
-// PRAGMA user_version so each runs once. A database with tables but no
-// version was created by something else, and is refused untouched.
-func migrate(db *sql.DB) error {
-	names, err := fs.Glob(migrations, "migrations/*.sql")
+// migrate applies the migrations db hasn't had, in name order, each in its
+// own transaction, recording each by name in schema_migrations. Recording
+// names rather than a count lets branches developed side by side each add
+// migrations. A database with tables but no record was created by
+// something else, and is refused untouched.
+func migrate(db *sql.DB) error { return migrateFrom(db, migrations, "migrations") }
+
+func migrateFrom(db *sql.DB, files fs.FS, dir string) error {
+	names, err := fs.Glob(files, dir+"/*.sql")
 	if err != nil {
 		return err
 	}
 	sort.Strings(names)
-	var version int
+	var version, tables int
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version == 0 {
-		var tables int
-		if err := db.QueryRow(`SELECT count(*) FROM sqlite_master`).Scan(&tables); err != nil {
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE tbl_name != 'schema_migrations'`).Scan(&tables); err != nil {
+		return err
+	}
+	if version == 0 && tables > 0 {
+		return errors.New("not a beethoven database; move it aside or use another data directory")
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
+		return err
+	}
+	applied := map[string]bool{}
+	rows, err := db.Query(`SELECT name FROM schema_migrations`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
 			return err
 		}
-		if tables > 0 {
-			return errors.New("not a beethoven database; move it aside or use another data directory")
-		}
+		applied[name] = true
 	}
-	for i, name := range names {
-		if i < version {
+	rows.Close()
+	base := func(name string) string { return strings.TrimPrefix(name, dir+"/") }
+	if len(applied) == 0 && version > 0 {
+		if err := recordCounted(db, names, version, base); err != nil {
+			return err
+		}
+		return migrateFrom(db, files, dir)
+	}
+	for _, name := range names {
+		if applied[base(name)] {
 			continue
 		}
-		body, _ := migrations.ReadFile(name)
+		body, _ := fs.ReadFile(files, name)
 		tx, err := db.Begin()
 		if err != nil {
 			return err
@@ -98,15 +123,61 @@ func migrate(db *sql.DB) error {
 			tx.Rollback()
 			return fmt.Errorf("migration %s: %w", name, err)
 		}
-		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, i+1)); err != nil {
+		if _, err := tx.Exec(`INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)`, base(name), time.Now().Unix()); err != nil {
+			tx.Rollback()
+			return err
+		}
+		// user_version still counts them, so an older build sees a database it
+		// can't run as already migrated rather than someone else's.
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(applied)+1)); err != nil {
 			tx.Rollback()
 			return err
 		}
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		applied[base(name)] = true
 	}
 	return nil
+}
+
+// countedByTable names migrations that databases from before names were
+// recorded can't be trusted to have run by position, with a table each
+// creates. 016_links and 016_personal_teams were merged from separate
+// branches; a database counted to 16 ran whichever its build sorted 16th.
+var countedByTable = map[string]string{
+	"016_links.sql":          "session_links",
+	"016_personal_teams.sql": "session_shares",
+}
+
+// recordCounted records the migrations a database from before names were
+// recorded had, when its user_version counted how many had run: the first
+// version of them by position, except those countedByTable judges by
+// whether their table exists.
+func recordCounted(db *sql.DB, names []string, version int, base func(string) string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().Unix()
+	for i, name := range names {
+		ran := i < version
+		if table, ok := countedByTable[base(name)]; ok {
+			var n int
+			if err := tx.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&n); err != nil {
+				return err
+			}
+			ran = n > 0
+		}
+		if !ran {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)`, base(name), now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // NewID returns a short random lowercase identifier.
