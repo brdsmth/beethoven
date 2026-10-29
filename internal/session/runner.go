@@ -395,13 +395,13 @@ func (r *runner) boot(ctx context.Context, id string, s store.Session, eff Effec
 	if err != nil {
 		return err
 	}
-	env["CAPABILITIES"] = strings.Join(caps, " ")
+	env["CAPABILITIES"], env["PLUGINS"] = strings.Join(caps, " "), strings.Join(eff.Plugins, "\n")
 	out := &bootOutput{r: r, phases: bootPhases{phase: "boot"}}
 	run := func(stage string, e map[string]string) error {
 		if stage != "" {
 			e["BOOT_STAGE"] = stage
 		}
-		code, err := r.m.box.Exec(ctx, id, sandbox.Cmd{Args: []string{"sh", "-c", capabilityScript + "\n" + bootScript}, Env: e,
+		code, err := r.m.box.Exec(ctx, id, sandbox.Cmd{Args: []string{"sh", "-c", capabilityScript + "\n" + pluginScript + "\n" + bootScript}, Env: e,
 			Stdin: bytes.NewReader(capability.Archive()), Stdout: out, Stderr: out})
 		out.Flush()
 		if err != nil {

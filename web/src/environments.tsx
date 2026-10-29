@@ -4,7 +4,7 @@ import { CapabilityPicker } from './capabilities';
 import { RepoRows, cleanRepos } from './pickers';
 import { SecretsEditor } from './secrets';
 import { TeamLabel, TeamMark, WORKSPACE, useMe, useTeamIndex, useTeams } from './teams';
-import { ConfirmButton, EffortSelect, Group, Head, ModelField, SaveBar, errText, go, hashParam, num, plural, str, toast, useLoad } from './util';
+import { ConfirmButton, EffortSelect, Group, Head, ModelField, SaveBar, errText, go, hashParam, lines, num, plural, str, toast, useLoad } from './util';
 
 export function Environments() {
   const [list] = useLoad<Environment[]>('/api/environments');
@@ -41,14 +41,14 @@ export function Environments() {
   );
 }
 
-type OF = { model: string; effort: string; instructions: string; image: string; cpus: string; memory_mb: string; capabilities: string[] };
+type OF = { model: string; effort: string; instructions: string; image: string; cpus: string; memory_mb: string; capabilities: string[]; plugins: string };
 type EF = {
   name: string; description: string; repos: RepoRef[]; setup_script: string; start_script: string;
   inherit_secrets: boolean; overrides: OF;
 };
 const BLANK: EF = {
   name: '', description: '', repos: [], setup_script: '', start_script: '', inherit_secrets: true,
-  overrides: { model: '', effort: '', instructions: '', image: '', cpus: '', memory_mb: '', capabilities: [] },
+  overrides: { model: '', effort: '', instructions: '', image: '', cpus: '', memory_mb: '', capabilities: [], plugins: '' },
 };
 const toEF = (e: Environment): EF => {
   const o = e.overrides;
@@ -57,13 +57,13 @@ const toEF = (e: Environment): EF => {
     setup_script: e.setup_script, start_script: e.start_script, inherit_secrets: e.inherit_secrets,
     overrides: {
       model: o.model || '', effort: o.effort || '', instructions: o.instructions || '', image: o.image || '',
-      cpus: str(o.cpus), memory_mb: str(o.memory_mb), capabilities: o.capabilities || [],
+      cpus: str(o.cpus), memory_mb: str(o.memory_mb), capabilities: o.capabilities || [], plugins: (o.plugins || []).join('\n'),
     },
   };
 };
 const body = (f: EF) => ({
   ...f, name: f.name.trim(), description: f.description.trim(), repos: cleanRepos(f.repos),
-  overrides: { ...f.overrides, model: f.overrides.model.trim(), image: f.overrides.image.trim(), cpus: num(f.overrides.cpus), memory_mb: num(f.overrides.memory_mb) },
+  overrides: { ...f.overrides, model: f.overrides.model.trim(), image: f.overrides.image.trim(), cpus: num(f.overrides.cpus), memory_mb: num(f.overrides.memory_mb), plugins: lines(f.overrides.plugins) },
 });
 
 const TABS = [['configuration', 'Configuration'], ['secrets', 'Secrets'], ['overrides', 'Overrides']];
@@ -198,6 +198,13 @@ function Configuration({ f, set, secrets }: { f: EF; set: (v: Partial<EF>) => vo
         <CapabilityPicker value={f.overrides.capabilities} set={capabilities => set({ overrides: { ...f.overrides, capabilities } })}
           inherited={g?.settings.capabilities} secrets={secrets} />
       </Group>
+      <Group title="Plugins" hint={<>Claude Code plugins for this project's sessions, besides the global ones: one per line as <code>plugin@marketplace</code>, the
+        marketplace as <code>owner/repo</code>, a git URL or an https URL. Each sandbox installs the latest version once, before the
+        setup scripts; a failure is a warning, retried on the next start.</>}>
+        <textarea class="mono" rows={3} spellcheck={false} placeholder="compound-engineering@EveryInc/compound-engineering-plugin"
+          value={f.overrides.plugins} onInput={e => set({ overrides: { ...f.overrides, plugins: e.currentTarget.value } })} />
+        {!!g?.settings.plugins?.length && <span class="hint">Also installed, from the global settings: {g.settings.plugins.join(', ')}.</span>}
+      </Group>
       <Group title="Scripts" hint={<>Both run with <code>sh -e</code> in the agent's working directory: the repository with one, <code>/workspace</code> otherwise.</>}>
         <label>Setup script
           <textarea class="mono" rows={6} spellcheck={false} placeholder={'npm ci\npip install -r requirements.txt'} {...bind('setup_script')} />
@@ -216,7 +223,7 @@ function Overrides({ o, set }: { o: OF; set: (v: Partial<OF>) => void }) {
   const [g] = useLoad<SettingsInfo>('/api/settings');
   const s = g?.settings;
   const global = (v?: string | number, none = 'agent default') => `Global (${v || none})`;
-  const bind = (k: Exclude<keyof OF, 'capabilities'>) =>
+  const bind = (k: Exclude<keyof OF, 'capabilities' | 'plugins'>) =>
     ({ value: o[k], onInput: (e: Event) => set({ [k]: (e.currentTarget as HTMLInputElement).value }) });
   return (
     <>

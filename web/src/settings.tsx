@@ -11,7 +11,7 @@ import { AccountPage, AuditPage, PeoplePage } from './people';
 import { NewTeam, TeamPage, TeamsIndex, useMe } from './teams';
 import { SecretsPage } from './secrets';
 import { SlackPage } from './slack';
-import { ConfirmButton, EffortSelect, Group, Head, ModelField, SaveBar, errText, fail, num, str, toast, useLoad } from './util';
+import { ConfirmButton, EffortSelect, Group, Head, ModelField, SaveBar, errText, fail, lines, num, str, toast, useLoad } from './util';
 
 const SECTIONS: [string, [string, string][]][] = [
   ['You', [['account', 'Account'], ['github', 'GitHub']]],
@@ -64,14 +64,15 @@ export function Settings({ info, route }: { info?: Info; route: string[] }) {
 
 const TEXT = ['model', 'effort', 'instructions', 'image', 'branch_prefix', 'author_name', 'author_email'] as const;
 const NUMS = ['cpus', 'memory_mb', 'idle_minutes', 'turn_minutes'] as const;
-type GF = Record<(typeof TEXT)[number] | (typeof NUMS)[number], string> & { draft_prs: boolean; capabilities: string[] };
+type GF = Record<(typeof TEXT)[number] | (typeof NUMS)[number] | 'plugins', string> & { draft_prs: boolean; capabilities: string[] };
 const toGF = (s: S) => ({
   ...Object.fromEntries(TEXT.map(k => [k, s[k] || ''])), ...Object.fromEntries(NUMS.map(k => [k, str(s[k])])), draft_prs: !!s.draft_prs,
-  capabilities: s.capabilities || [],
+  capabilities: s.capabilities || [], plugins: (s.plugins || []).join('\n'),
 }) as GF;
 const fromGF = (f: GF): S => ({
   ...Object.fromEntries(TEXT.map(k => [k, k === 'instructions' ? f[k] : f[k].trim()])),
   ...Object.fromEntries(NUMS.map(k => [k, num(f[k])])), draft_prs: f.draft_prs, capabilities: f.capabilities,
+  plugins: lines(f.plugins),
 });
 
 function General() {
@@ -124,6 +125,11 @@ function General() {
         need (a <code>go.mod</code> brings Go), keep them for the next sandbox, and the agent adds others as it needs them. Tick one
         here only to install it in every sandbox.</>}>
         <CapabilityPicker value={f.capabilities} set={v => set('capabilities', v)} secrets={secrets?.map(s => s.name)} />
+      </Group>
+      <Group title="Plugins" hint={<>Claude Code plugins, one per line as <code>plugin@marketplace</code>, the marketplace as <code>owner/repo</code>, a git URL
+        or an https URL: e.g. <code>compound-engineering@EveryInc/compound-engineering-plugin</code>. Every sandbox installs the latest
+        version once, before the setup scripts; a failure is a warning, retried on the next start.</>}>
+        <textarea class="mono" rows={3} spellcheck={false} placeholder="compound-engineering@EveryInc/compound-engineering-plugin" {...bind('plugins')} />
       </Group>
       <Group title="Sandbox" hint="Image, CPUs and memory apply when a session's sandbox is first created. Capabilities raise a CPU or memory limit to what they need.">
         <label>Image<input class="mono" placeholder={d.image} spellcheck={false} {...bind('image')} /></label>

@@ -29,10 +29,13 @@ type Overrides struct {
 	// Toolchains sandboxes install (package capability), by id. They
 	// accumulate like instructions.
 	Capabilities []string `json:"capabilities,omitempty"`
+	// Claude Code plugins sandboxes install, as "<plugin>@<marketplace
+	// source>". They accumulate like capabilities.
+	Plugins []string `json:"plugins,omitempty"`
 }
 
-// Over returns o with unset fields taken from base. Instructions and
-// capabilities accumulate, base first, so global ones still apply inside an
+// Over returns o with unset fields taken from base. Instructions,
+// capabilities and plugins accumulate, base first, so global ones still apply inside an
 // environment.
 func (o Overrides) Over(base Overrides) Overrides {
 	pick := func(v, def string) string {
@@ -55,6 +58,11 @@ func (o Overrides) Over(base Overrides) Overrides {
 	for _, id := range append(slices.Clone(base.Capabilities), o.Capabilities...) {
 		if !slices.Contains(out.Capabilities, id) {
 			out.Capabilities = append(out.Capabilities, id)
+		}
+	}
+	for _, p := range append(slices.Clone(base.Plugins), o.Plugins...) {
+		if !slices.Contains(out.Plugins, p) {
+			out.Plugins = append(out.Plugins, p)
 		}
 	}
 	return out

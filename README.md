@@ -259,6 +259,15 @@ Jest and Metro bundles, native builds and phone previews through EAS with an `EX
 The global settings, an environment or a repository's `.beethoven/capabilities` file can also name
 capabilities, for needs a repository's files don't show yet. A failed install is a warning.
 
+**Plugins.** [Claude Code plugins](https://docs.claude.com/en/docs/claude-code/plugins) for every
+agent, with their skills, commands and subagents: the global settings name them, and a project adds
+its own. Each is `plugin@marketplace`, the marketplace as `owner/repo`, a git URL or an https URL
+(`compound-engineering@EveryInc/compound-engineering-plugin`). A sandbox installs the latest version
+of each once, after the capabilities and before the setup scripts, with `claude plugin install
+--marketplace`, which needs a recent Claude Code in the image; a failure is a warning, retried on the
+next start. Marketplaces are cloned without the session's GitHub credentials, so private ones need
+their own access.
+
 ### GitHub
 
 Beethoven works on GitHub as a GitHub App, which a person connects by authorizing it. The app is

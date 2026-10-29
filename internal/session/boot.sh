@@ -12,6 +12,7 @@
 #   CAPABILITIES  capabilities to install, besides those the repositories name or
 #                 look like they need; the catalog arrives on stdin (capabilities.sh,
 #                 prepended)
+#   PLUGINS       Claude Code plugins to install (plugins.sh, prepended)
 #   BOOT_STAGE    "install": stop once the capabilities are installed, before any
 #                 of the repositories' code runs; "rest": carry on from there.
 #                 Unset: both.
@@ -72,6 +73,8 @@ cap_setup
 fi
 unset GH_TOKEN GH_TOKENS # also in the rest stage, which doesn't clone
 if [ "${BOOT_STAGE:-}" = install ]; then exit 0; fi
+# Plugins for the agent, which the setup scripts may use too.
+plugins_install
 # The repositories' dependencies, then their hooks: their own code.
 cap_prepare
 
