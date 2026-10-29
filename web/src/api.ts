@@ -44,7 +44,7 @@ export type Info = {
   version: string; author: Author; github: boolean; anthropic: boolean; model: string; effort: string; efforts: string[];
 };
 export type Overrides = {
-  model?: string; effort?: string; instructions?: string; image?: string; cpus?: number; memory_mb?: number; capabilities?: string[];
+  model?: string; effort?: string; instructions?: string; image?: string; cpus?: number; memory_mb?: number; capabilities?: string[]; plugins?: string[];
 };
 /** A toolchain sandboxes can be given: installed when one boots, with a skill that tells the agent how to use it. */
 export type Capability = {

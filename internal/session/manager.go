@@ -29,6 +29,9 @@ import (
 //go:embed boot.sh
 var bootScript string
 
+//go:embed plugins.sh
+var pluginScript string
+
 var (
 	ErrNotFound     = store.ErrNotFound
 	ErrInvalid      = store.ErrInvalid

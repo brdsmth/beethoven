@@ -26,7 +26,11 @@ var (
 	branchPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 	modelPattern  = regexp.MustCompile(`^[A-Za-z0-9._:/\[\]-]{0,100}$`)
 	namePattern   = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	pluginPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}@[^-\s][^\s]{0,499}$`)
 )
+
+// MaxPlugins is how many plugins the global settings or an environment name.
+const MaxPlugins = 20
 
 // ValidateRepos checks and normalizes a workspace's repositories: at most
 // MaxRepos, well formed, and with distinct checkout directories.
@@ -66,6 +70,13 @@ func ValidateOverrides(o store.Overrides) error {
 		return fmt.Errorf("%w: %q is not an image name", ErrInvalid, o.Image)
 	case len(capability.Unknown(o.Capabilities)) > 0:
 		return fmt.Errorf("%w: no capability %q", ErrInvalid, capability.Unknown(o.Capabilities)[0])
+	case len(o.Plugins) > MaxPlugins:
+		return fmt.Errorf("%w: at most %d plugins", ErrInvalid, MaxPlugins)
+	}
+	for _, p := range o.Plugins {
+		if !pluginPattern.MatchString(p) {
+			return fmt.Errorf("%w: %q is not a plugin: give <plugin>@<marketplace>, the marketplace as owner/repo, a git URL or an https URL", ErrInvalid, p)
+		}
 	}
 	return nil
 }

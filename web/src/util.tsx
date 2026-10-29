@@ -119,6 +119,8 @@ export function writePref(key: string, v: unknown) {
 // Number inputs: "" means unset (0 on the wire).
 export const num = (s: string) => (s.trim() ? Number(s) : 0);
 export const str = (n?: number) => (n ? String(n) : '');
+// One-per-line lists, such as plugins: blank lines are dropped.
+export const lines = (s: string) => s.split('\n').map(l => l.trim()).filter(Boolean);
 
 export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 export const repoSummary = (repos: RepoRef[]) =>
